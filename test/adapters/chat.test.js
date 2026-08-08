@@ -1,0 +1,90 @@
+'use strict';
+
+const { test } = require('node:test');
+const assert = require('node:assert/strict');
+const { JSDOM } = require('jsdom');
+
+const { getRecentMessages } = require('../../src/adapters/chat');
+
+function makeDom(bodyHtml = '') {
+  return new JSDOM(`<!DOCTYPE html><html><body>${bodyHtml}</body></html>`);
+}
+
+function makeGameClient(contents) {
+  return {
+    interface: {
+      channelManager: {
+        getChannel: (name) => (name === 'Default' ? { __contents: contents } : null),
+      },
+    },
+  };
+}
+
+test('REQ-09: reads Default channel __contents as primary source', () => {
+  const ctx = {
+    gameClient: makeGameClient([
+      { name: 'Flamamex', message: 'adori', __time: 123 },
+      { name: 'Otto', message: 'hi', __time: 456 },
+    ]),
+  };
+  const entries = getRecentMessages(ctx);
+  assert.equal(entries.length, 2);
+  assert.deepEqual(entries[0], { name: 'Flamamex', message: 'adori', time: 123, source: 'channel' });
+  assert.deepEqual(entries[1], { name: 'Otto', message: 'hi', time: 456, source: 'channel' });
+});
+
+test('REQ-09: empty channel contents -> empty list', () => {
+  const entries = getRecentMessages({ gameClient: makeGameClient([]) });
+  assert.deepEqual(entries, []);
+});
+
+test('REQ-09: channel entries tolerate missing fields', () => {
+  const ctx = { gameClient: makeGameClient([{ name: 'X' }, { message: 'hello' }, {}]) };
+  const entries = getRecentMessages(ctx);
+  assert.equal(entries[0].message, '');
+  assert.equal(entries[0].time, null);
+  assert.equal(entries[1].name, null);
+  assert.equal(entries[2].name, null);
+  assert.equal(entries[2].message, '');
+});
+
+test('REQ-09: no channel -> #chat-text-area fallback parsed per line', () => {
+  const dom = makeDom('<div id="chat-text-area">Flamamex: adori\nOtto: hello there</div>');
+  const entries = getRecentMessages({ document: dom.window.document });
+  assert.deepEqual(entries, [
+    { name: 'Flamamex', message: 'adori', time: null, source: 'dom' },
+    { name: 'Otto', message: 'hello there', time: null, source: 'dom' },
+  ]);
+});
+
+test('REQ-09: DOM fallback is re-queried per read (chat is rebuilt wholesale)', () => {
+  const dom = makeDom('<div id="chat-text-area">Flamamex: adori</div>');
+  const doc = dom.window.document;
+  assert.equal(getRecentMessages({ document: doc }).length, 1);
+  doc.querySelector('#chat-text-area').textContent = 'Flamamex: exura\nFlamamex: utamo';
+  const entries = getRecentMessages({ document: doc });
+  assert.equal(entries.length, 2);
+  assert.equal(entries[1].message, 'utamo');
+});
+
+test('chat fallback: line without "name:" prefix -> name null, raw message kept', () => {
+  const dom = makeDom('<div id="chat-text-area">  \njust some system text\n</div>');
+  const entries = getRecentMessages({ document: dom.window.document });
+  assert.deepEqual(entries, [{ name: null, message: 'just some system text', time: null, source: 'dom' }]);
+});
+
+test('chat: getChannel not a function -> DOM fallback', () => {
+  const dom = makeDom('<div id="chat-text-area">Flamamex: adori</div>');
+  const ctx = {
+    gameClient: { interface: { channelManager: { getChannel: 'nope' } } },
+    document: dom.window.document,
+  };
+  const entries = getRecentMessages(ctx);
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].source, 'dom');
+});
+
+test('chat: neither channel nor #chat-text-area -> empty list', () => {
+  assert.deepEqual(getRecentMessages({}), []);
+  assert.deepEqual(getRecentMessages({ document: makeDom().window.document }), []);
+});
