@@ -82,7 +82,10 @@ const HEADER = `// ==UserScript==
  *    delay range, food timer window/fallback) sit under the review step.
  * 4. START — press Start playing (or Start); Pause freezes the counters
  *    (REQ-14); Reset stops the engine AND clears every mb-* key (persisted
- *    config + state, REQ-12).
+ *    config + state, REQ-12). While running, the bot watches your own chat
+ *    for unconfigured spell words: after two sightings within 5 minutes the
+ *    run view offers to register the word (Register/Ignore) — nothing is
+ *    written to the config without your confirmation (REQ-15).
  *
  * NOTE: Reset is destructive — it wipes your saved configuration too.
  * ------------------------------------------------------------------------- */
@@ -160,6 +163,7 @@ const BOOTSTRAP = `/* ==========================================================
   const ROTATION_MOD = __mbRequire('core/rotation');
   const SATED_MOD = __mbRequire('core/sated');
   const VALID_MOD = __mbRequire('core/validation');
+  const DEDUPE_MOD = __mbRequire('core/dedupe');
   const GC_MOD = __mbRequire('adapters/gameClient');
   const FIRING_MOD = __mbRequire('adapters/firing');
   const EAT_MOD = __mbRequire('adapters/eat');
@@ -203,6 +207,9 @@ const BOOTSTRAP = `/* ==========================================================
       pollTimer: null,
       pollCount: 0,
       lastFiredWord: '',
+      dedupe: null,          // REQ-15 unknown-word tracker (core/dedupe)
+      chatWatermark: 0,      // highest __time already observed (no double counts)
+      seenChatKeys: new Set(), // identity keys for entries without a usable time
       warnings: [],
       errors: [],
     };
@@ -444,6 +451,133 @@ const BOOTSTRAP = `/* ==========================================================
       });
     }
 
+    /* ---------- REQ-15: unknown-word observation + registration offer ---------- */
+    /** All words considered configured: spell words + validation words. */
+    function configuredWords(config) {
+      const words = new Set();
+      const spells = (config && Array.isArray(config.spells)) ? config.spells : [];
+      for (let i = 0; i < spells.length; i++) {
+        const s = spells[i] || {};
+        const w = typeof s.word === 'string' ? s.word.trim() : '';
+        const vw = typeof s.validationWord === 'string' ? s.validationWord.trim() : '';
+        if (w) words.add(w);
+        if (vw) words.add(vw);
+      }
+      return words;
+    }
+
+    /** Best-effort spell id for an observed word (spellbook entries). */
+    function inferSid(word) {
+      try {
+        const sb = state.gameClient && state.gameClient.player && state.gameClient.player.spellbook;
+        const spells = sb && sb.spells;
+        if (!spells) return null;
+        const keys = Object.keys(spells);
+        for (let i = 0; i < keys.length; i++) {
+          const entry = spells[keys[i]] || {};
+          const raw = entry.words || entry.word || entry.runeSpellName || null;
+          if (typeof raw === 'string' && raw.trim() === word) return Number(keys[i]) || null;
+          if (Array.isArray(raw) && raw.indexOf(word) !== -1) return Number(keys[i]) || null;
+        }
+      } catch (e) { /* inference is best-effort */ }
+      return null;
+    }
+
+    /**
+     * REQ-15: monitor the Default channel for the player's own messages that
+     * match no configured word. Each entry is observed ONCE: channel entries
+     * carry __time (watermark skip, so re-reads never double-count); entries
+     * without a usable time are deduped by a bounded identity set — those can
+     * never reach the 2-observation offer, which is fine (the channel is the
+     * primary source and always carries __time).
+     */
+    function observeUnknownWords() {
+      if (!state.ready || !state.running || !state.dedupe) return;
+      let entries = [];
+      try {
+        entries = CHAT_MOD.getRecentMessages({ gameClient: state.gameClient, document: doc });
+      } catch (e) { return; }
+      const now = Date.now();
+      for (let i = 0; i < entries.length; i++) {
+        const entry = entries[i] || {};
+        if (entry.name !== state.playerName) continue;
+        const msg = String(entry.message || '').trim();
+        if (!msg) continue;
+        const t = typeof entry.time === 'number' && Number.isFinite(entry.time) ? entry.time : null;
+        if (t !== null) {
+          if (t <= state.chatWatermark) continue; // already observed
+          state.chatWatermark = t;
+        } else {
+          const key = 'c|' + entry.name + '|' + msg;
+          if (state.seenChatKeys.has(key)) continue;
+          if (state.seenChatKeys.size >= 500) state.seenChatKeys.clear(); // bounded
+          state.seenChatKeys.add(key);
+        }
+        const outcome = state.dedupe.observe(msg, t !== null ? t : now);
+        if (outcome === 'new' || outcome === 'offer' || outcome === 'pending') {
+          state.hud.increment('unknownWords');
+        }
+        if (outcome === 'offer') {
+          const offer = { word: msg, at: t !== null ? t : now, sid: inferSid(msg) };
+          if (state.ui && typeof state.ui.showOffer === 'function') state.ui.showOffer(offer);
+          state.hud.addLog('unknown word "' + msg + '" twice in 5 min — registration offered (REQ-15)');
+        }
+      }
+    }
+
+    /** REQ-15 Register: user-confirmed write of the word into the rotation. */
+    async function registerWord(offer, slot) {
+      const slotNum = Number(slot);
+      if (!Number.isInteger(slotNum) || slotNum < 1 || slotNum > 12) {
+        warn('registration rejected: hotbar slot must be 1-12');
+        return;
+      }
+      try {
+        const word = String((offer && offer.word) || '').trim();
+        if (!word) return;
+        const spells = (state.config && Array.isArray(state.config.spells))
+          ? state.config.spells.slice() : [];
+        const already = spells.some(function (s) { return (s.word || '').trim() === word; });
+        if (already) {
+          state.dedupe.markKnown(word); // already configured — just stop observing
+          state.hud.addLog('"' + word + '" is already configured — nothing to register');
+          return;
+        }
+        let maxOrder = -1;
+        for (let i = 0; i < spells.length; i++) {
+          if (Number.isFinite(spells[i].order)) maxOrder = Math.max(maxOrder, spells[i].order);
+        }
+        spells.push({
+          slot: slotNum,
+          word: word,
+          validationWord: word,
+          threshold: 0,
+          reserve: 0,
+          repeat: 1,
+          order: maxOrder + 1,
+          cooldownMs: 0,
+          sid: Number.isInteger(offer.sid) ? offer.sid : null,
+        });
+        const res = await saveConfig(Object.assign({}, state.config, { spells: spells }), state.config);
+        if (!res || !res.ok) {
+          warn('registration rejected: ' + ((res && res.errors) || ['unknown error']).join('; '));
+          return;
+        }
+        state.dedupe.markKnown(word);
+        if (state.ui && typeof state.ui.setConfig === 'function') state.ui.setConfig(res.config || state.config);
+        state.hud.addLog('registered "' + word + '" on hotbar slot ' + slotNum + ' (REQ-15)');
+      } catch (e) {
+        warn('registration failed: ' + (e && e.message ? e.message : e));
+      }
+    }
+
+    /** REQ-15 Ignore: the word becomes session-silent (no offer reappears). */
+    function ignoreWord(word) {
+      if (!state.dedupe) return;
+      state.dedupe.decline(String((word || '')).trim());
+      state.hud.addLog('ignored "' + word + '" — no more offers this session (REQ-15)');
+    }
+
     /* ---------- ticker (REQ-04/13): jittered cadence, Worker when hidden ---------- */
     function createTicker() {
       let pending = null;
@@ -531,6 +665,7 @@ const BOOTSTRAP = `/* ==========================================================
       ctx.maxMana = stats.maxMana !== null ? stats.maxMana : ctx.maxMana;
       ctx.health = stats.health;
       ctx.nextAction = describeNext();
+      observeUnknownWords(); // REQ-15: watch self chat for unconfigured words (engine loop)
       const result = state.engine.tick(); // at most one action per tick (REQ-03)
       if (result.fired) state.hud.refresh();
     }
@@ -620,6 +755,11 @@ const BOOTSTRAP = `/* ==========================================================
       if (out.errors.length > 0) return { ok: false, errors: out.errors };
       await state.persist.set('config', out.config);
       state.config = out.config;
+      // Keep the REQ-15 tracker's known set in sync with what is configured.
+      if (state.dedupe) {
+        const known = configuredWords(out.config);
+        known.forEach(function (w) { state.dedupe.markKnown(w); });
+      }
       state.engine = ROTATION_MOD.createEngine({ rules: buildRules(out.config), ctx: {} });
       state.validator = buildValidator();
       return { ok: true, errors: [], config: out.config };
@@ -668,6 +808,9 @@ const BOOTSTRAP = `/* ==========================================================
           logSinks,
         );
         state.config = out.config;
+        state.dedupe = DEDUPE_MOD.createDedupe({ known: configuredWords(out.config) });
+        state.chatWatermark = Date.now(); // start monitoring AFTER boot: no history offers
+        state.seenChatKeys.clear();
 
         state.hud = HUD_MOD.createHud({
           document: doc,
@@ -691,6 +834,15 @@ const BOOTSTRAP = `/* ==========================================================
           onStart: start,
           onPause: pause,
           onReset: reset,
+          // REQ-15: user-confirmed writes only — Register persists the word,
+          // Ignore stays session-silent (dedupe declines it).
+          onOfferAction: function (action, offer, slot) {
+            if (action === 'register') {
+              registerWord(offer, slot).catch(function (e) { warn('registration failed: ' + e); });
+            } else if (action === 'ignore') {
+              ignoreWord(offer && offer.word);
+            }
+          },
           log: logSinks,
           schedule: setIntervalFn,
           clear: clearIntervalFn,

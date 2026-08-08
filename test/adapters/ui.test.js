@@ -526,3 +526,89 @@ test('panel: numeric cid strings become numbers, empty becomes null', async () =
   assert.equal(raw.food.cid, null);
   ui.destroy();
 });
+
+test('REQ-15: showOffer renders word/time/sid and Register fires with the chosen slot', () => {
+  const { dom, ui, calls } = makeUi(makeDom(), {
+    deps: {
+      onOfferAction: (action, offer, slot) => {
+        calls.offer = { action, offer, slot };
+      },
+    },
+  });
+  const d = dom.window.document;
+  const offerEl = d.querySelector('[data-ui-offer]');
+  assert.ok(offerEl, 'offer banner element present in the run view');
+  assert.equal(offerEl.style.display, 'none', 'hidden until an offer arrives');
+
+  // Slot 1 already used by a configured spell -> first free slot preselected.
+  ui.setConfig({
+    spells: [{ slot: 1, word: 'adori', threshold: 0, reserve: 0, repeat: 1, order: 1 }],
+    food: { slot: null },
+  });
+
+  ui.showOffer({ word: 'exevo pan', at: 1234567890000, sid: 31 });
+  assert.equal(offerEl.style.display, '', 'offer banner visible');
+  const text = d.querySelector('[data-ui-offer-text]').textContent;
+  assert.match(text, /exevo pan/, 'word shown');
+  assert.match(text, /spell id 31/, 'sid shown when inferable');
+  assert.match(text, /twice in 5 minutes/, 'plain-language offer copy');
+
+  const slotSel = d.querySelector('[data-ui-offer-slot]');
+  assert.equal(slotSel.value, '2', 'first unused slot preselected');
+
+  // No slot chosen -> friendly error, nothing written.
+  slotSel.value = '';
+  d.querySelector('[data-ui-offer-register]').click();
+  assert.match(d.querySelector('[data-ui-errors]').textContent, /hotbar slot/);
+  assert.equal(calls.offer, undefined, 'no action fired without a slot');
+
+  slotSel.value = '7';
+  d.querySelector('[data-ui-offer-register]').click();
+  assert.deepEqual(calls.offer, {
+    action: 'register',
+    offer: { word: 'exevo pan', at: 1234567890000, sid: 31 },
+    slot: '7',
+  });
+  assert.equal(offerEl.style.display, 'none', 'banner hidden after the decision');
+  ui.destroy();
+});
+
+test('REQ-15: Ignore hides the banner and reports the decision without writing', () => {
+  const { dom, ui, calls } = makeUi(makeDom(), {
+    deps: {
+      onOfferAction: (action, offer, slot) => {
+        calls.offer = { action, offer, slot };
+      },
+    },
+  });
+  const d = dom.window.document;
+  ui.showOffer({ word: 'utori', at: 1000, sid: null });
+  assert.equal(d.querySelector('[data-ui-offer]').style.display, '');
+  assert.match(d.querySelector('[data-ui-offer-text]').textContent, /utori/);
+  assert.doesNotMatch(d.querySelector('[data-ui-offer-text]').textContent, /spell id/, 'no sid shown when not inferable');
+
+  d.querySelector('[data-ui-offer-ignore]').click();
+  assert.deepEqual(calls.offer, {
+    action: 'ignore',
+    offer: { word: 'utori', at: 1000, sid: null },
+    slot: undefined,
+  });
+  assert.equal(d.querySelector('[data-ui-offer]').style.display, 'none', 'banner hidden after Ignore');
+
+  // A later offer for another word still renders.
+  ui.showOffer({ word: 'utani', at: 2000, sid: null });
+  assert.match(d.querySelector('[data-ui-offer-text]').textContent, /utani/);
+  assert.equal(d.querySelector('[data-ui-offer]').style.display, '');
+  ui.destroy();
+});
+
+test('REQ-15: without onOfferAction the banner still hides safely', () => {
+  const { dom, ui } = makeUi(makeDom());
+  const d = dom.window.document;
+  ui.showOffer({ word: 'sio', at: 0, sid: null });
+  assert.equal(d.querySelector('[data-ui-offer]').style.display, '');
+  d.querySelector('[data-ui-offer-register]').click();
+  d.querySelector('[data-ui-offer-ignore]').click();
+  assert.equal(d.querySelector('[data-ui-offer]').style.display, 'none');
+  ui.destroy();
+});

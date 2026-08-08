@@ -121,6 +121,10 @@ function styleButton(btn) {
  * @param {number} [deps.maxLog=6]
  * @param {(raw: object, prev: object) => Promise<{ok: boolean, errors?: string[], config?: object}>}
  *   [deps.saveConfig] - validate + persist the raw config (REQ-12)
+ * @param {(action: 'register'|'ignore', offer: {word: string, at: number, sid: number|null}, slot?: string) => void}
+ *   [deps.onOfferAction] - REQ-15 decision callback: 'register' writes the word
+ *   into the rotation (user-confirmed), 'ignore' keeps it silent this session.
+ *   Nothing is written to config without the user's explicit confirmation.
  * @param {() => void} [deps.onStart] - Start button handler
  * @param {() => void} [deps.onPause] - Pause button handler
  * @param {() => void} [deps.onReset] - Reset button handler
@@ -132,6 +136,7 @@ function styleButton(btn) {
  *   setRunning: (running: boolean) => void,
  *   search: (query: string, rowIndex?: number) => number,
  *   setErrors: (messages: string[]) => void, paintMini: (snapshot: object) => void,
+ *   showOffer: (offer: {word: string, at: number, sid: number|null}) => void,
  *   destroy: () => void,
  * }}
  */
@@ -144,6 +149,7 @@ function createUi(deps = {}) {
   const onStart = typeof deps.onStart === 'function' ? deps.onStart : null;
   const onPause = typeof deps.onPause === 'function' ? deps.onPause : null;
   const onReset = typeof deps.onReset === 'function' ? deps.onReset : null;
+  const onOfferAction = typeof deps.onOfferAction === 'function' ? deps.onOfferAction : null;
   const log = deps.log ?? {};
   const error = typeof log.error === 'function' ? log.error.bind(log) : () => {};
 
@@ -477,6 +483,43 @@ function createUi(deps = {}) {
   hudCountersRow.appendChild(field(doc, 'misses', el(doc, 'span', 'data-hud-misses', '0')));
   hudCountersRow.appendChild(field(doc, 'words', el(doc, 'span', 'data-hud-words', '0')));
   run.appendChild(hudCountersRow);
+
+  // ---- REQ-15 registration offer (run view): word + time (+ sid) + explicit
+  // Register/Ignore — config is NEVER written without user confirmation ----
+  let currentOffer = null; // the offer currently on screen (if any)
+  const offer = el(doc, 'div', 'data-ui-offer');
+  Object.assign(offer.style, {
+    display: 'none',
+    margin: '6px 0',
+    padding: '6px 8px',
+    background: 'rgba(43, 108, 176, 0.25)',
+    border: '1px solid #2b6cb0',
+    borderRadius: '6px',
+  });
+  const offerText = el(doc, 'div', 'data-ui-offer-text', '');
+  offerText.style.marginBottom = '4px';
+  const offerSlot = el(doc, 'select', 'data-ui-offer-slot');
+  const offerSlotEmpty = el(doc, 'option');
+  offerSlotEmpty.value = '';
+  offerSlotEmpty.textContent = '— choose —';
+  offerSlot.appendChild(offerSlotEmpty);
+  for (let i = 1; i <= 12; i++) {
+    const opt = el(doc, 'option');
+    opt.value = String(i);
+    opt.textContent = String(i);
+    offerSlot.appendChild(opt);
+  }
+  const offerRegister = el(doc, 'button', 'data-ui-offer-register', 'Register');
+  const offerIgnore = el(doc, 'button', 'data-ui-offer-ignore', 'Ignore');
+  for (const b of [offerRegister, offerIgnore]) styleButton(b);
+  const offerRow = el(doc, 'div');
+  offerRow.appendChild(field(doc, 'Add to hotbar slot:', offerSlot));
+  offerRow.appendChild(offerRegister);
+  offerRow.appendChild(offerIgnore);
+  offer.appendChild(offerText);
+  offer.appendChild(offerRow);
+  run.appendChild(offer);
+
   const logEl = el(doc, 'div', 'data-hud-log', '');
   Object.assign(logEl.style, {
     margin: '4px 0',
@@ -1068,6 +1111,47 @@ function createUi(deps = {}) {
   }
 
   /* ---------------------------------------------------------------------
+   * REQ-15 registration offer: word + timestamp (+ sid when inferable) with
+   * an explicit Register / Ignore choice. Registering writes the word into
+   * the rotation (user-confirmed); ignoring keeps it session-silent.
+   * ------------------------------------------------------------------- */
+  /** Preselect the first hotbar slot not already used by the wizard rows. */
+  function firstFreeSlot() {
+    const used = new Set(
+      (getRawConfig().spells || [])
+        .map((s) => s.slot)
+        .filter((v) => Number.isInteger(v)),
+    );
+    for (let i = 1; i <= 12; i++) {
+      if (!used.has(i)) return i;
+    }
+    return null;
+  }
+
+  /**
+   * Surface a REQ-15 registration offer in the run view.
+   * @param {{word: string, at: number, sid: number|null}} data - observed
+   *   unknown word, first-sighting timestamp and best-effort spell id
+   */
+  function showOffer(data) {
+    currentOffer = data;
+    const sidPart = Number.isInteger(data?.sid) ? ` (spell id ${data.sid})` : '';
+    const timePart = Number.isFinite(data?.at) ? ` at ${new Date(data.at).toLocaleTimeString()}` : '';
+    offerText.textContent =
+      `You cast "${data?.word ?? '?'}" twice in 5 minutes${sidPart} without a configured word${timePart}. ` +
+      'Add it to your rotation?';
+    const free = firstFreeSlot();
+    offerSlot.value = free !== null ? String(free) : '';
+    offer.style.display = '';
+  }
+
+  /** Hide the offer banner after a decision (or when superseded). */
+  function hideOffer() {
+    currentOffer = null;
+    offer.style.display = 'none';
+  }
+
+  /* ---------------------------------------------------------------------
    * dragging (header only, viewport-clamped)
    * ------------------------------------------------------------------- */
   let drag = null;
@@ -1153,6 +1237,23 @@ function createUi(deps = {}) {
   miniExpand.addEventListener('click', () => setPanelState('full'));
   miniHide.addEventListener('click', () => setPanelState('handle'));
   handle.addEventListener('click', () => setPanelState('full'));
+  offerRegister.addEventListener('click', () => {
+    if (!currentOffer) return;
+    if (!offerSlot.value) {
+      showErrors(['Pick the hotbar slot the spell lives on before registering.']);
+      return;
+    }
+    const decided = currentOffer;
+    const slot = offerSlot.value;
+    hideOffer();
+    onOfferAction?.('register', decided, slot);
+  });
+  offerIgnore.addEventListener('click', () => {
+    if (!currentOffer) return;
+    const decided = currentOffer;
+    hideOffer();
+    onOfferAction?.('ignore', decided);
+  });
   runStartBtn.addEventListener('click', () => onStart?.());
   runPauseBtn.addEventListener('click', () => onPause?.());
   runResetBtn.addEventListener('click', () => onReset?.());
@@ -1238,6 +1339,7 @@ function createUi(deps = {}) {
     search,
     setErrors: showErrors,
     paintMini,
+    showOffer,
     destroy,
   };
 }

@@ -32,7 +32,7 @@ function makePage(overrides = {}) {
       state: { mana: 100, maxMana: 120, health: 100, maxHealth: 100 },
       spellbook: {
         cooldowns: { GLOBAL_COOLDOWN: { active: false }, 24: { active: false } },
-        spells: { 24: { cost: 20 } },
+        spells: { 24: { cost: 20 }, 31: { cost: 15, words: 'exevo pan' } },
       },
       conditions: { has: (k) => (k === 'SATED' ? false : false) },
     },
@@ -426,6 +426,178 @@ test('panel: minimize while running keeps the mini bar live; expand restores', a
     d.querySelector('[data-ui-mini-expand]').click();
     assert.equal(d.querySelector('[data-ui-body]').style.display, '');
     assert.equal(d.querySelector('[data-ui-mini]').style.display, 'none');
+  } finally {
+    teardown(dom);
+  }
+});
+
+/** Start the bot through the wizard so the run view (offer surface) is shown. */
+async function startViaWizard(dom, bot, casts) {
+  const d = dom.window.document;
+  assert.equal(await waitFor(() => bot.isReady()), true);
+  for (let i = 0; i < 4; i++) d.querySelector('[data-ui-wizard-next]').click();
+  d.querySelector('[data-ui-start]').click(); // Start playing
+  assert.equal(await waitFor(() => casts.length >= 1, { timeout: 6000 }), true, 'engine running');
+}
+
+test('REQ-15: same unknown word twice within 5 minutes surfaces the registration offer', async () => {
+  const chatContents = [];
+  const { dom, casts } = makePage({ chatContents });
+  try {
+    const bot = dom.window.__minibiaBot;
+    const d = dom.window.document;
+    await startViaWizard(dom, bot, casts);
+
+    const now = Date.now();
+    chatContents.push({ name: 'Flamamex', message: 'exevo pan', __time: now + 10 });
+    assert.equal(
+      await waitFor(() => d.querySelector('[data-hud-words]').textContent === '1', { timeout: 4000 }),
+      true,
+      'first sighting counted (REQ-15)',
+    );
+    assert.equal(d.querySelector('[data-ui-offer]').style.display, 'none', 'no offer after one sighting');
+
+    chatContents.push({ name: 'Flamamex', message: 'exevo pan', __time: now + 20 });
+    assert.equal(
+      await waitFor(() => d.querySelector('[data-ui-offer]').style.display === '', { timeout: 4000 }),
+      true,
+      'second sighting within the window offers registration',
+    );
+    const text = d.querySelector('[data-ui-offer-text]').textContent;
+    assert.match(text, /exevo pan/, 'offer names the unknown word');
+    assert.match(text, /spell id 31/, 'sid inferred from the spellbook when available');
+    assert.equal(d.querySelector('[data-hud-words]').textContent, '2', 'both sightings counted');
+  } finally {
+    teardown(dom);
+  }
+});
+
+test('REQ-15: a word observed only once never offers, even after the window passes', async () => {
+  const chatContents = [];
+  const { dom, casts } = makePage({ chatContents });
+  try {
+    const bot = dom.window.__minibiaBot;
+    const d = dom.window.document;
+    await startViaWizard(dom, bot, casts);
+
+    const now = Date.now();
+    chatContents.push({ name: 'Flamamex', message: 'utori', __time: now + 10 });
+    assert.equal(
+      await waitFor(() => d.querySelector('[data-hud-words]').textContent === '1', { timeout: 4000 }),
+      true,
+      'single sighting counted',
+    );
+    await new Promise((r) => setTimeout(r, 800)); // several ticks elapse
+    assert.equal(d.querySelector('[data-ui-offer]').style.display, 'none', 'single sighting never offers');
+    assert.equal(
+      d.querySelector('[data-hud-words]').textContent,
+      '1',
+      'the same entry is not double-counted across ticks',
+    );
+  } finally {
+    teardown(dom);
+  }
+});
+
+test('REQ-15: an already-configured word is ignored', async () => {
+  const chatContents = [];
+  const { dom, casts } = makePage({ chatContents }); // seeded config word: adori
+  try {
+    const bot = dom.window.__minibiaBot;
+    const d = dom.window.document;
+    await startViaWizard(dom, bot, casts);
+
+    chatContents.push({ name: 'Flamamex', message: 'adori', __time: Date.now() + 10 });
+    await new Promise((r) => setTimeout(r, 600));
+    assert.equal(d.querySelector('[data-hud-words]').textContent, '0', 'configured word not counted');
+    assert.equal(d.querySelector('[data-ui-offer]').style.display, 'none', 'no offer for a configured word');
+  } finally {
+    teardown(dom);
+  }
+});
+
+test('REQ-15: Ignore makes the word session-silent; no offer reappears', async () => {
+  const chatContents = [];
+  const { dom, casts } = makePage({ chatContents });
+  try {
+    const bot = dom.window.__minibiaBot;
+    const d = dom.window.document;
+    await startViaWizard(dom, bot, casts);
+
+    const now = Date.now();
+    chatContents.push({ name: 'Flamamex', message: 'exevo pan', __time: now + 10 });
+    chatContents.push({ name: 'Flamamex', message: 'exevo pan', __time: now + 20 });
+    assert.equal(
+      await waitFor(() => d.querySelector('[data-ui-offer]').style.display === '', { timeout: 4000 }),
+      true,
+      'offer appears before the decision',
+    );
+    d.querySelector('[data-ui-offer-ignore]').click();
+    assert.equal(d.querySelector('[data-ui-offer]').style.display, 'none', 'banner hidden after Ignore');
+
+    // Observed twice again later: the declined word must NOT offer again.
+    chatContents.push({ name: 'Flamamex', message: 'exevo pan', __time: now + 30 });
+    chatContents.push({ name: 'Flamamex', message: 'exevo pan', __time: now + 40 });
+    await new Promise((r) => setTimeout(r, 800));
+    assert.equal(
+      d.querySelector('[data-ui-offer]').style.display,
+      'none',
+      'declined word stays silent this session (REQ-15)',
+    );
+  } finally {
+    teardown(dom);
+  }
+});
+
+test('REQ-15: Register writes the word into the config only on user confirmation', async () => {
+  const chatContents = [];
+  const { dom, casts } = makePage({ chatContents });
+  try {
+    const bot = dom.window.__minibiaBot;
+    const d = dom.window.document;
+    await startViaWizard(dom, bot, casts);
+
+    const now = Date.now();
+    chatContents.push({ name: 'Flamamex', message: 'exevo pan', __time: now + 10 });
+    chatContents.push({ name: 'Flamamex', message: 'exevo pan', __time: now + 20 });
+    assert.equal(
+      await waitFor(() => d.querySelector('[data-ui-offer]').style.display === '', { timeout: 4000 }),
+      true,
+      'offer appears',
+    );
+
+    // Before confirming, the persisted config is untouched (REQ-15: no writes
+    // without user confirmation).
+    let persisted = JSON.parse(dom.window.localStorage.getItem('mb-config'));
+    assert.equal(persisted.spells.some((s) => s.word === 'exevo pan'), false, 'no write before confirmation');
+
+    const slotSel = d.querySelector('[data-ui-offer-slot]');
+    assert.equal(slotSel.value, '1', 'first unused slot preselected (slot 4 is taken)');
+    slotSel.value = '7';
+    d.querySelector('[data-ui-offer-register]').click();
+
+    assert.equal(
+      await waitFor(() => {
+        try {
+          const cfg = JSON.parse(dom.window.localStorage.getItem('mb-config'));
+          return cfg.spells.some((s) => s.word === 'exevo pan' && s.slot === 7);
+        } catch {
+          return false;
+        }
+      }, { timeout: 4000 }),
+      true,
+      'user-confirmed registration persisted (REQ-15)',
+    );
+    persisted = JSON.parse(dom.window.localStorage.getItem('mb-config'));
+    const reg = persisted.spells.find((s) => s.word === 'exevo pan');
+    assert.equal(reg.sid, 31, 'sid preserved when inferable');
+    assert.equal(reg.threshold, 0, 'no mana threshold for a freshly registered word');
+
+    // Now configured: further sightings are ignored, no offer reappears.
+    chatContents.push({ name: 'Flamamex', message: 'exevo pan', __time: now + 30 });
+    chatContents.push({ name: 'Flamamex', message: 'exevo pan', __time: now + 40 });
+    await new Promise((r) => setTimeout(r, 800));
+    assert.equal(d.querySelector('[data-ui-offer]').style.display, 'none', 'no re-offer for a registered word');
   } finally {
     teardown(dom);
   }
