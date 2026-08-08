@@ -1,0 +1,20 @@
+{
+  "name": "minibia-rotation-bot",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Auto-rotation Tampermonkey userscript for minibia.com/play (core pure modules)",
+  "type": "commonjs",
+  "scripts": {
+    "test": "node --test"
+  },
+  "keywords": [
+    "minibia",
+    "userscript",
+    "tampermonkey",
+    "rotation"
+  ],
+  "license": "MIT",
+  "devDependencies": {
+    "jsdom": "^30.0.1"
+  }
+}
