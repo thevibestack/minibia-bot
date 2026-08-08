@@ -63,6 +63,25 @@ function normalizeTrade(trade) {
 }
 
 /**
+ * Normalize the raw npcTrades source into an array of trade rows. The game
+ * exposes npcTrades as an ARRAY or as an OBJECT keyed by trade index (the
+ * observed live shape is an object with ~279 numeric-ish keys; an array shape
+ * would silently produce 0 trades). Both shapes must feed buildCatalog
+ * identically (REQ-10). Non-object values are dropped.
+ * @param {*} raw - array of trade rows, or {key: tradeRow} map
+ * @returns {Array<object>} trade rows (already object-typed)
+ */
+function normalizeTrades(raw) {
+  if (Array.isArray(raw)) return raw;
+  if (raw && typeof raw === 'object') {
+    return Object.keys(raw)
+      .map(function (k) { return raw[k]; })
+      .filter(function (t) { return t && typeof t === 'object'; });
+  }
+  return [];
+}
+
+/**
  * Page-side sprite strategy: captures a representative 32x32 PNG for an item
  * ONLY when its canvas is cheaply reachable — pre-captured hotbar slot
  * canvases keyed by item reference, then container/backpack-style windows
@@ -138,7 +157,8 @@ function defaultCaptureSprite(cid) {
  * @param {object} [opts]
  * @param {object|Array} [opts.itemDefinitionsByCid={}] - 12,536 defs; a def is
  *   {properties: {name, article, type, weight, runeSpellName}} or a plain map
- * @param {Array<object>} [opts.npcTrades=[]] - 279 raw trade rows
+ * @param {Array<object>|object} [opts.npcTrades=[]] - 279 raw trade rows; an
+ *   ARRAY or an OBJECT of trade rows (normalizeTrades handles both shapes)
  * @param {(cid: string) => string|null} [opts.captureSprite] - sprite strategy;
  *   must not throw
  * @param {{warn?: Function, log?: Function}} [opts.log] - log sinks
@@ -147,7 +167,7 @@ function defaultCaptureSprite(cid) {
  */
 function buildCatalog(opts = {}) {
   const defs = opts.itemDefinitionsByCid || {};
-  const trades = Array.isArray(opts.npcTrades) ? opts.npcTrades : [];
+  const trades = normalizeTrades(opts.npcTrades);
   const capture = typeof opts.captureSprite === 'function' ? opts.captureSprite : null;
   const log = opts.log || {};
   const warn = typeof log.warn === 'function' ? log.warn.bind(log)
@@ -269,6 +289,7 @@ function consoleSnippet() {
     + "'use strict';\n"
     + "// Minibia catalog extraction (REQ-10) — self-contained page-context runner.\n"
     + "const normalizeTrade = " + normalizeTrade.toString() + ";\n"
+    + "const normalizeTrades = " + normalizeTrades.toString() + ";\n"
     + "const defaultCaptureSprite = " + defaultCaptureSprite.toString() + ";\n"
     + "const buildCatalog = " + buildCatalog.toString() + ";\n"
     + "const validateCatalog = " + validateCatalog.toString() + ";\n"
@@ -279,7 +300,7 @@ function consoleSnippet() {
     + "}\n"
     + "const result = buildCatalog({\n"
     + "  itemDefinitionsByCid: gc.itemDefinitionsByCid,\n"
-    + "  npcTrades: Array.isArray(gc.npcTrades) ? gc.npcTrades : [],\n"
+    + "  npcTrades: gc.npcTrades,\n"
     + "  captureSprite: defaultCaptureSprite,\n"
     + "  log: console,\n"
     + "});\n"
@@ -298,6 +319,12 @@ function consoleSnippet() {
     + "a.click();\n"
     + "a.remove();\n"
     + "setTimeout(function () { URL.revokeObjectURL(url); }, 10000);\n"
+    + "try {\n"
+    + "  localStorage.setItem('mb-catalog', JSON.stringify(result.entries));\n"
+    + "  console.log('extract-catalog: catalog seeded into localStorage (mb-catalog) — the bot reads it first on next load (REQ-10).');\n"
+    + "} catch (e) {\n"
+    + "  console.warn('extract-catalog: could not seed localStorage mb-catalog (' + (e && e.message ? e.message : e) + ') — the download still works (REQ-10).');\n"
+    + "}\n"
     + "console.log('extract-catalog: catalog.json downloaded — '\n"
     + "  + result.stats.total + ' entries, ' + result.stats.captured + ' with images, '\n"
     + "  + result.stats.failed + ' sprite failures, ' + result.stats.trades + ' trades (REQ-10)');\n"
@@ -318,11 +345,11 @@ function usageText() {
     '  1. Install minibia-rotation-bot.user.js in Tampermonkey.',
     '  2. Open https://minibia.com/play and log in.',
     '  3. Open the browser console (F12) and paste the snippet printed below.',
-    '  4. It walks itemDefinitionsByCid + npcTrades, captures sprites when cheaply',
-    '     possible (failures are logged, entry keeps a null image) and downloads',
-    '     catalog.json via Blob.',
-    '  5. Save catalog.json where the bot can fetch it same-origin (the bot reads',
-    '     "catalog.json" relative to the page; until it is reachable the bot runs',
+    '  4. It walks itemDefinitionsByCid + npcTrades (array OR object-shaped), captures sprites when',
+    '     cheaply possible (failures are logged, entry keeps a null image), seeds the catalog into',
+    '     localStorage (mb-catalog, best-effort) and downloads catalog.json via Blob.',
+    '  5. The bot reads the seeded localStorage catalog first on start; the same-origin "catalog.json"',
+    '     fetch is the fallback for future hosted deployments. Until either is available the bot runs',
     '     in keybind-only mode with a warning — REQ-11).',
     '',
     'Re-running the snippet is safe: each run overwrites cleanly (idempotent).',
@@ -345,6 +372,7 @@ if (require.main === module) {
 module.exports = {
   buildCatalog,
   normalizeTrade,
+  normalizeTrades,
   validateCatalog,
   defaultCaptureSprite,
   consoleSnippet,

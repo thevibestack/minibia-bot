@@ -55,6 +55,9 @@ function makePage(overrides = {}) {
   };
   dom.window.gameClient = gameClient;
   dom.window.localStorage.setItem('mb-config', JSON.stringify(config));
+  if (overrides.seedCatalog) {
+    dom.window.localStorage.setItem('mb-catalog', JSON.stringify(overrides.seedCatalog));
+  }
   dom.window.__mbBootConfig = { pollIntervalMs: 5, readyTimeoutMs: 2000 };
   dom.window.eval(BUNDLE);
   return { dom, casts, config };
@@ -237,6 +240,24 @@ test('REQ-09: echo miss increments the validation-misses counter (no refire)', a
       'miss counted after the echo window expires (REQ-09)',
     );
     assert.equal(casts.length, 5, 'miss does NOT refire the action (REQ-09)');
+  } finally {
+    teardown(dom);
+  }
+});
+
+test('REQ-10/11: seeded mb-catalog localStorage -> full catalog mode (no keybind-only warning)', async () => {
+  const { dom } = makePage({
+    seedCatalog: [{ cid: 3582, name: 'seasoned ham', imageDataURL: null, npcTrades: [] }],
+  });
+  try {
+    const bot = dom.window.__minibiaBot;
+    assert.equal(await waitFor(() => bot.isReady()), true);
+    assert.equal(bot.getState().catalogMode, 'full', 'localStorage seed wins over the fetch fallback');
+    const warnings = Array.from(bot.getState().warnings);
+    assert.ok(
+      warnings.every((w) => !/keybind-only mode \(REQ-11\)/.test(w)),
+      'no keybind-only warning when the seed is valid',
+    );
   } finally {
     teardown(dom);
   }

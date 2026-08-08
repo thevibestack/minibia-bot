@@ -65,9 +65,11 @@ const HEADER = `// ==UserScript==
  *    script (it is built from live game data). Run
  *        node tools/extract-catalog.js
  *    and paste the printed snippet into the minibia.com/play console (logged
- *    in). It downloads catalog.json; make it fetchable from the same origin
- *    (the bot fetches "catalog.json" relative to the page). Until then the
- *    bot runs in keybind-only mode with a warning (REQ-10/11).
+ *    in). It seeds the catalog into localStorage (mb-catalog) AND downloads
+ *    catalog.json. The bot reads the seed first on start; the same-origin
+ *    "catalog.json" fetch is the fallback for future hosted deployments.
+ *    Until either is available the bot runs in keybind-only mode with a
+ *    warning (REQ-10/11).
  * 3. CONFIGURE — use the floating panel: add spell rows (slot, threshold,
  *    reserve, repeat, order, word), set the food entry, jitter range and
  *    firing mode, then press Save.
@@ -624,7 +626,11 @@ const BOOTSTRAP = `/* ==========================================================
           gm: win.GM,
           storage: opts.localStorage !== undefined ? opts.localStorage : win.localStorage,
         });
-        state.catalog = await CATALOG_MOD.loadCatalog('catalog.json', { fetch: fetchImpl, log: logSinks });
+        state.catalog = await CATALOG_MOD.loadCatalog('catalog.json', {
+          fetch: fetchImpl,
+          storage: opts.localStorage !== undefined ? opts.localStorage : win.localStorage,
+          log: logSinks,
+        });
         if (!state.catalog || state.catalog === 'corrupt') {
           state.catalog = null;
           warn('catalog unavailable — keybind-only mode (REQ-11)');

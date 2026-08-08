@@ -3,14 +3,19 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
-const { loadCatalog, normalizeEntries } = require('../../src/adapters/catalog');
+const { loadCatalog, normalizeEntries, readStoredCatalog, STORAGE_KEY } = require('../../src/adapters/catalog');
 
 function jsonResponse(data, { ok = true, status = 200 } = {}) {
   return { ok, status, json: async () => data };
 }
 
-function loadWith(fetchImpl, { url = 'catalog.json', log = {} } = {}) {
-  return loadCatalog(url, { fetch: fetchImpl, log });
+/** Minimal Storage-like object over a plain map (getItem contract only). */
+function storageWith(map) {
+  return { getItem: (k) => (k in map ? map[k] : null) };
+}
+
+function loadWith(fetchImpl, { url = 'catalog.json', log = {}, storage } = {}) {
+  return loadCatalog(url, { fetch: fetchImpl, log, storage });
 }
 
 test('REQ-11: loads and normalizes catalog entries from same-origin fetch', async () => {
@@ -116,4 +121,85 @@ test('normalizeEntries: object without usable values -> null', () => {
   assert.equal(normalizeEntries('x'), null);
   assert.equal(normalizeEntries({}), null);
   assert.equal(normalizeEntries([{ id: null, name: 'no-id' }]), null, 'null id rejected');
+});
+
+test('REQ-10/11: localStorage seed (mb-catalog) wins — fetch is never called', async () => {
+  const entries = [
+    { cid: 3582, name: 'seasoned ham', imageDataURL: null, npcTrades: [] },
+    { cid: 24, name: 'adori', imageDataURL: null, npcTrades: [] },
+  ];
+  const result = await loadWith(
+    async () => { throw new Error('fetch must not be called when the seed is valid'); },
+    { storage: storageWith({ [STORAGE_KEY]: JSON.stringify(entries) }) },
+  );
+  assert.equal(result.length, 2);
+  assert.equal(result[0].name, 'seasoned ham');
+  assert.equal(result[1].runeSpellName, null);
+});
+
+test('REQ-11: corrupt stored JSON falls through to the fetch fallback', async () => {
+  const warns = [];
+  const fetchImpl = async () => jsonResponse([{ cid: 1, name: 'from fetch' }]);
+  const result = await loadWith(fetchImpl, {
+    storage: storageWith({ [STORAGE_KEY]: '{not json' }),
+    log: { warn: (m) => warns.push(m) },
+  });
+  assert.equal(result.length, 1);
+  assert.equal(result[0].name, 'from fetch');
+  assert.equal(warns.length, 1);
+  assert.match(warns[0], /stored mb-catalog is corrupt JSON/);
+});
+
+test('REQ-11: empty stored catalog (no usable entries) falls through to fetch', async () => {
+  const fetchImpl = async () => jsonResponse([{ cid: 7, name: 'rope' }]);
+  const result = await loadWith(fetchImpl, {
+    storage: storageWith({ [STORAGE_KEY]: JSON.stringify([]) }),
+  });
+  assert.equal(result.length, 1);
+  assert.equal(result[0].name, 'rope');
+});
+
+test('REQ-11: corrupt seed AND fetch 404 -> corrupt + warning (keybind-only)', async () => {
+  const warns = [];
+  const result = await loadWith(
+    async () => jsonResponse(null, { ok: false, status: 404 }),
+    {
+      storage: storageWith({ [STORAGE_KEY]: 'garbage' }),
+      log: { warn: (m) => warns.push(m) },
+    },
+  );
+  assert.equal(result, 'corrupt');
+  assert.ok(warns.some((m) => /stored mb-catalog is corrupt JSON/.test(m)));
+  assert.ok(warns.some((m) => /keybind-only mode \(REQ-11\)/.test(m)));
+});
+
+test('REQ-11: absent seed key -> fetch used silently (no storage warning)', async () => {
+  const warns = [];
+  const fetchImpl = async () => jsonResponse([{ cid: 3, name: 'wrench' }]);
+  const result = await loadWith(fetchImpl, { storage: storageWith({}), log: { warn: (m) => warns.push(m) } });
+  assert.equal(result.length, 1);
+  assert.equal(warns.length, 0, 'absence is silent — fetch fallback is the expected first-run path');
+});
+
+test('REQ-11: storage read failure -> warning + fetch fallback', async () => {
+  const warns = [];
+  const fetchImpl = async () => jsonResponse([{ cid: 9, name: 'torch' }]);
+  const brokenStorage = { getItem: () => { throw new Error('SecurityError'); } };
+  const result = await loadWith(fetchImpl, { storage: brokenStorage, log: { warn: (m) => warns.push(m) } });
+  assert.equal(result.length, 1);
+  assert.equal(result[0].name, 'torch');
+  assert.match(warns[0], /localStorage read failed/);
+});
+
+test('readStoredCatalog: returns null on absence and validates stored payloads', () => {
+  const noWarn = () => {};
+  assert.equal(readStoredCatalog(null, noWarn), null, 'no storage -> null');
+  assert.equal(readStoredCatalog({ getItem: () => null }, noWarn), null, 'absent key -> null');
+  assert.equal(readStoredCatalog({ getItem: () => 'not-json' }, noWarn), null, 'corrupt JSON -> null');
+  const entries = readStoredCatalog(
+    { getItem: () => JSON.stringify([{ cid: 1, name: 'ok' }, { name: 'no-cid' }]) },
+    noWarn,
+  );
+  assert.equal(entries.length, 1, 'invalid entries filtered like the fetch path');
+  assert.equal(entries[0].name, 'ok');
 });

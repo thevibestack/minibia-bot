@@ -6,6 +6,7 @@ const assert = require('node:assert/strict');
 const {
   buildCatalog,
   normalizeTrade,
+  normalizeTrades,
   validateCatalog,
   defaultCaptureSprite,
   consoleSnippet,
@@ -103,6 +104,36 @@ test('REQ-10: trade rows without a usable cid/npc are skipped', () => {
   assert.ok(entries.every((e) => e.npcTrades.length === 0));
 });
 
+test('REQ-10: OBJECT-shaped npcTrades (observed live shape) are normalized onto entries', () => {
+  // gameClient.npcTrades is an object keyed by trade index (~279 numeric-ish keys).
+  const trades = {
+    '0': { itemCid: 3582, npcName: 'Rashid', price: 85, buy: false, sell: true },
+    '1': { cid: '3582', npc: 'Arito', cost: 90, isBuy: true, sell: false },
+    '2': { itemId: 24, trader: 'Gorn', price: 100 },
+    '3': null, // junk values must not crash the grouping
+  };
+  const { entries, stats } = buildCatalog({
+    itemDefinitionsByCid: sampleDefs(),
+    npcTrades: trades,
+    captureSprite: () => null,
+  });
+  assert.equal(stats.trades, 3, 'object values feed the same grouping as an array');
+  const ham = entries.find((e) => String(e.cid) === '3582');
+  assert.equal(ham.npcTrades.length, 2);
+  assert.deepEqual(ham.npcTrades[0], { npc: 'Rashid', price: 85, buy: false, sell: true });
+  assert.deepEqual(ham.npcTrades[1], { npc: 'Arito', price: 90, buy: true, sell: false });
+  assert.equal(entries.find((e) => String(e.cid) === '24').npcTrades[0].npc, 'Gorn');
+});
+
+test('REQ-10: normalizeTrades handles array, object and junk sources', () => {
+  const row = { itemCid: 1, npcName: 'Arito' };
+  assert.deepEqual(normalizeTrades([row, null]), [row, null], 'array passes through as-is (junk filtered later by normalizeTrade)');
+  assert.deepEqual(normalizeTrades({ a: row, b: null, c: 'x' }), [row], 'object values extracted, junk dropped');
+  assert.deepEqual(normalizeTrades(null), []);
+  assert.deepEqual(normalizeTrades('nope'), []);
+  assert.deepEqual(normalizeTrades(42), []);
+});
+
 test('REQ-10: definitions without a name are skipped; only named entries count', () => {
   const { entries, stats } = buildCatalog({
     itemDefinitionsByCid: {
@@ -157,13 +188,16 @@ test('console snippet: embeds the pure functions and drives the page flow', () =
   const snippet = consoleSnippet();
   assert.match(snippet, /function buildCatalog/);
   assert.match(snippet, /function normalizeTrade/);
+  assert.match(snippet, /function normalizeTrades/);
   assert.match(snippet, /function defaultCaptureSprite/);
   assert.match(snippet, /function validateCatalog/);
   assert.match(snippet, /itemDefinitionsByCid/);
-  assert.match(snippet, /npcTrades/);
+  assert.match(snippet, /npcTrades: gc\.npcTrades/, 'raw npcTrades passed (buildCatalog normalizes both shapes)');
   assert.match(snippet, /toDataURL/);
   assert.match(snippet, /new Blob/);
   assert.match(snippet, /download = 'catalog\.json'/);
+  assert.match(snippet, /setItem\('mb-catalog', JSON\.stringify\(result\.entries\)\)/, 'seed into localStorage (REQ-10)');
+  assert.match(snippet, /the download still works \(REQ-10\)/, 'quota failure is non-fatal');
   assert.match(snippet, /null image \(REQ-10\)/);
   assert.doesNotMatch(snippet, /require\(/, 'snippet is self-contained');
   assert.doesNotMatch(snippet, /[`]/, 'no backticks (safe for console pasting)');
@@ -174,6 +208,8 @@ test('node shim: usage text covers install -> run-once steps and idempotency', (
   assert.match(usage, /Install minibia-rotation-bot\.user\.js/);
   assert.match(usage, /paste the snippet/);
   assert.match(usage, /downloads\s+catalog\.json/);
+  assert.match(usage, /seeds the catalog into/);
+  assert.match(usage, /reads the seeded localStorage catalog first/);
   assert.match(usage, /idempotent/);
   assert.match(usage, /keybind-only mode/);
 });
