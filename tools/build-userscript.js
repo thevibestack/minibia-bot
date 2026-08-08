@@ -70,14 +70,19 @@ const HEADER = `// ==UserScript==
  *    "catalog.json" fetch is the fallback for future hosted deployments.
  *    Until either is available the bot runs in keybind-only mode with a
  *    warning (REQ-10/11).
- * 3. CONFIGURE — use the floating panel: add spell rows (slot, threshold,
- *    reserve, repeat, order, word), set the food entry (slot, cid, warning
- *    window, fallback interval, and optional "eat every N casts" forced
- *    cadence — 0 = off, otherwise the bot presses the food key and eats every
- *    N confirmed magic casts, bypassing the SATED pre-check), jitter range and
- *    firing mode, then press Save.
- * 4. START — press Start; Pause freezes the counters (REQ-14); Reset stops
- *    the engine AND clears every mb-* key (persisted config + state, REQ-12).
+ * 3. CONFIGURE — the panel opens as a 5-step wizard: (1) welcome with the
+ *    detected character, (2) pick the hotbar slot + spell word (search the
+ *    catalog by name with images, or type the word yourself), (3) when to
+ *    cast (mana threshold + how much mana to keep saved), (4) how many casts
+ *    before switching + optional food automation ("eat every N casts" — 0 =
+ *    by food timer only; food slot empty = food automation off), (5) review
+ *    the plain-language summary and press Start playing. The panel collapses
+ *    to a small bar (bot state, mana, casts) and hides behind a tiny handle,
+ *    so it never blocks the game. Advanced options (firing mode, random
+ *    delay range, food timer window/fallback) sit under the review step.
+ * 4. START — press Start playing (or Start); Pause freezes the counters
+ *    (REQ-14); Reset stops the engine AND clears every mb-* key (persisted
+ *    config + state, REQ-12).
  *
  * NOTE: Reset is destructive — it wipes your saved configuration too.
  * ------------------------------------------------------------------------- */
@@ -554,6 +559,8 @@ const BOOTSTRAP = `/* ==========================================================
         maxMana: stats.maxMana,
         health: stats.health,
         status,
+        playerName: state.playerName,
+        casts: state.hud ? state.hud.getCounters().casts : 0,
         nextAction: ctx.nextAction || null,
         foodSec,
         cooldownSec,
@@ -664,7 +671,13 @@ const BOOTSTRAP = `/* ==========================================================
 
         state.hud = HUD_MOD.createHud({
           document: doc,
-          getSnapshot: buildSnapshot,
+          getSnapshot: function () {
+            // The mini bar / status dot live off the SAME 500ms cadence —
+            // no extra timers, no layout thrash (paintMini only writes text).
+            const snap = buildSnapshot();
+            if (state.ui) state.ui.paintMini(snap);
+            return snap;
+          },
           cadenceMs: 500,
           schedule: setIntervalFn,
           clear: clearIntervalFn,

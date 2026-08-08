@@ -371,3 +371,62 @@ test('food.everyCasts: forced eat fires after N confirmed casts, then the counte
     teardown(dom);
   }
 });
+
+test('wizard: configure through the wizard, Start playing saves the config and runs the bot', async () => {
+  const { dom, casts } = makePage();
+  try {
+    const bot = dom.window.__minibiaBot;
+    const d = dom.window.document;
+    assert.equal(await waitFor(() => bot.isReady()), true);
+
+    // Seeded config pre-fills the wizard (slot 4 / adori) — walk 1 -> 5.
+    for (let i = 0; i < 4; i++) d.querySelector('[data-ui-wizard-next]').click();
+    assert.match(d.querySelector('[data-ui-step-indicator]').textContent, /Step 5 of 5/);
+    d.querySelector('[data-ui-start]').click(); // Start playing
+
+    assert.equal(
+      await waitFor(() => casts.length >= 1, { timeout: 6000 }),
+      true,
+      'engine starts after Start playing',
+    );
+    const persisted = JSON.parse(dom.window.localStorage.getItem('mb-config'));
+    assert.equal(persisted.spells[0].slot, 4, 'wizard values persisted');
+    assert.equal(d.querySelector('[data-ui-run]').style.display, '', 'run view shown after start');
+    assert.equal(d.querySelector('[data-ui-wizard]').style.display, 'none', 'wizard hidden after start');
+  } finally {
+    teardown(dom);
+  }
+});
+
+test('panel: minimize while running keeps the mini bar live; expand restores', async () => {
+  const { dom, casts } = makePage();
+  try {
+    const bot = dom.window.__minibiaBot;
+    const d = dom.window.document;
+    assert.equal(await waitFor(() => bot.isReady()), true);
+    bot.start();
+    assert.equal(await waitFor(() => casts.length === 5, { timeout: 6000 }), true);
+
+    d.querySelector('[data-ui-minimize]').click();
+    assert.equal(d.querySelector('[data-ui-body]').style.display, 'none');
+    assert.equal(d.querySelector('[data-ui-mini]').style.display, 'flex');
+
+    // The mini bar rides the HUD cadence: casts counter stays live.
+    assert.equal(
+      await waitFor(() => d.querySelector('[data-ui-mini-casts]').textContent === '5 casts', { timeout: 4000 }),
+      true,
+      'mini bar shows the live casts counter while running',
+    );
+    assert.equal(
+      await waitFor(() => d.querySelector('[data-ui-mini-mana]').textContent === '100/120', { timeout: 4000 }),
+      true,
+      'mini bar shows live mana',
+    );
+
+    d.querySelector('[data-ui-mini-expand]').click();
+    assert.equal(d.querySelector('[data-ui-body]').style.display, '');
+    assert.equal(d.querySelector('[data-ui-mini]').style.display, 'none');
+  } finally {
+    teardown(dom);
+  }
+});
