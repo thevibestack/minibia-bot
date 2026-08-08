@@ -15,13 +15,22 @@
  *   {
  *     id: string,
  *     order?: number,                    // lower runs first; defaults to index
+ *     kind?: 'cast',                     // cast-kind rules advance the global
+ *                                       // casts-since-food counter (forced eat
+ *                                       // cadence) when their action returns
+ *                                       // true (confirmed execution)
  *     condition: (ctx) => boolean,       // is this rule feasible this tick?
- *     action: (ctx) => void,             // side effect; at most one per tick
+ *     action: (ctx) => boolean|void,     // side effect; at most one per tick.
+ *                                       // cast-kind rules MUST return true to
+ *                                       // confirm the cast actually executed
  *     repeat?: number,                   // executions before completion (default 1)
  *   }
  *
  * The shared `ctx` is a mutable context object (mana, cooldowns, timers, ...)
- * that conditions read and actions write.
+ * that conditions read and actions write. Cast-kind executions are tracked in
+ * `ctx.castsSinceFood`: incremented ONLY when the rule fires AND its action
+ * confirms execution (returns true) — skipped/infeasible rules never advance
+ * it. The EatFood rule consumes it for the every-N-casts cadence.
  */
 
 /**
@@ -77,7 +86,13 @@ function createEngine({ rules = [], ctx = {} } = {}) {
       if (st.executions >= (rule.repeat ?? 1)) {
         st.completed = true;
       }
-      rule.action(ctx);
+      const confirmed = rule.action(ctx) === true;
+      if (rule.kind === 'cast' && confirmed) {
+        // Forced eat cadence (food.everyCasts): count only casts that actually
+        // executed — skipped rules never reach this line, and a cast-kind
+        // action returning false means the fire path did not run.
+        ctx.castsSinceFood = (ctx.castsSinceFood || 0) + 1;
+      }
       for (let j = i + 1; j < ordered.length; j++) {
         deferred.push(ordered[j].id);
       }

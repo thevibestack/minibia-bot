@@ -25,6 +25,7 @@ function makePage(overrides = {}) {
     runScripts: 'dangerously',
   });
   const casts = [];
+  const uses = [];
   const gameClient = {
     player: {
       name: 'Flamamex',
@@ -36,11 +37,21 @@ function makePage(overrides = {}) {
       conditions: { has: (k) => (k === 'SATED' ? false : false) },
     },
     interface: {
-      hotbarManager: { __handleClick: (slot) => casts.push(slot) },
+      hotbarManager: {
+        __handleClick: (slot) => {
+          casts.push(slot);
+          // Optional mana depletion so a repeat spell eventually becomes
+          // infeasible and the every-Casts eat rule gets a tick.
+          if (overrides.depleteMana) {
+            gameClient.player.state.mana = Math.max(0, gameClient.player.state.mana - 20);
+          }
+        },
+      },
       channelManager: {
         getChannel: () => ({ __contents: overrides.chatContents ?? [] }),
       },
     },
+    mouse: { use: (args) => uses.push(args) },
     npcTrades: [],
     itemDefinitionsByCid: {},
   };
@@ -51,7 +62,7 @@ function makePage(overrides = {}) {
     spells: overrides.spells ?? [
       { slot: 4, word: 'adori', validationWord: 'adori', threshold: 20, reserve: 0, repeat: 5, order: 1, cooldownMs: 0, sid: 24 },
     ],
-    food: { slot: null, cid: null, name: '', warningWindowSec: 60, fallbackIntervalSec: 10 },
+    food: overrides.food ?? { slot: null, cid: null, name: '', warningWindowSec: 60, fallbackIntervalSec: 10 },
   };
   dom.window.gameClient = gameClient;
   dom.window.localStorage.setItem('mb-config', JSON.stringify(config));
@@ -60,7 +71,7 @@ function makePage(overrides = {}) {
   }
   dom.window.__mbBootConfig = { pollIntervalMs: 5, readyTimeoutMs: 2000 };
   dom.window.eval(BUNDLE);
-  return { dom, casts, config };
+  return { dom, casts, uses, config };
 }
 
 /** Tear down a page: destroy the bot (stops its timers) and close the window. */
@@ -312,6 +323,50 @@ test('4.3: destroy removes the panel and stops the engine', async () => {
     const len = casts.length;
     await new Promise((r) => setTimeout(r, 500));
     assert.equal(casts.length, len, 'ticker stopped after destroy');
+  } finally {
+    teardown(dom);
+  }
+});
+
+test('food.everyCasts: forced eat fires after N confirmed casts, then the counter resets', async () => {
+  const { dom, casts, uses } = makePage({
+    spells: [
+      { slot: 4, word: '', validationWord: '', threshold: 30, reserve: 0, repeat: 999, order: 1, cooldownMs: 0, sid: 24 },
+    ],
+    food: { slot: 1, cid: 3582, name: 'seasoned ham', warningWindowSec: 60, fallbackIntervalSec: 10, everyCasts: 3 },
+    depleteMana: true,
+  });
+  try {
+    const bot = dom.window.__minibiaBot;
+    assert.equal(await waitFor(() => bot.isReady()), true);
+    bot.start();
+
+    // Mana 100 -> 20 (cost 20): exactly 4 casts land, counter reaches 4 >= 3.
+    assert.equal(await waitFor(() => casts.length === 4, { timeout: 6000 }), true, 'N casts land');
+
+    // With the cast rule infeasible, the eat rule fires once: forced attempt.
+    assert.equal(
+      await waitFor(() => dom.window.document.querySelector('[data-hud-eats]').textContent === '1', { timeout: 6000 }),
+      true,
+      'forced eat executed after N casts',
+    );
+    // Values live in the jsdom realm — normalize before comparing.
+    assert.deepEqual(
+      uses.map((u) => ({ which: u.which, index: u.index })),
+      [{ which: 3, index: 1 }],
+      'eat attempted via mouse.use on the food slot',
+    );
+
+    // Counter reset: the HUD shows the full cadence again (REQ-14) and the
+    // eat rule does not refire while the counter is below N.
+    assert.equal(
+      await waitFor(() => dom.window.document.querySelector('[data-hud-every-casts]').textContent === 'every 3 (rem 3)'),
+      true,
+      'HUD surfaces the cadence with the reset counter',
+    );
+    await new Promise((r) => setTimeout(r, 500));
+    assert.equal(uses.length, 1, 'no refire while the counter is below N');
+    assert.equal(casts.length, 4, 'no extra casts after mana depletes');
   } finally {
     teardown(dom);
   }

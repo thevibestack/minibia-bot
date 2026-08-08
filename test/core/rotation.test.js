@@ -187,3 +187,85 @@ test('REQ-03: rules without explicit order use array order', () => {
   });
   assert.equal(engine.tick().fired, 'first');
 });
+
+test('food.everyCasts: confirmed cast-kind executions increment ctx.castsSinceFood', () => {
+  const ctx = { mana: 100 };
+  const engine = createEngine({
+    rules: [
+      { id: 'cast-a', kind: 'cast', order: 1, repeat: 3, condition: () => true, action: () => true },
+    ],
+    ctx,
+  });
+  engine.tick();
+  engine.tick();
+  engine.tick();
+  assert.equal(ctx.castsSinceFood, 3, 'one increment per confirmed cast');
+});
+
+test('food.everyCasts: skipped, unconfirmed and non-cast rules never advance the counter', () => {
+  // Action returns false (fire path did not run) -> no increment.
+  const ctx1 = { mana: 100 };
+  const e1 = createEngine({
+    rules: [{ id: 'c', kind: 'cast', order: 1, condition: () => true, action: () => false }],
+    ctx: ctx1,
+  });
+  e1.tick();
+  assert.equal(ctx1.castsSinceFood, undefined);
+
+  // Condition false -> rule skipped, counter untouched.
+  const ctx2 = {};
+  const e2 = createEngine({
+    rules: [{ id: 'c', kind: 'cast', order: 1, condition: () => false, action: () => true }],
+    ctx: ctx2,
+  });
+  e2.tick();
+  assert.equal(ctx2.castsSinceFood, undefined);
+
+  // Non-cast rules (e.g. eat) never advance the counter even when confirmed.
+  const ctx3 = {};
+  const e3 = createEngine({
+    rules: [{ id: 'eat-food', order: 1, condition: () => true, action: () => true }],
+    ctx: ctx3,
+  });
+  e3.tick();
+  assert.equal(ctx3.castsSinceFood, undefined);
+});
+
+test('food.everyCasts: eat rule fires when the counter reaches N, then the counter resets', () => {
+  const ctx = { mana: 100 };
+  const eats = [];
+  const engine = createEngine({
+    rules: [
+      {
+        id: 'cast-a',
+        kind: 'cast',
+        order: 1,
+        repeat: 99,
+        condition: () => ctx.mana > 40,
+        action: () => {
+          ctx.mana -= 20;
+          return true;
+        },
+      },
+      {
+        id: 'eat-food',
+        order: 2,
+        repeat: 1,
+        condition: () => (ctx.castsSinceFood || 0) >= 3,
+        action: () => {
+          eats.push(ctx.castsSinceFood);
+          ctx.castsSinceFood = 0;
+        },
+      },
+    ],
+    ctx,
+  });
+
+  assert.equal(engine.tick().fired, 'cast-a'); // mana 100 -> 80, counter 1
+  assert.equal(engine.tick().fired, 'cast-a'); // 80 -> 60, counter 2
+  assert.equal(engine.tick().fired, 'cast-a'); // 60 -> 40, counter 3
+  assert.equal(engine.tick().fired, 'eat-food', 'cast infeasible now; eat fires at the threshold');
+  assert.deepEqual(eats, [3], 'eat ran with the counter at N');
+  assert.equal(ctx.castsSinceFood, 0, 'counter reset after the forced eat');
+  assert.equal(engine.tick().fired, null, 'no refire while the counter is below N');
+});

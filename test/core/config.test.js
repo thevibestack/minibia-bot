@@ -119,6 +119,38 @@ test('food defaults and overrides', () => {
   assert.equal(config.food.fallbackIntervalSec, 5);
 });
 
+test('food.everyCasts: default is 0 (forced cadence disabled)', () => {
+  const { config } = normalizeConfig({}, {}, 120);
+  assert.equal(config.food.everyCasts, 0);
+});
+
+test('food.everyCasts: valid non-negative integer overrides accepted', () => {
+  const { config, errors } = normalizeConfig({ food: { everyCasts: 5 } }, {}, 120);
+  assert.equal(config.food.everyCasts, 5);
+  assert.deepEqual(errors, []);
+  const zero = normalizeConfig({ food: { everyCasts: 0 } }, { food: { everyCasts: 7 } }, 120);
+  assert.equal(zero.config.food.everyCasts, 0, '0 explicitly disables the cadence');
+});
+
+test('food.everyCasts: negative and fractional values rejected, previous kept (REQ-12 pattern)', () => {
+  const prev = { food: { everyCasts: 7 } };
+  const neg = normalizeConfig({ food: { everyCasts: -2 } }, prev, 120);
+  assert.equal(neg.config.food.everyCasts, 7, 'previous value kept on negative');
+  assert.equal(neg.errors.length, 1);
+  assert.match(neg.errors[0], /everyCasts -2 is invalid/);
+
+  const frac = normalizeConfig({ food: { everyCasts: 2.5 } }, prev, 120);
+  assert.equal(frac.config.food.everyCasts, 7, 'previous value kept on fractional');
+  assert.equal(frac.errors.length, 1);
+  assert.match(frac.errors[0], /everyCasts 2.5 is invalid/);
+});
+
+test('food.everyCasts: invalid value with no previous entry falls back to default 0', () => {
+  const { config, errors } = normalizeConfig({ food: { everyCasts: -1 } }, {}, 120);
+  assert.equal(config.food.everyCasts, 0);
+  assert.equal(errors.length, 1);
+});
+
 test('validation overrides', () => {
   const { config } = normalizeConfig(
     { validation: { enabled: false, windowMs: 1000, pollMs: 50 } },

@@ -71,7 +71,10 @@ const HEADER = `// ==UserScript==
  *    Until either is available the bot runs in keybind-only mode with a
  *    warning (REQ-10/11).
  * 3. CONFIGURE — use the floating panel: add spell rows (slot, threshold,
- *    reserve, repeat, order, word), set the food entry, jitter range and
+ *    reserve, repeat, order, word), set the food entry (slot, cid, warning
+ *    window, fallback interval, and optional "eat every N casts" forced
+ *    cadence — 0 = off, otherwise the bot presses the food key and eats every
+ *    N confirmed magic casts, bypassing the SATED pre-check), jitter range and
  *    firing mode, then press Save.
  * 4. START — press Start; Pause freezes the counters (REQ-14); Reset stops
  *    the engine AND clears every mb-* key (persisted config + state, REQ-12).
@@ -344,7 +347,7 @@ const BOOTSTRAP = `/* ==========================================================
             document: doc,
             log: logSinks,
           });
-          if (!fired) return;
+          if (!fired) return false;
           ctx.lastFiredAt = ctx.lastFiredAt || {};
           ctx.lastFiredAt[spell.slot] = Date.now();
           state.hud.increment('casts');
@@ -353,17 +356,26 @@ const BOOTSTRAP = `/* ==========================================================
             state.lastFiredWord = spell.word;
             state.validator.start('slot-' + spell.slot); // REQ-09 words-path echo check
           }
+          return true; // confirmed execution — advances the every-Casts cadence counter
         },
+        kind: 'cast',
         repeat: Math.max(1, Number(spell.repeat) || 1),
       };
     }
 
     function makeEatRule(foodCfg) {
+      const everyCasts = Number(foodCfg.everyCasts) || 0; // 0 = disabled
       return {
         id: 'eat-food',
         order: 1000, // after the configured spell order
         condition: function (ctx) {
           if (state.eater.isPaused()) return false;
+          if (everyCasts > 0) {
+            // Forced cadence (user-requested every-N-casts mode): eat when N
+            // confirmed magic casts have landed since the last forced eat.
+            // Timer/SATED logic is bypassed in this mode.
+            return (ctx.castsSinceFood || 0) >= everyCasts;
+          }
           const fs = readFoodState(foodCfg);
           if (fs.eat === true) return true;
           if (fs.eat === false) return false;
@@ -371,7 +383,9 @@ const BOOTSTRAP = `/* ==========================================================
           return elapsed >= (foodCfg.fallbackIntervalSec || 10) * 1000; // REQ-06
         },
         action: function (ctx) {
-          const res = state.eater.eatFood(resolveFoodItem(foodCfg));
+          const opts = everyCasts > 0 ? { force: true } : {};
+          const res = state.eater.eatFood(resolveFoodItem(foodCfg), opts);
+          if (everyCasts > 0) ctx.castsSinceFood = 0; // forced cadence resets after the attempt
           if (res.result === 'ate') {
             ctx.lastEatAt = Date.now();
             state.hud.increment('eats');
@@ -543,6 +557,8 @@ const BOOTSTRAP = `/* ==========================================================
         nextAction: ctx.nextAction || null,
         foodSec,
         cooldownSec,
+        everyCasts: (state.config && state.config.food && Number(state.config.food.everyCasts)) || 0,
+        castsSinceFood: ctx.castsSinceFood || 0,
       };
     }
 

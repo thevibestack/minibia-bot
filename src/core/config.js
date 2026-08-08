@@ -17,7 +17,7 @@ const { clampJitter } = require('./jitter');
  *   firing: { mode: 'handleClick' | 'keyboard' },
  *   validation: { enabled, windowMs, pollMs },
  *   spells: [{ slot, word, validationWord, threshold, reserve, repeat, order, cooldownMs, sid }],
- *   food: { slot, cid, name, warningWindowSec, fallbackIntervalSec },
+ *   food: { slot, cid, name, warningWindowSec, fallbackIntervalSec, everyCasts },
  * }
  */
 
@@ -26,7 +26,7 @@ const DEFAULT_CONFIG = Object.freeze({
   firing: { mode: 'handleClick' },
   validation: { enabled: true, windowMs: 2500, pollMs: 100 },
   spells: [],
-  food: { slot: null, cid: null, name: '', warningWindowSec: 60, fallbackIntervalSec: 10 },
+  food: { slot: null, cid: null, name: '', warningWindowSec: 60, fallbackIntervalSec: 10, everyCasts: 0 },
 });
 
 const FIRING_MODES = new Set(['handleClick', 'keyboard']);
@@ -42,6 +42,29 @@ function toSlot(value) {
   if (value === null || value === undefined || value === '') return null;
   const n = Number(value);
   return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * Normalize `food.everyCasts` (forced eat cadence): a non-negative integer,
+ * where 0 disables the cadence. On invalid input (negative, fractional,
+ * non-numeric) the previous persisted value is kept and an inline error is
+ * recorded, mirroring the REQ-12 keep-previous pattern.
+ *
+ * @param {*} value - raw value from the UI or persistence
+ * @param {object} prev - previous normalized config (values kept on rejection)
+ * @param {string[]} errors - inline error accumulator
+ * @param {(message: string) => void} warn - warning sink
+ * @returns {number} normalized everyCasts
+ */
+function everyCastsOf(value, prev, errors, warn) {
+  const prevValue = toNum(prev.food?.everyCasts, DEFAULT_CONFIG.food.everyCasts);
+  const n = toNum(value, prevValue);
+  if (Number.isInteger(n) && n >= 0) return n;
+  errors.push(
+    `Food everyCasts ${JSON.stringify(value)} is invalid; expected an integer >= 0; previous value kept (REQ-12)`,
+  );
+  warn(`food everyCasts ${JSON.stringify(value)} rejected: expected an integer >= 0`);
+  return prevValue;
 }
 
 /**
@@ -136,6 +159,10 @@ function normalizeConfig(input = {}, prev = DEFAULT_CONFIG, maxMana = Infinity, 
       input.food?.fallbackIntervalSec,
       prev.food?.fallbackIntervalSec ?? DEFAULT_CONFIG.food.fallbackIntervalSec,
     ),
+    // Forced eat cadence (user-requested every-N-casts mode): integer >= 0;
+    // 0 = disabled. Invalid values keep the previous persisted value (REQ-12
+    // keep-previous pattern) with an inline error.
+    everyCasts: everyCastsOf(input.food?.everyCasts, prev, errors, warn),
   };
 
   return {

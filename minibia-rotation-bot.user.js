@@ -22,7 +22,10 @@
  *    Until either is available the bot runs in keybind-only mode with a
  *    warning (REQ-10/11).
  * 3. CONFIGURE — use the floating panel: add spell rows (slot, threshold,
- *    reserve, repeat, order, word), set the food entry, jitter range and
+ *    reserve, repeat, order, word), set the food entry (slot, cid, warning
+ *    window, fallback interval, and optional "eat every N casts" forced
+ *    cadence — 0 = off, otherwise the bot presses the food key and eats every
+ *    N confirmed magic casts, bypassing the SATED pre-check), jitter range and
  *    firing mode, then press Save.
  * 4. START — press Start; Pause freezes the counters (REQ-14); Reset stops
  *    the engine AND clears every mb-* key (persisted config + state, REQ-12).
@@ -162,7 +165,7 @@ const { clampJitter } = require('core/jitter');
  *   firing: { mode: 'handleClick' | 'keyboard' },
  *   validation: { enabled, windowMs, pollMs },
  *   spells: [{ slot, word, validationWord, threshold, reserve, repeat, order, cooldownMs, sid }],
- *   food: { slot, cid, name, warningWindowSec, fallbackIntervalSec },
+ *   food: { slot, cid, name, warningWindowSec, fallbackIntervalSec, everyCasts },
  * }
  */
 
@@ -171,7 +174,7 @@ const DEFAULT_CONFIG = Object.freeze({
   firing: { mode: 'handleClick' },
   validation: { enabled: true, windowMs: 2500, pollMs: 100 },
   spells: [],
-  food: { slot: null, cid: null, name: '', warningWindowSec: 60, fallbackIntervalSec: 10 },
+  food: { slot: null, cid: null, name: '', warningWindowSec: 60, fallbackIntervalSec: 10, everyCasts: 0 },
 });
 
 const FIRING_MODES = new Set(['handleClick', 'keyboard']);
@@ -187,6 +190,29 @@ function toSlot(value) {
   if (value === null || value === undefined || value === '') return null;
   const n = Number(value);
   return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * Normalize `food.everyCasts` (forced eat cadence): a non-negative integer,
+ * where 0 disables the cadence. On invalid input (negative, fractional,
+ * non-numeric) the previous persisted value is kept and an inline error is
+ * recorded, mirroring the REQ-12 keep-previous pattern.
+ *
+ * @param {*} value - raw value from the UI or persistence
+ * @param {object} prev - previous normalized config (values kept on rejection)
+ * @param {string[]} errors - inline error accumulator
+ * @param {(message: string) => void} warn - warning sink
+ * @returns {number} normalized everyCasts
+ */
+function everyCastsOf(value, prev, errors, warn) {
+  const prevValue = toNum(prev.food?.everyCasts, DEFAULT_CONFIG.food.everyCasts);
+  const n = toNum(value, prevValue);
+  if (Number.isInteger(n) && n >= 0) return n;
+  errors.push(
+    `Food everyCasts ${JSON.stringify(value)} is invalid; expected an integer >= 0; previous value kept (REQ-12)`,
+  );
+  warn(`food everyCasts ${JSON.stringify(value)} rejected: expected an integer >= 0`);
+  return prevValue;
 }
 
 /**
@@ -281,6 +307,10 @@ function normalizeConfig(input = {}, prev = DEFAULT_CONFIG, maxMana = Infinity, 
       input.food?.fallbackIntervalSec,
       prev.food?.fallbackIntervalSec ?? DEFAULT_CONFIG.food.fallbackIntervalSec,
     ),
+    // Forced eat cadence (user-requested every-N-casts mode): integer >= 0;
+    // 0 = disabled. Invalid values keep the previous persisted value (REQ-12
+    // keep-previous pattern) with an inline error.
+    everyCasts: everyCastsOf(input.food?.everyCasts, prev, errors, warn),
   };
 
   return {
@@ -474,13 +504,22 @@ const require = __mbRequire;
  *   {
  *     id: string,
  *     order?: number,                    // lower runs first; defaults to index
+ *     kind?: 'cast',                     // cast-kind rules advance the global
+ *                                       // casts-since-food counter (forced eat
+ *                                       // cadence) when their action returns
+ *                                       // true (confirmed execution)
  *     condition: (ctx) => boolean,       // is this rule feasible this tick?
- *     action: (ctx) => void,             // side effect; at most one per tick
+ *     action: (ctx) => boolean|void,     // side effect; at most one per tick.
+ *                                       // cast-kind rules MUST return true to
+ *                                       // confirm the cast actually executed
  *     repeat?: number,                   // executions before completion (default 1)
  *   }
  *
  * The shared `ctx` is a mutable context object (mana, cooldowns, timers, ...)
- * that conditions read and actions write.
+ * that conditions read and actions write. Cast-kind executions are tracked in
+ * `ctx.castsSinceFood`: incremented ONLY when the rule fires AND its action
+ * confirms execution (returns true) — skipped/infeasible rules never advance
+ * it. The EatFood rule consumes it for the every-N-casts cadence.
  */
 
 /**
@@ -536,7 +575,13 @@ function createEngine({ rules = [], ctx = {} } = {}) {
       if (st.executions >= (rule.repeat ?? 1)) {
         st.completed = true;
       }
-      rule.action(ctx);
+      const confirmed = rule.action(ctx) === true;
+      if (rule.kind === 'cast' && confirmed) {
+        // Forced eat cadence (food.everyCasts): count only casts that actually
+        // executed — skipped rules never reach this line, and a cast-kind
+        // action returning false means the fire path did not run.
+        ctx.castsSinceFood = (ctx.castsSinceFood || 0) + 1;
+      }
       for (let j = i + 1; j < ordered.length; j++) {
         deferred.push(ordered[j].id);
       }
@@ -1153,6 +1198,13 @@ const require = __mbRequire;
  * interval cadence. After `maxFailures` consecutive failed attempts the eater
  * pauses itself and surfaces a HUD alert (REQ-06).
  *
+ * `eatFood(item, { force: true })` is the every-N-casts forced cadence mode
+ * (user-requested): the SATED pre-check is SKIPPED so the food key is pressed
+ * on cadence regardless of satiety, but SATED is still re-checked after for
+ * confirmation accounting. An executed forced attempt is trusted like the
+ * satedNow===null case (result 'ate'), so a forced attempt that lands while
+ * SATED stays true is NOT counted as a failure.
+ *
  * Fully injectable: `gameClient`, `document`, `isSated`, `findUseEntry`,
  * `setPaused`, `hudAlert`, `log` — no hard-coded globals.
  */
@@ -1171,7 +1223,8 @@ const require = __mbRequire;
  * @param {(message: string) => void} [deps.hudAlert] - HUD alert hook (REQ-06)
  * @param {{error?: Function, warn?: Function}} [deps.log] - log sinks
  * @returns {{
- *   eatFood: (item: object|null) => {result: string, reason: string, attempts: number, paused: boolean},
+ *   eatFood: (item: object|null, opts?: {force?: boolean}) =>
+ *     {result: string, reason: string, attempts: number, paused: boolean},
  *   getFailures: () => number,
  *   resetFailures: () => void,
  *   isPaused: () => boolean,
@@ -1235,12 +1288,19 @@ function createEater(deps = {}) {
    * Attempt to eat the given food item.
    *
    * @param {object|null} item - { slot: {element, index}, cid, which, index }
+   * @param {object} [opts]
+   * @param {boolean} [opts.force=false] - every-N-casts forced cadence: skip
+   *   the SATED pre-check (REQ-05 exception for the user-requested forced
+   *   cadence); an executed attempt is trusted regardless of the post-check.
    * @returns {{result: 'ate'|'failed'|'no-food', reason: string,
    *   attempts: number, paused: boolean}}
    */
-  function eatFood(item = null) {
-    // REQ-05: re-check SATED before eating.
-    if (typeof isSated === 'function' && isSated() === true) {
+  function eatFood(item = null, opts = {}) {
+    const force = opts && opts.force === true;
+    // REQ-05: re-check SATED before eating. The forced cadence deliberately
+    // skips this pre-check — the user wants the food key pressed every N casts
+    // even while sated (creating food does not necessarily flip SATED).
+    if (!force && typeof isSated === 'function' && isSated() === true) {
       return { result: 'no-food', reason: 'already-sated', attempts: failures, paused };
     }
 
@@ -1261,9 +1321,12 @@ function createEater(deps = {}) {
       executed = tryMouseUse(item);
     }
 
-    // REQ-05: re-check SATED after the attempt.
+    // REQ-05: re-check SATED after the attempt. A forced attempt is trusted
+    // like the satedNow===null case: the execute landed, so it counts as an
+    // eat even when SATED stays true (forced cadence creates food, which does
+    // not necessarily flip SATED) — never a failure.
     const satedNow = typeof isSated === 'function' ? isSated() : null;
-    if (executed && (satedNow === true || satedNow === null)) {
+    if (executed && (satedNow === true || satedNow === null || force)) {
       failures = 0;
       return { result: 'ate', reason: satedNow === true ? 'sated' : 'attempted', attempts: 0, paused };
     }
@@ -1580,8 +1643,8 @@ const require = __mbRequire;
  *
  * DOM contract for the panel (implemented by ui.js, Slice 3):
  *   [data-hud-mana], [data-hud-next], [data-hud-food], [data-hud-cooldown],
- *   [data-hud-status], [data-hud-casts], [data-hud-eats], [data-hud-misses],
- *   [data-hud-words], [data-hud-log]
+ *   [data-hud-status], [data-hud-every-casts], [data-hud-casts],
+ *   [data-hud-eats], [data-hud-misses], [data-hud-words], [data-hud-log]
  * Missing elements are skipped; rendering never throws.
  */
 
@@ -1657,6 +1720,16 @@ function createHud(deps = {}) {
     setText('food', fmtSeconds(snap.foodSec));
     setText('cooldown', fmtSeconds(snap.cooldownSec));
     setText('status', snap.status ?? (paused ? 'paused' : 'idle'));
+
+    // Forced eat cadence (food.everyCasts): show the configured N and the
+    // casts remaining until the next forced eat. '—' when the cadence is off.
+    const everyCasts = Number(snap.everyCasts) || 0;
+    if (everyCasts > 0) {
+      const since = Number(snap.castsSinceFood) || 0;
+      setText('every-casts', `every ${everyCasts} (rem ${Math.max(0, everyCasts - since)})`);
+    } else {
+      setText('every-casts', '—');
+    }
 
     // Counters: frozen while paused (REQ-14), rendered otherwise.
     if (!paused) {
@@ -2072,6 +2145,7 @@ function createUi(deps = {}) {
   statusRow.appendChild(field(doc, 'mana', el(doc, 'span', 'data-hud-mana', '—')));
   statusRow.appendChild(field(doc, 'next', el(doc, 'span', 'data-hud-next', '—')));
   statusRow.appendChild(field(doc, 'food', el(doc, 'span', 'data-hud-food', '—')));
+  statusRow.appendChild(field(doc, 'eat every', el(doc, 'span', 'data-hud-every-casts', '—')));
   statusRow.appendChild(field(doc, 'cooldown', el(doc, 'span', 'data-hud-cooldown', '—')));
   panel.appendChild(statusRow);
 
@@ -2162,10 +2236,21 @@ function createUi(deps = {}) {
   foodWindow.type = 'number';
   const foodFallback = el(doc, 'input', 'data-ui-food-fallback');
   foodFallback.type = 'number';
-  for (const input of [foodSlot, foodCid, foodName, foodWindow, foodFallback]) {
+  const foodEveryCasts = el(doc, 'input', 'data-ui-food-every-casts');
+  foodEveryCasts.type = 'number';
+  foodEveryCasts.min = '0';
+  foodEveryCasts.placeholder = 'every N casts';
+  for (const input of [foodSlot, foodCid, foodName, foodWindow, foodFallback, foodEveryCasts]) {
     input.style.width = '100%';
     input.style.boxSizing = 'border-box';
-    foodSection.appendChild(field(doc, input === foodSlot ? 'slot (1-12)' : input === foodCid ? 'cid' : input === foodName ? 'name' : input === foodWindow ? 'warning window (s)' : 'fallback interval (s)', input));
+    const label =
+      input === foodSlot ? 'slot (1-12)'
+        : input === foodCid ? 'cid'
+          : input === foodName ? 'name'
+            : input === foodWindow ? 'warning window (s)'
+              : input === foodFallback ? 'fallback interval (s)'
+                : 'eat every N casts (0 = off)';
+    foodSection.appendChild(field(doc, label, input));
   }
   panel.appendChild(foodSection);
 
@@ -2304,6 +2389,7 @@ function createUi(deps = {}) {
         name: foodName.value.trim(),
         warningWindowSec: num(foodWindow.value) ?? 60,
         fallbackIntervalSec: num(foodFallback.value) ?? 10,
+        everyCasts: num(foodEveryCasts.value) ?? 0,
       },
     };
   }
@@ -2323,6 +2409,7 @@ function createUi(deps = {}) {
     foodName.value = config.food?.name ?? '';
     foodWindow.value = config.food?.warningWindowSec ?? '';
     foodFallback.value = config.food?.fallbackIntervalSec ?? '';
+    foodEveryCasts.value = config.food?.everyCasts ?? '';
     setErrors([]);
   }
 
@@ -2714,7 +2801,7 @@ return module.exports;
             document: doc,
             log: logSinks,
           });
-          if (!fired) return;
+          if (!fired) return false;
           ctx.lastFiredAt = ctx.lastFiredAt || {};
           ctx.lastFiredAt[spell.slot] = Date.now();
           state.hud.increment('casts');
@@ -2723,17 +2810,26 @@ return module.exports;
             state.lastFiredWord = spell.word;
             state.validator.start('slot-' + spell.slot); // REQ-09 words-path echo check
           }
+          return true; // confirmed execution — advances the every-Casts cadence counter
         },
+        kind: 'cast',
         repeat: Math.max(1, Number(spell.repeat) || 1),
       };
     }
 
     function makeEatRule(foodCfg) {
+      const everyCasts = Number(foodCfg.everyCasts) || 0; // 0 = disabled
       return {
         id: 'eat-food',
         order: 1000, // after the configured spell order
         condition: function (ctx) {
           if (state.eater.isPaused()) return false;
+          if (everyCasts > 0) {
+            // Forced cadence (user-requested every-N-casts mode): eat when N
+            // confirmed magic casts have landed since the last forced eat.
+            // Timer/SATED logic is bypassed in this mode.
+            return (ctx.castsSinceFood || 0) >= everyCasts;
+          }
           const fs = readFoodState(foodCfg);
           if (fs.eat === true) return true;
           if (fs.eat === false) return false;
@@ -2741,7 +2837,9 @@ return module.exports;
           return elapsed >= (foodCfg.fallbackIntervalSec || 10) * 1000; // REQ-06
         },
         action: function (ctx) {
-          const res = state.eater.eatFood(resolveFoodItem(foodCfg));
+          const opts = everyCasts > 0 ? { force: true } : {};
+          const res = state.eater.eatFood(resolveFoodItem(foodCfg), opts);
+          if (everyCasts > 0) ctx.castsSinceFood = 0; // forced cadence resets after the attempt
           if (res.result === 'ate') {
             ctx.lastEatAt = Date.now();
             state.hud.increment('eats');
@@ -2913,6 +3011,8 @@ return module.exports;
         nextAction: ctx.nextAction || null,
         foodSec,
         cooldownSec,
+        everyCasts: (state.config && state.config.food && Number(state.config.food.everyCasts)) || 0,
+        castsSinceFood: ctx.castsSinceFood || 0,
       };
     }
 

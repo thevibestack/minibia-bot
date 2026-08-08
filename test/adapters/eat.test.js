@@ -197,3 +197,76 @@ test('resetFailures clears the counter without pausing state', () => {
   eater.resetFailures();
   assert.equal(eater.getFailures(), 0);
 });
+
+test('food.everyCasts: force skips the SATED pre-check and trusts the executed attempt', () => {
+  const dom = makeDom('<li>Use</li>');
+  const { el, events } = makeSlotElement(dom);
+  let satedCalls = 0;
+  const eater = createEater({
+    document: dom.window.document,
+    isSated: () => {
+      satedCalls += 1;
+      return true; // sated before AND after the forced attempt
+    },
+  });
+
+  const r = eater.eatFood({ slot: { element: el } }, { force: true });
+
+  assert.equal(events.contextmenu.length, 1, 'forced eat dispatches despite SATED');
+  assert.equal(satedCalls, 1, 'pre-check skipped — SATED only re-checked after');
+  assert.equal(r.result, 'ate');
+  assert.equal(r.reason, 'sated');
+  assert.equal(r.attempts, 0);
+  assert.equal(eater.getFailures(), 0, 'forced eat while sated is NOT a failure');
+});
+
+test('food.everyCasts: force with SATED false after -> ate (attempted), no failure', () => {
+  const dom = makeDom('<li>Use</li>');
+  const { el } = makeSlotElement(dom);
+  const eater = createEater({
+    document: dom.window.document,
+    isSated: () => false,
+  });
+
+  const r = eater.eatFood({ slot: { element: el } }, { force: true });
+
+  assert.equal(r.result, 'ate');
+  assert.equal(r.reason, 'attempted');
+  assert.equal(eater.getFailures(), 0);
+});
+
+test('food.everyCasts: repeated forced eats while sated never trigger the failure pause', () => {
+  const dom = makeDom('<li>Use</li>');
+  const { el } = makeSlotElement(dom);
+  const eater = createEater({
+    document: dom.window.document,
+    isSated: () => true,
+  });
+
+  for (let i = 0; i < 5; i++) {
+    assert.equal(eater.eatFood({ slot: { element: el } }, { force: true }).result, 'ate');
+  }
+  assert.equal(eater.isPaused(), false, 'forced cadence never trips the REQ-06 pause');
+  assert.equal(eater.getFailures(), 0);
+});
+
+test('food.everyCasts: force does not bypass a missing food source', () => {
+  const eater = createEater({ isSated: () => true });
+  const r = eater.eatFood(null, { force: true });
+  assert.equal(r.result, 'no-food');
+  assert.equal(r.reason, 'no-food-source');
+});
+
+test('food.everyCasts: empty opts behave exactly like no opts (SATED pre-check active)', () => {
+  const dom = makeDom();
+  const { el, events } = makeSlotElement(dom);
+  const eater = createEater({
+    document: dom.window.document,
+    isSated: () => true,
+  });
+
+  const r = eater.eatFood({ slot: { element: el } }, {});
+  assert.equal(r.result, 'no-food');
+  assert.equal(r.reason, 'already-sated');
+  assert.equal(events.contextmenu.length, 0);
+});

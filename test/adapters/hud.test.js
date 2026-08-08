@@ -13,6 +13,7 @@ const PANEL = `
     <span data-hud-food></span>
     <span data-hud-cooldown></span>
     <span data-hud-status></span>
+    <span data-hud-every-casts></span>
     <span data-hud-casts></span>
     <span data-hud-eats></span>
     <span data-hud-misses></span>
@@ -51,6 +52,26 @@ test('REQ-14: missing timer data renders em dash', () => {
   assert.equal($('[data-hud-food]').textContent, '—');
   assert.equal($('[data-hud-cooldown]').textContent, '—');
   assert.equal($('[data-hud-next]').textContent, '—');
+  assert.equal($('[data-hud-every-casts]').textContent, '—', 'cadence off -> em dash');
+});
+
+test('food.everyCasts: HUD shows the configured N and casts remaining until the forced eat', () => {
+  const { dom, hud } = makeHud({
+    snapshot: () => ({ everyCasts: 5, castsSinceFood: 3 }),
+  });
+  hud.refresh();
+  assert.equal(
+    dom.window.document.querySelector('[data-hud-every-casts]').textContent,
+    'every 5 (rem 2)',
+  );
+});
+
+test('food.everyCasts: remaining clamps at 0 when the counter already reached N', () => {
+  const { dom, hud } = makeHud({
+    snapshot: () => ({ everyCasts: 3, castsSinceFood: 4 }),
+  });
+  hud.refresh();
+  assert.equal(dom.window.document.querySelector('[data-hud-every-casts]').textContent, 'every 3 (rem 0)');
 });
 
 test('REQ-14: cast counter increments and renders (post-action refresh)', () => {

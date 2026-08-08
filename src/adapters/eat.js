@@ -11,6 +11,13 @@
  * interval cadence. After `maxFailures` consecutive failed attempts the eater
  * pauses itself and surfaces a HUD alert (REQ-06).
  *
+ * `eatFood(item, { force: true })` is the every-N-casts forced cadence mode
+ * (user-requested): the SATED pre-check is SKIPPED so the food key is pressed
+ * on cadence regardless of satiety, but SATED is still re-checked after for
+ * confirmation accounting. An executed forced attempt is trusted like the
+ * satedNow===null case (result 'ate'), so a forced attempt that lands while
+ * SATED stays true is NOT counted as a failure.
+ *
  * Fully injectable: `gameClient`, `document`, `isSated`, `findUseEntry`,
  * `setPaused`, `hudAlert`, `log` — no hard-coded globals.
  */
@@ -29,7 +36,8 @@
  * @param {(message: string) => void} [deps.hudAlert] - HUD alert hook (REQ-06)
  * @param {{error?: Function, warn?: Function}} [deps.log] - log sinks
  * @returns {{
- *   eatFood: (item: object|null) => {result: string, reason: string, attempts: number, paused: boolean},
+ *   eatFood: (item: object|null, opts?: {force?: boolean}) =>
+ *     {result: string, reason: string, attempts: number, paused: boolean},
  *   getFailures: () => number,
  *   resetFailures: () => void,
  *   isPaused: () => boolean,
@@ -93,12 +101,19 @@ function createEater(deps = {}) {
    * Attempt to eat the given food item.
    *
    * @param {object|null} item - { slot: {element, index}, cid, which, index }
+   * @param {object} [opts]
+   * @param {boolean} [opts.force=false] - every-N-casts forced cadence: skip
+   *   the SATED pre-check (REQ-05 exception for the user-requested forced
+   *   cadence); an executed attempt is trusted regardless of the post-check.
    * @returns {{result: 'ate'|'failed'|'no-food', reason: string,
    *   attempts: number, paused: boolean}}
    */
-  function eatFood(item = null) {
-    // REQ-05: re-check SATED before eating.
-    if (typeof isSated === 'function' && isSated() === true) {
+  function eatFood(item = null, opts = {}) {
+    const force = opts && opts.force === true;
+    // REQ-05: re-check SATED before eating. The forced cadence deliberately
+    // skips this pre-check — the user wants the food key pressed every N casts
+    // even while sated (creating food does not necessarily flip SATED).
+    if (!force && typeof isSated === 'function' && isSated() === true) {
       return { result: 'no-food', reason: 'already-sated', attempts: failures, paused };
     }
 
@@ -119,9 +134,12 @@ function createEater(deps = {}) {
       executed = tryMouseUse(item);
     }
 
-    // REQ-05: re-check SATED after the attempt.
+    // REQ-05: re-check SATED after the attempt. A forced attempt is trusted
+    // like the satedNow===null case: the execute landed, so it counts as an
+    // eat even when SATED stays true (forced cadence creates food, which does
+    // not necessarily flip SATED) — never a failure.
     const satedNow = typeof isSated === 'function' ? isSated() : null;
-    if (executed && (satedNow === true || satedNow === null)) {
+    if (executed && (satedNow === true || satedNow === null || force)) {
       failures = 0;
       return { result: 'ate', reason: satedNow === true ? 'sated' : 'attempted', attempts: 0, paused };
     }

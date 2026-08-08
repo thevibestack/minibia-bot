@@ -36,7 +36,7 @@ test('REQ-14: panel renders every [data-hud-*] contract element plus controls', 
   const { dom, ui } = makeUi(makeDom());
   const d = dom.window.document;
   for (const attr of [
-    'mana', 'next', 'food', 'cooldown', 'status',
+    'mana', 'next', 'food', 'cooldown', 'status', 'every-casts',
     'casts', 'eats', 'misses', 'words', 'log',
   ]) {
     assert.ok(d.querySelector(`[data-hud-${attr}]`), `missing [data-hud-${attr}]`);
@@ -44,7 +44,7 @@ test('REQ-14: panel renders every [data-hud-*] contract element plus controls', 
   for (const attr of [
     'start', 'pause', 'reset', 'save', 'search', 'search-results',
     'spells', 'add-spell', 'food-slot', 'food-cid', 'food-name',
-    'food-window', 'food-fallback', 'jitter-min', 'jitter-max',
+    'food-window', 'food-fallback', 'food-every-casts', 'jitter-min', 'jitter-max',
     'firing-mode', 'errors',
   ]) {
     assert.ok(d.querySelector(`[data-ui-${attr}]`), `missing [data-ui-${attr}]`);
@@ -83,7 +83,7 @@ test('REQ-12: save() passes raw config + previous config to saveConfig and store
     spells: [
       { slot: 4, threshold: 20, reserve: 0, repeat: 1, order: 0, word: '' },
     ],
-    food: { slot: null, cid: 3582, name: '', warningWindowSec: 60, fallbackIntervalSec: 10 },
+    food: { slot: null, cid: 3582, name: '', warningWindowSec: 60, fallbackIntervalSec: 10, everyCasts: 0 },
   });
   assert.equal(d.querySelector('[data-ui-errors]').style.display, 'none');
   ui.destroy();
@@ -259,5 +259,35 @@ test('panel: numeric cid strings become numbers, empty becomes null', async () =
   d.querySelector('[data-ui-food-cid]').value = '';
   raw = ui.getRawConfig();
   assert.equal(raw.food.cid, null);
+  ui.destroy();
+});
+
+test('food.everyCasts: input present with 0 = off and round-trips through setConfig/getRawConfig', () => {
+  const { dom, ui } = makeUi(makeDom());
+  const d = dom.window.document;
+  const input = d.querySelector('[data-ui-food-every-casts]');
+  assert.ok(input, 'field present in the Food block');
+  assert.equal(input.type, 'number');
+  assert.equal(input.min, '0');
+  assert.equal(input.placeholder, 'every N casts');
+
+  input.value = '5';
+  assert.equal(ui.getRawConfig().food.everyCasts, 5, 'raw config collects the value');
+
+  input.value = '';
+  assert.equal(ui.getRawConfig().food.everyCasts, 0, 'empty input -> 0 (off)');
+
+  ui.setConfig({ food: { everyCasts: 7 } });
+  assert.equal(d.querySelector('[data-ui-food-every-casts]').value, '7', 'setConfig populates the field');
+  ui.destroy();
+});
+
+test('food.everyCasts: save round-trips the value through saveConfig', async () => {
+  const { dom, ui, calls } = makeUi(makeDom());
+  const d = dom.window.document;
+  d.querySelector('[data-ui-food-every-casts]').value = '4';
+  const res = await ui.save();
+  assert.equal(res.ok, true);
+  assert.equal(calls.saved.raw.food.everyCasts, 4);
   ui.destroy();
 });

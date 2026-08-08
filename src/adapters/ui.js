@@ -145,6 +145,7 @@ function createUi(deps = {}) {
   statusRow.appendChild(field(doc, 'mana', el(doc, 'span', 'data-hud-mana', '—')));
   statusRow.appendChild(field(doc, 'next', el(doc, 'span', 'data-hud-next', '—')));
   statusRow.appendChild(field(doc, 'food', el(doc, 'span', 'data-hud-food', '—')));
+  statusRow.appendChild(field(doc, 'eat every', el(doc, 'span', 'data-hud-every-casts', '—')));
   statusRow.appendChild(field(doc, 'cooldown', el(doc, 'span', 'data-hud-cooldown', '—')));
   panel.appendChild(statusRow);
 
@@ -235,10 +236,21 @@ function createUi(deps = {}) {
   foodWindow.type = 'number';
   const foodFallback = el(doc, 'input', 'data-ui-food-fallback');
   foodFallback.type = 'number';
-  for (const input of [foodSlot, foodCid, foodName, foodWindow, foodFallback]) {
+  const foodEveryCasts = el(doc, 'input', 'data-ui-food-every-casts');
+  foodEveryCasts.type = 'number';
+  foodEveryCasts.min = '0';
+  foodEveryCasts.placeholder = 'every N casts';
+  for (const input of [foodSlot, foodCid, foodName, foodWindow, foodFallback, foodEveryCasts]) {
     input.style.width = '100%';
     input.style.boxSizing = 'border-box';
-    foodSection.appendChild(field(doc, input === foodSlot ? 'slot (1-12)' : input === foodCid ? 'cid' : input === foodName ? 'name' : input === foodWindow ? 'warning window (s)' : 'fallback interval (s)', input));
+    const label =
+      input === foodSlot ? 'slot (1-12)'
+        : input === foodCid ? 'cid'
+          : input === foodName ? 'name'
+            : input === foodWindow ? 'warning window (s)'
+              : input === foodFallback ? 'fallback interval (s)'
+                : 'eat every N casts (0 = off)';
+    foodSection.appendChild(field(doc, label, input));
   }
   panel.appendChild(foodSection);
 
@@ -377,6 +389,7 @@ function createUi(deps = {}) {
         name: foodName.value.trim(),
         warningWindowSec: num(foodWindow.value) ?? 60,
         fallbackIntervalSec: num(foodFallback.value) ?? 10,
+        everyCasts: num(foodEveryCasts.value) ?? 0,
       },
     };
   }
@@ -396,6 +409,7 @@ function createUi(deps = {}) {
     foodName.value = config.food?.name ?? '';
     foodWindow.value = config.food?.warningWindowSec ?? '';
     foodFallback.value = config.food?.fallbackIntervalSec ?? '';
+    foodEveryCasts.value = config.food?.everyCasts ?? '';
     setErrors([]);
   }
 

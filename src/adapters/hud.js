@@ -16,8 +16,8 @@
  *
  * DOM contract for the panel (implemented by ui.js, Slice 3):
  *   [data-hud-mana], [data-hud-next], [data-hud-food], [data-hud-cooldown],
- *   [data-hud-status], [data-hud-casts], [data-hud-eats], [data-hud-misses],
- *   [data-hud-words], [data-hud-log]
+ *   [data-hud-status], [data-hud-every-casts], [data-hud-casts],
+ *   [data-hud-eats], [data-hud-misses], [data-hud-words], [data-hud-log]
  * Missing elements are skipped; rendering never throws.
  */
 
@@ -93,6 +93,16 @@ function createHud(deps = {}) {
     setText('food', fmtSeconds(snap.foodSec));
     setText('cooldown', fmtSeconds(snap.cooldownSec));
     setText('status', snap.status ?? (paused ? 'paused' : 'idle'));
+
+    // Forced eat cadence (food.everyCasts): show the configured N and the
+    // casts remaining until the next forced eat. '—' when the cadence is off.
+    const everyCasts = Number(snap.everyCasts) || 0;
+    if (everyCasts > 0) {
+      const since = Number(snap.castsSinceFood) || 0;
+      setText('every-casts', `every ${everyCasts} (rem ${Math.max(0, everyCasts - since)})`);
+    } else {
+      setText('every-casts', '—');
+    }
 
     // Counters: frozen while paused (REQ-14), rendered otherwise.
     if (!paused) {
