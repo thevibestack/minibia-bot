@@ -123,6 +123,18 @@ function validateAndSanitize(config, catalog, ctx) {
   return { rejected, config: out };
 }
 
+/** Read current mana from a snapshot payload (app stats shape + legacy
+ *  flat shape). Null when not readable (the mana re-check is skipped then). */
+function readMana(payload) {
+  if (!payload || typeof payload !== 'object') return null;
+  const raw = (payload.stats && typeof payload.stats === 'object' && payload.stats.mana !== undefined)
+    ? payload.stats.mana
+    : payload.mana;
+  if (raw === null || raw === undefined || raw === '') return null;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : null;
+}
+
 /**
  * @param {object} opts
  * @param {string} opts.staticDir - panel assets dir (index.html etc.)
@@ -286,6 +298,25 @@ function createPanelServer(opts) {
         if (!name) {
           sendJson(res, 409, { ok: false, reason: 'not connected' });
           return;
+        }
+        // REQ-28 (slice 1b): spell-save re-check — every spell sid in the
+        // config must still be castable by the current character (vocation +
+        // level + CURRENT mana, D5). A rejection refuses the WHOLE save with
+        // the first reason (no persist, no push) — the picker validated
+        // client-side at pick time; this guards drops since then. Catalog
+        // unavailable -> save proceeds (client-side validation already ran).
+        const raw = await spellCatalogFn();
+        if (raw && Array.isArray(raw.spells)) {
+          const identity = await identityFn();
+          const { rejected } = validateAndSanitize(config, raw.spells, {
+            vocationLabel: (identity && identity.vocationLabel) || raw.vocationLabel || '',
+            playerLevel: raw.playerLevel,
+            mana: readMana(await snapshotFn()),
+          });
+          if (rejected.length > 0) {
+            sendJson(res, 409, { ok: false, reason: rejected[0].reason, rejected });
+            return;
+          }
         }
         config.character = name;
         config.connected = true;

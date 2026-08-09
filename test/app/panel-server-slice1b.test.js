@@ -237,3 +237,93 @@ test('REQ-27: load-profile degrades when the spell catalog RPC is unavailable', 
   assert.equal(res.status, 503);
   assert.equal((await res.json()).reason, 'spell catalog unavailable');
 });
+
+/* ------------- /api/config spell re-check (2.8, REQ-28) ------------- */
+
+test('REQ-28: /api/config refuses a save whose spell sid exceeds current mana — no persist, no push', async (t) => {
+  const { srv, calls, base } = await makeServer(t);
+  const cfg = store.defaultConfig('Flamamex');
+  cfg.modules.healMagic = { on: true, threshold: 120, slot: 2, sid: 3 }; // Intense Healing costs 170
+  const res = await fetch(srv.url + '/api/config', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ character: 'Flamamex', config: cfg }),
+  });
+  assert.equal(res.status, 409);
+  const body = await res.json();
+  assert.equal(body.ok, false);
+  assert.equal(body.reason, 'not enough mana — costs 170, you have 80');
+  assert.deepEqual(body.rejected, [{ key: 'healMagic.sid', reason: 'not enough mana — costs 170, you have 80' }]);
+  assert.deepEqual(calls.applyConfig, [], 'no armed push on rejection');
+  const reloaded = store.loadCharacter({ baseDir: base, name: 'Flamamex' });
+  assert.equal(reloaded.config.modules.healMagic.sid, null, 'nothing persisted (defaults remain)');
+  assert.equal(calls.saveCount, 0, 'store never written');
+});
+
+test('REQ-28: /api/config accepts a save whose spell sid fits the current mana', async (t) => {
+  const { srv, calls, base } = await makeServer(t);
+  const cfg = store.defaultConfig('Flamamex');
+  cfg.modules.healMagic = { on: true, threshold: 120, slot: 2, sid: 0 }; // Light costs 20
+  const res = await fetch(srv.url + '/api/config', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ character: 'Flamamex', config: cfg }),
+  });
+  assert.equal(res.status, 200);
+  assert.equal((await res.json()).ok, true);
+  assert.equal(calls.applyConfig[0].modules.healMagic.sid, 0, 'pushed');
+  assert.equal(store.loadCharacter({ baseDir: base, name: 'Flamamex' }).config.modules.healMagic.sid, 0, 'persisted');
+});
+
+test('REQ-28: /api/config re-checks vocation too — another vocation\'s spell refused on save', async (t) => {
+  const { srv, calls } = await makeServer(t);
+  const cfg = store.defaultConfig('Flamamex');
+  cfg.modules.training = { on: true, slot: 3, sid: 4 }; // Flame Strike = sorcerer-only
+  const res = await fetch(srv.url + '/api/config', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ character: 'Flamamex', config: cfg }),
+  });
+  assert.equal(res.status, 409);
+  assert.match((await res.json()).reason, /vocation mismatch — requires sorcerer/);
+  assert.deepEqual(calls.applyConfig, []);
+});
+
+test('REQ-28: /api/config refuses an unknown sid on save', async (t) => {
+  const { srv } = await makeServer(t);
+  const cfg = store.defaultConfig('Flamamex');
+  cfg.modules.healMagic = { on: true, sid: 999 };
+  const res = await fetch(srv.url + '/api/config', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ character: 'Flamamex', config: cfg }),
+  });
+  assert.equal(res.status, 409);
+  assert.equal((await res.json()).reason, 'unknown spell (sid 999)');
+});
+
+test('REQ-28: /api/config without spell sids saves normally (catalog present)', async (t) => {
+  const { srv, calls } = await makeServer(t);
+  const cfg = store.defaultConfig('Flamamex');
+  cfg.modules.trade = { on: true, message: 'WTS runes', intervalMs: 180000 };
+  const res = await fetch(srv.url + '/api/config', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ character: 'Flamamex', config: cfg }),
+  });
+  assert.equal(res.status, 200);
+  assert.equal(calls.applyConfig.length, 1, 'no spell sids -> no rejection');
+});
+
+test('REQ-28: /api/config degrades when the catalog RPC is unavailable — save proceeds', async (t) => {
+  const { srv, calls } = await makeServer(t, { spellCatalog: null });
+  const cfg = store.defaultConfig('Flamamex');
+  cfg.modules.healMagic = { on: true, sid: 3 };
+  const res = await fetch(srv.url + '/api/config', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ character: 'Flamamex', config: cfg }),
+  });
+  assert.equal(res.status, 200, 'catalog absent -> client-side validation is the only gate');
+  assert.equal(calls.applyConfig.length, 1);
+});
