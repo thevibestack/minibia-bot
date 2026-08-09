@@ -184,3 +184,117 @@ test('2.2: stats track enqueued/dispatched/pending/lastDispatchAt', () => {
   assert.equal(stats.pending, 0);
   assert.equal(stats.lastDispatchAt, 150);
 });
+
+/* -------------------- PR 3 — urgent priority (D1, REQ-29) -------------------- */
+
+test('3.1: urgent entries head-insert before normal entries — heal jumps in-flight work', () => {
+  const h = makeHarness({ minInterval: 0, jitter: { min: 0, max: 0 } });
+  const fired = [];
+  h.queue.enqueue(() => fired.push('rune'), { kind: 'rune-work' });
+  h.queue.enqueue(() => fired.push('training'), { kind: 'training-cast' });
+  h.queue.enqueue(() => fired.push('heal'), { kind: 'heal-magic', priority: 'urgent' });
+  const done = h.queue.drain();
+  assert.deepEqual(done.map((e) => e.kind), ['heal-magic', 'rune-work', 'training-cast'],
+    'urgent dispatches before every normal, regardless of enqueue order');
+  assert.deepEqual(fired, ['heal', 'rune', 'training']);
+});
+
+test('3.1: FIFO within the urgent class — a later urgent stays behind an earlier urgent', () => {
+  const h = makeHarness({ minInterval: 0, jitter: { min: 0, max: 0 } });
+  const fired = [];
+  h.queue.enqueue(() => fired.push('u1'), { kind: 'u1', priority: 'urgent' });
+  h.queue.enqueue(() => fired.push('u2'), { kind: 'u2', priority: 'urgent' });
+  h.queue.enqueue(() => fired.push('n1'), { kind: 'n1' });
+  h.queue.enqueue(() => fired.push('u3'), { kind: 'u3', priority: 'urgent' });
+  const done = h.queue.drain();
+  assert.deepEqual(done.map((e) => e.kind), ['u1', 'u2', 'u3', 'n1'],
+    'urgents stay FIFO among themselves and always precede normals');
+  assert.deepEqual(fired, ['u1', 'u2', 'u3', 'n1']);
+});
+
+test('3.1: default priority is normal — existing callers are unaffected', () => {
+  const h = makeHarness({ minInterval: 0, jitter: { min: 0, max: 0 } });
+  const e = h.queue.enqueue(() => {}, { kind: 'plain' });
+  assert.equal(e.priority, 'normal');
+  assert.equal(h.queue.stats().urgentEnqueued, 0);
+});
+
+test('3.1: unknown priority values normalize to normal (only "urgent" is a class)', () => {
+  const h = makeHarness({ minInterval: 0, jitter: { min: 0, max: 0 } });
+  const e = h.queue.enqueue(() => {}, { kind: 'weird', priority: 'panic' });
+  assert.equal(e.priority, 'normal');
+  assert.equal(h.queue.stats().urgentEnqueued, 0);
+});
+
+test('3.1: urgent still respects the global interval — throttle is never bypassed', () => {
+  const h = makeHarness({ minInterval: 150, jitter: { min: 0, max: 0 } });
+  const fired = [];
+  h.queue.enqueue(() => fired.push('u1'), { kind: 'u1', priority: 'urgent' });
+  h.queue.enqueue(() => fired.push('u2'), { kind: 'u2', priority: 'urgent' });
+  assert.deepEqual(fireTimesOf(h, 0), [0], 'first urgent at its enqueue anchor');
+  h.advance(149);
+  assert.deepEqual(h.queue.drain(), [], 'second urgent deferred — the interval holds for urgents too');
+  h.advance(1);
+  assert.deepEqual(fireTimesOf(h, 0), [150], 'second urgent exactly minInterval later (no bypass)');
+  assert.deepEqual(fired, ['u1', 'u2']);
+});
+
+test('3.1: an urgent jump DEFERS the skipped normals — never drops them', () => {
+  const h = makeHarness({ minInterval: 150, jitter: { min: 0, max: 0 } });
+  const fired = [];
+  h.queue.enqueue(() => fired.push('n1'), { kind: 'n1' }); // anchor t=0
+  assert.deepEqual(fireTimesOf(h, 0), [0], 'n1 dispatched at t=0');
+  h.advance(10); // t=10
+  h.queue.enqueue(() => fired.push('n2'), { kind: 'n2' });           // normal: slot after heal
+  h.queue.enqueue(() => fired.push('heal'), { kind: 'heal-magic', priority: 'urgent' }); // jumps n2
+  assert.deepEqual(h.queue.drain(), [], 'both deferred: heal slot is 150 (after n1@0)');
+  assert.equal(h.queue.pendingCount(), 2);
+  h.advance(139); // t=149
+  assert.deepEqual(h.queue.drain(), [], 'heal still deferred (fireAt 150)');
+  h.advance(1); // t=150
+  assert.deepEqual(fireTimesOf(h, 0), [150], 'urgent heal fires first at its slot');
+  assert.deepEqual(fired, ['n1', 'heal']);
+  assert.equal(h.queue.pendingCount(), 1, 'n2 deferred, never dropped');
+  h.advance(149); // t=299
+  assert.deepEqual(h.queue.drain(), [], 'n2 still deferred (slot 300 = heal@150 + 150)');
+  h.advance(1); // t=300
+  assert.deepEqual(fireTimesOf(h, 0), [300], 'n2 fires AFTER the heal, one interval later');
+  assert.deepEqual(fired, ['n1', 'heal', 'n2']);
+});
+
+test('3.1: an urgent entry enqueued before a normal keeps dispatch order normal-relative', () => {
+  const h = makeHarness({ minInterval: 0, jitter: { min: 0, max: 0 } });
+  const fired = [];
+  h.queue.enqueue(() => fired.push('heal'), { kind: 'heal-magic', priority: 'urgent' });
+  h.queue.enqueue(() => fired.push('n1'), { kind: 'n1' });
+  h.queue.enqueue(() => fired.push('n2'), { kind: 'n2' });
+  h.queue.drain();
+  assert.deepEqual(fired, ['heal', 'n1', 'n2']);
+});
+
+test('3.1: stats count urgent enqueues and pending urgents', () => {
+  const h = makeHarness({ minInterval: 150, jitter: { min: 50, max: 50 } });
+  h.queue.enqueue(() => {}, { kind: 'n1' });
+  h.queue.enqueue(() => {}, { kind: 'u1', priority: 'urgent' });
+  h.queue.enqueue(() => {}, { kind: 'u2', priority: 'urgent' });
+  let stats = h.queue.stats();
+  assert.equal(stats.urgentEnqueued, 2);
+  assert.equal(stats.pendingUrgent, 2);
+  fireTimesOf(h, 50); // u1 fires at 50 (anchor); u2 slot 200 -> fireAt 250; n1 after
+  stats = h.queue.stats();
+  assert.equal(stats.pendingUrgent, 1, 'u2 still pending (deferred by the interval)');
+  assert.equal(stats.pending, 2);
+  h.advance(199); // t=249: u2 fireAt 250 not reached yet
+  assert.deepEqual(h.queue.drain(), [], 'u2 deferred until 250');
+  h.advance(1); // t=250
+  fireTimesOf(h, 0);
+  assert.equal(h.queue.stats().pendingUrgent, 0);
+});
+
+test('3.1: hasPending sees urgent entries (re-arm guards never miss them)', () => {
+  const h = makeHarness({ minInterval: 150, jitter: { min: 50, max: 50 } });
+  h.queue.enqueue(() => {}, { kind: 'heal-magic', priority: 'urgent' });
+  assert.equal(h.queue.hasPending((e) => e.kind === 'heal-magic'), true);
+  assert.equal(h.queue.hasPending((e) => e.priority === 'urgent'), true);
+  assert.equal(h.queue.hasPending((e) => e.priority === 'normal'), false);
+});
