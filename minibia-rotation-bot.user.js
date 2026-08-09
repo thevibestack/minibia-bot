@@ -1045,7 +1045,131 @@ function readCooldown(spellSid, ctx = {}) {
   };
 }
 
-module.exports = { readStats, readCooldown };
+/**
+ * Enumerate the client spell catalog (design D5, REQ-28): calls
+ * `interface.getSpell(sid)` from sid 0 upward until `maxUnknown` consecutive
+ * unknown sids (live probe: ~65 spells). Returns the RAW list plus the
+ * player's level + vocation label so the PANEL can filter by what the
+ * current character can actually cast. Returns null when the interface is
+ * not ready (feature-detect — the picker degrades with an honest reason).
+ *
+ * Each spell normalizes the live-probed shape (obs 10457):
+ *   {name, words, mana, level, vocations[]}  — vocations is an ARRAY OF
+ *   STRINGS ("sorcerer"/"druid"/"paladin"/"knight"), never numeric.
+ *
+ * @param {object|null} gameClient - page gameClient (interface.getSpell)
+ * @param {object} [opts]
+ * @param {number} [opts.maxUnknown=30] - consecutive unknown sids that end the scan
+ * @param {number} [opts.limit=400] - hard cap on the sid range scanned
+ * @returns {{spells: Array<object>, playerLevel: number|null,
+ *   vocationLabel: string|null}|null}
+ */
+function enumerateSpellCatalog(gameClient, opts = {}) {
+  const maxUnknown = Number.isInteger(opts.maxUnknown) ? opts.maxUnknown : 30;
+  const limit = Number.isInteger(opts.limit) ? opts.limit : 400;
+  const intf = gameClient && gameClient.interface;
+  if (!intf || typeof intf.getSpell !== 'function') return null;
+
+  const spells = [];
+  let unknownStreak = 0;
+  for (let sid = 0; sid < limit && unknownStreak < maxUnknown; sid += 1) {
+    let entry = null;
+    try { entry = intf.getSpell(sid); } catch (e) { entry = null; }
+    if (!entry || typeof entry !== 'object'
+      || (entry.name === undefined && entry.words === undefined)) {
+      unknownStreak += 1;
+      continue;
+    }
+    unknownStreak = 0;
+    spells.push({
+      sid: sid,
+      name: typeof entry.name === 'string' && entry.name ? entry.name : 'spell ' + sid,
+      words: typeof entry.words === 'string' ? entry.words : '',
+      mana: num(entry.mana),
+      level: num(entry.level),
+      vocations: Array.isArray(entry.vocations)
+        ? entry.vocations.filter((v) => typeof v === 'string') : [],
+    });
+  }
+
+  const player = (gameClient && gameClient.player) || {};
+  const level = num(player.level);
+  let label = null;
+  try {
+    // Live-probed location (obs 10457): hotbarManager.__VOCATION_NAMES maps
+    // the numeric vocation id to its string label ("druid", "sorcerer", ...).
+    const hb = (gameClient.interface && gameClient.interface.hotbarManager)
+      || gameClient.hotbarManager || null;
+    const table = hb && hb.__VOCATION_NAMES || null;
+    if (table && player.vocation !== undefined && table[player.vocation]) {
+      label = table[player.vocation];
+    }
+  } catch (e) { label = null; }
+
+  return { spells, playerLevel: level, vocationLabel: label };
+}
+
+/**
+ * Pure filter (design D5, REQ-28): keep only spells the given vocation label
+ * + player level can cast — `vocations[]` includes the label (an EMPTY
+ * vocations array means "no restriction") AND `level <= playerLevel`.
+ * @param {Array<object>} spells - raw catalog rows ({sid, name, words, mana, level, vocations})
+ * @param {object} [opts]
+ * @param {string} [opts.vocationLabel] - current player's vocation label
+ * @param {number|null} [opts.playerLevel] - current player level
+ * @returns {Array<object>}
+ */
+function filterCatalogByVocation(spells, opts = {}) {
+  const label = typeof opts.vocationLabel === 'string' ? opts.vocationLabel : '';
+  const playerLevel = opts.playerLevel;
+  return (Array.isArray(spells) ? spells : []).filter((s) => {
+    if (!s || typeof s !== 'object') return false;
+    const vocations = Array.isArray(s.vocations) ? s.vocations : [];
+    if (label && vocations.length > 0 && vocations.indexOf(label) === -1) return false;
+    if (playerLevel !== null && playerLevel !== undefined
+      && Number.isFinite(Number(s.level)) && Number(s.level) > playerLevel) return false;
+    return true;
+  });
+}
+
+/**
+ * Pure per-sid rejection (design D5/D6, REQ-27/28): WHY a spell cannot be
+ * applied to the current character — or null when it can. Used by the panel
+ * server for the cross-load rejection list (load-profile) and the mana
+ * re-check on config save. `mana` is optional: the cross-load path validates
+ * vocation/level only; the save path adds the live-mana check.
+ * @param {object|null} spell - catalog row for the sid
+ * @param {object} [ctx]
+ * @param {string} [ctx.vocationLabel]
+ * @param {number|null} [ctx.playerLevel]
+ * @param {number|null} [ctx.mana] - current mana (save-path re-check only)
+ * @returns {{reason: string}|null}
+ */
+function spellValidationError(spell, ctx = {}) {
+  if (!spell || typeof spell !== 'object') return { reason: 'unknown spell' };
+  const label = typeof ctx.vocationLabel === 'string' ? ctx.vocationLabel : '';
+  const vocations = Array.isArray(spell.vocations) ? spell.vocations : [];
+  if (label && vocations.length > 0 && vocations.indexOf(label) === -1) {
+    return { reason: 'vocation mismatch — requires ' + vocations.join('/') };
+  }
+  if (ctx.playerLevel !== null && ctx.playerLevel !== undefined
+    && Number.isFinite(Number(spell.level)) && Number(spell.level) > ctx.playerLevel) {
+    return { reason: 'level too high — requires level ' + spell.level };
+  }
+  if (ctx.mana !== null && ctx.mana !== undefined
+    && Number.isFinite(Number(spell.mana)) && Number(spell.mana) > ctx.mana) {
+    return { reason: 'not enough mana — costs ' + spell.mana + ', you have ' + Math.floor(ctx.mana) };
+  }
+  return null;
+}
+
+module.exports = {
+  readStats,
+  readCooldown,
+  enumerateSpellCatalog,
+  filterCatalogByVocation,
+  spellValidationError,
+};
 
 return module.exports;
 })();
