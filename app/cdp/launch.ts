@@ -218,13 +218,17 @@ function registerKillOnExit(proc, opts = {}) {
   });
   const onExit = () => term();
   const onSignal = (sig) => {
-    term();
-    // Escalate: the process is leaving anyway; give the child a short grace
-    // before force-killing it (killChrome does the same, but the 'exit'
-    // handler may run first).
+    const code = sig === 'SIGINT' ? 130 : 143;
+    term(); // SIGTERM now — cooperating children die immediately
+    // Escalate AFTER the grace window, then leave. process.exit() before
+    // the timer would terminate the app and a SIGTERM-ignoring child would
+    // survive (threat row c — kill-on-quit). The 'exit' handler re-sends
+    // SIGTERM at exit, which is harmless.
     const graceMs = opts.graceMs !== undefined ? opts.graceMs : 2000;
-    setTimeout(() => { try { proc.kill('SIGKILL'); } catch (e) { /* gone */ } }, graceMs);
-    process.exit(sig === 'SIGINT' ? 130 : 143);
+    setTimeout(() => {
+      try { proc.kill('SIGKILL'); } catch (e) { /* already gone */ }
+      process.exit(code);
+    }, graceMs);
   };
   process.once('exit', onExit);
   process.on('SIGINT', onSignal);

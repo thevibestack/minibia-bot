@@ -212,7 +212,19 @@ test('RED 1.3: registerKillOnExit terminates the child on SIGTERM to the app', {
     `const { registerKillOnExit } = require(${JSON.stringify(LAUNCH_PATH)});`,
     "const fake = spawn(process.execPath, ['-e', 'setInterval(function () {}, 1000);'], { stdio: 'ignore' });",
     "process.stdout.write('CHILD_PID=' + fake.pid + '\\n');",
-    'registerKillOnExit(fake);',
+    'registerKillOnExit(fake, { graceMs: 400 });',
+    'setInterval(function () {}, 1000);', // stay alive until signalled
+  ].join('\n');
+  await runKillOnQuitScenario(wrapper, { exitVia: 'signal' });
+});
+
+test('RED 1.3: registerKillOnExit SIGKILL-escalates when the child ignores SIGTERM', { timeout: 15000 }, async () => {
+  const wrapper = [
+    "const { spawn } = require('node:child_process');",
+    `const { registerKillOnExit } = require(${JSON.stringify(LAUNCH_PATH)});`,
+    "const fake = spawn(process.execPath, ['-e', 'process.on(\"SIGTERM\", function () {}); setInterval(function () {}, 1000);'], { stdio: 'ignore' });",
+    "process.stdout.write('CHILD_PID=' + fake.pid + '\\n');",
+    'registerKillOnExit(fake, { graceMs: 400 });',
     'setInterval(function () {}, 1000);', // stay alive until signalled
   ].join('\n');
   await runKillOnQuitScenario(wrapper, { exitVia: 'signal' });
