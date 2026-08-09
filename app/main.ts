@@ -207,6 +207,12 @@ async function runMain(opts) {
       staticDir: panelStaticDir,
       identity: () => bridge.getPlayerIdentity(session),
       applyConfig,
+      // REQ-25: offer decisions reach the in-page learning module via RPC
+      // (decline = session-silent; confirm goes through the config push path).
+      respondOffer: (action, word) => bridge.evaluate(
+        session,
+        'window.__mbAgent && window.__mbAgent.respondOffer(' + JSON.stringify(action) + ',' + JSON.stringify(word) + ')',
+      ),
       snapshot: () => bridge.evaluate(session, SNAPSHOT_EXPRESSION),
       store,
     });

@@ -122,15 +122,20 @@ test('REQ-02/09: /api/connect arms with the pre-filled per-character config', as
   assert.equal(body.ok, true);
   assert.deepEqual(body.identity, FLAMAMEX);
   assert.equal(body.config.character, 'Flamamex');
-  assert.equal(body.config.modules.trade.on, true, 'saved config pre-fills');
+  // REQ-18 (slice 5): the trade toggle is SESSION-scoped — a NEW session
+  // starts with the toggle OFF even when the saved file carries on:true
+  // (mirror the game: "Toggle resets to OFF on logout"; re-enable each
+  // session via the panel toggle -> /api/config live push, never persisted).
+  assert.equal(body.config.modules.trade.on, false, 'session-scoped toggle pre-fills OFF (REQ-18)');
 
   assert.equal(calls.applyConfig.length, 1, 'one armed push');
   assert.equal(calls.applyConfig[0].armed, true, 'push carries armed:true (REQ-02 gate)');
   assert.equal(calls.applyConfig[0].connected, true);
-  assert.equal(calls.applyConfig[0].modules.trade.on, true);
+  assert.equal(calls.applyConfig[0].modules.trade.on, false, 'the new-session push is OFF (REQ-18)');
 
   const reloaded = store.loadCharacter({ baseDir: base, name: 'Flamamex' });
   assert.equal(reloaded.config.connected, true, 'connected persisted');
+  assert.equal(reloaded.config.modules.trade.on, false, 'the on-state is never persisted (REQ-18)');
   assert.equal(calls.saveCount >= 1, true);
 });
 

@@ -100,6 +100,19 @@
         postJson('/api/config', { character: state.identity ? state.identity.name : null, config: cfg });
         break;
       }
+      case 'offer-confirm':
+      case 'offer-decline': {
+        // REQ-25: user decision on a learning offer. Confirm -> the server
+        // persists the word into the character config (store) and pushes the
+        // updated config; Decline -> the server RPCs the agent to silence the
+        // word for the session.
+        postJson('/api/offer', {
+          action: effect.type === 'offer-confirm' ? 'confirm' : 'decline',
+          word: effect.word,
+          character: state.identity ? state.identity.name : null,
+        });
+        break;
+      }
       default:
         break;
     }
@@ -155,6 +168,13 @@
     if (target.matches('#connect-btn')) dispatch({ type: 'CONNECT' });
     else if (target.matches('#cancel-btn')) dispatch({ type: 'CANCEL' });
     else if (target.matches('#disconnect-btn')) dispatch({ type: 'DISCONNECT' });
+    else if (target.matches('.offer-btn')) {
+      // REQ-25: Confirm/Decline on a registration offer.
+      var word = target.getAttribute('data-word') || '';
+      var action = target.getAttribute('data-offer-action') || '';
+      if (action === 'confirm') dispatch({ type: 'CONFIRM_OFFER', word: word });
+      else if (action === 'decline') dispatch({ type: 'DECLINE_OFFER', word: word });
+    }
   });
 
   /* -------------------------------- boot -------------------------------- */

@@ -40,12 +40,21 @@ const CD_MOD = require('../core/cooldown');
 const GC_MOD = require('../adapters/gameClient');
 const FIRING_MOD = require('../adapters/firing');
 const CHAT_MOD = require('../adapters/chat');
+const PREMIUM_MOD = require('../core/premium');
+const KILLS_MOD = require('../core/kills');
 // Slice-4 modules (REQ-13..17) — pure decision modules, tree-wired below.
 const HEAL_ITEMS_MOD = require('./modules/heal-items');
 const HEAL_MAGIC_MOD = require('./modules/heal-magic');
 const RUNES_MOD = require('./modules/runes');
 const TRAINING_MOD = require('./modules/training');
 const EAT_MODULE_MOD = require('./modules/eat');
+// Slice-5 modules (REQ-18..22,24,25) — ported automations + carry-overs.
+const TRADE_MOD = require('./modules/trade');
+const LOOT_MOD = require('./modules/loot');
+const SPAWNS_MOD = require('./modules/spawns');
+const HUNT_STATS_MOD = require('./modules/huntStats');
+const ECHO_MOD = require('./modules/echo');
+const LEARNING_MOD = require('./modules/learning');
 
 /** Minimal slice-2 config shape (per-character store lands in slice 3). */
 const DEFAULT_CONFIG = {
@@ -57,10 +66,18 @@ const DEFAULT_CONFIG = {
   // Shapes match app/store/characters.ts defaultConfig (slice 3) + additive
   // settings: runes.healThreshold, eat.slot, eat.cids (design extensions).
   healItems: { on: false, threshold: 50, slotCids: [] },
-  healMagic: { on: false, threshold: 150, slot: null, sid: null },
+  healMagic: { on: false, threshold: 150, slot: null, sid: null, word: null },
   runes: { on: false, attackSlot: null, healSlot: null, healThreshold: null },
-  training: { on: false, slot: null, sid: null, reserve: 0 },
+  training: { on: false, slot: null, sid: null, reserve: 0, word: null },
   eat: { on: false, everyCasts: 0, warningWindowSec: 60, fallbackIntervalSec: 10, slot: null, cids: [] },
+  // Slice-5 modules — ALL OFF by default (opt-in). Shapes match
+  // app/store/characters.ts defaultConfig + additive: healMagic/training word
+  // (echo validation REQ-24), learning.knownWords (REQ-25 registration).
+  trade: { on: false, message: '', intervalMs: 180000 },
+  loot: { on: false, defaultDest: null, perMonster: {} },
+  spawns: { on: false },
+  huntStats: { on: false },
+  learning: { knownWords: [] },       // REQ-25: observation always runs while armed
   armed: false,                                      // interconnection gate (REQ-02, slice 3)
 };
 
@@ -77,10 +94,15 @@ function normalizeConfig(raw) {
     survival: { on: true, threshold: 50, slot: null },
     rotation: { spells: [] },
     healItems: { on: false, threshold: 50, slotCids: [] },
-    healMagic: { on: false, threshold: 150, slot: null, sid: null },
+    healMagic: { on: false, threshold: 150, slot: null, sid: null, word: null },
     runes: { on: false, attackSlot: null, healSlot: null, healThreshold: null },
-    training: { on: false, slot: null, sid: null, reserve: 0 },
+    training: { on: false, slot: null, sid: null, reserve: 0, word: null },
     eat: { on: false, everyCasts: 0, warningWindowSec: 60, fallbackIntervalSec: 10, slot: null, cids: [] },
+    trade: { on: false, message: '', intervalMs: 180000 },
+    loot: { on: false, defaultDest: null, perMonster: {} },
+    spawns: { on: false },
+    huntStats: { on: false },
+    learning: { knownWords: [] },
     armed: false,
   };
   if (Number.isFinite(src.queue && src.queue.minIntervalMs) && src.queue.minIntervalMs >= 0) {
@@ -126,6 +148,34 @@ function normalizeConfig(raw) {
   if (Number.isFinite(ea.fallbackIntervalSec) && ea.fallbackIntervalSec > 0) cfg.eat.fallbackIntervalSec = ea.fallbackIntervalSec;
   if (Number.isInteger(ea.slot)) cfg.eat.slot = ea.slot;
   if (Array.isArray(ea.cids)) cfg.eat.cids = ea.cids.map(Number).filter(Number.isInteger).filter((n) => n >= 0);
+  // --- Slice-5 module normalization (REQ-18..22,24,25) ---
+  const hm5 = src.healMagic && typeof src.healMagic === 'object' ? src.healMagic : {};
+  if (typeof hm5.word === 'string') cfg.healMagic.word = hm5.word; // echo validation (REQ-24)
+  const tr5 = src.training && typeof src.training === 'object' ? src.training : {};
+  if (typeof tr5.word === 'string') cfg.training.word = tr5.word;   // echo validation (REQ-24)
+  const td = src.trade && typeof src.trade === 'object' ? src.trade : {};
+  if (typeof td.on === 'boolean') cfg.trade.on = td.on;
+  if (typeof td.message === 'string') cfg.trade.message = td.message;
+  if (Number.isFinite(td.intervalMs) && td.intervalMs > 0) cfg.trade.intervalMs = td.intervalMs;
+  const lt = src.loot && typeof src.loot === 'object' ? src.loot : {};
+  if (typeof lt.on === 'boolean') cfg.loot.on = lt.on;
+  if (typeof lt.defaultDest === 'string') cfg.loot.defaultDest = lt.defaultDest;
+  if (lt.perMonster && typeof lt.perMonster === 'object' && !Array.isArray(lt.perMonster)) {
+    cfg.loot.perMonster = {};
+    for (const key of Object.keys(lt.perMonster)) {
+      if (typeof lt.perMonster[key] === 'string') cfg.loot.perMonster[key] = lt.perMonster[key];
+    }
+  }
+  const sp = src.spawns && typeof src.spawns === 'object' ? src.spawns : {};
+  if (typeof sp.on === 'boolean') cfg.spawns.on = sp.on;
+  const hs = src.huntStats && typeof src.huntStats === 'object' ? src.huntStats : {};
+  if (typeof hs.on === 'boolean') cfg.huntStats.on = hs.on;
+  const le = src.learning && typeof src.learning === 'object' ? src.learning : {};
+  if (Array.isArray(le.knownWords)) {
+    cfg.learning.knownWords = le.knownWords
+      .filter((w) => typeof w === 'string' && w.trim())
+      .map((w) => w.trim());
+  }
   cfg.armed = src.armed === true; // REQ-02: only an explicit true arms
   return cfg;
 }
@@ -181,7 +231,19 @@ function createAgent(opts = {}) {
     lastDispatch: [],
     warnings: [],
     errors: [],
+    // Session-scoped state (survives config rebuilds within a session,
+    // reset on agent restart): the trade cadence anchor (REQ-18 "toggle
+    // resets on logout") + the kill observer baseline.
+    timers: { tradeLastSentAt: 0 },
   };
+
+  // Shared active-creature diff observer (core/kills): feeds huntStats
+  // kills/loot (REQ-21) and loot routing (REQ-19). Baseline resets on every
+  // rebuild (new session/config).
+  state.killObserver = KILLS_MOD.createKillObserver({
+    readActiveCreatures: readActiveCreatures,
+    now: nowFn,
+  });
 
   /* ------------------------------ tree + queue ----------------------------- */
 
@@ -266,6 +328,126 @@ function createAgent(opts = {}) {
     return wait;
   }
 
+  /* ------------------- slice-5 feature-detect readers (REQ-18..22) ------------------- */
+
+  /** Premium gate (REQ-22, core/premium): feature-detect over the probed
+   *  candidate locations; unknown state never blocks (no hard dependency). */
+  function readPremium() {
+    return PREMIUM_MOD.readPremiumState(state.gameClient, nowFn);
+  }
+
+  /** Live active-creature list (kill feed, REQ-21/19): world.activeCreatures
+   *  probed (obs 10320); null when the array is absent (kill source degrade). */
+  function readActiveCreatures() {
+    try {
+      const gc = state.gameClient;
+      const world = gc && gc.world;
+      const list = (world && world.activeCreatures) || (gc && gc.activeCreatures) || (world && world.creatures);
+      return Array.isArray(list) ? list : null;
+    } catch (e) { return null; }
+  }
+
+  /** XP/gold counters (REQ-21): player.state/player candidates, feature-detected. */
+  function readHuntCounters() {
+    try {
+      const p = state.gameClient && state.gameClient.player;
+      if (!p) return { xp: null, gold: null };
+      const rawXp = (p.state && p.state.xp) || p.xp || (p.state && p.state.experience);
+      const rawGold = (p.state && p.state.gold) || p.gold || (p.state && p.state.money);
+      const xp = Number.isFinite(Number(rawXp)) ? Number(rawXp) : null;
+      const gold = Number.isFinite(Number(rawGold)) ? Number(rawGold) : null;
+      return { xp, gold };
+    } catch (e) { return { xp: null, gold: null }; }
+  }
+
+  /** Trade-channel send surface (REQ-18, design D6): channelManager resolved
+   *  by id 2 (Trade — live-probed channels, obs 10320) with the send method
+   *  feature-detected. Returns {send, label} or null (degrade). */
+  function readTradeChannel() {
+    try {
+      const gc = state.gameClient;
+      const manager = (gc && ((gc.interface && gc.interface.channelManager) || gc.channelManager)) || null;
+      if (!manager) return null;
+      let channel = null;
+      if (typeof manager.getChannelById === 'function') channel = manager.getChannelById(2);
+      if (!channel && typeof manager.getChannel === 'function') {
+        try { channel = manager.getChannel(2); } catch (e) { channel = null; }
+      }
+      if (!channel && manager.channels && manager.channels[2]) channel = manager.channels[2];
+      if (!channel && typeof manager.getChannel === 'function') {
+        try { channel = manager.getChannel('Trade'); } catch (e) { channel = null; }
+      }
+      if (!channel || typeof channel !== 'object') return null;
+      const send = channel.send || channel.sendMessage || channel.sendChat
+        || channel.message || channel.sendChannelMessage;
+      if (typeof send !== 'function') return null;
+      return { send: send.bind(channel), label: 'Trade(2)' };
+    } catch (e) { return null; }
+  }
+
+  /** Loot-command surface (REQ-19): feature-detected game function
+   *  (monster, destination) => void; null = unavailable (degrade). */
+  function readLootCommand() {
+    try {
+      const gc = state.gameClient;
+      const cands = [gc && gc.lootCommands, gc && gc.autoLoot, gc && gc.lootManager,
+        gc && gc.interface && gc.interface.lootManager, gc && gc.loot];
+      for (const c of cands) {
+        if (!c) continue;
+        for (const name of ['routeLoot', 'sendLoot', 'setDestination', 'route', 'assign', 'command']) {
+          if (typeof c[name] === 'function') return c[name].bind(c);
+        }
+        if (typeof c === 'function') return c;
+      }
+      return null;
+    } catch (e) { return null; }
+  }
+
+  /** Spawn-map data reader (REQ-20): feature-detect the game's spawn-data
+   *  structure (open probe 5.3); returns raw locations or null ("no spawn
+   *  data"). Pure normalization lives in the spawns module. */
+  function readSpawnData(monster) {
+    try {
+      const gc = state.gameClient;
+      const world = gc && gc.world;
+      const cands = [gc && gc.spawns, world && world.spawns, gc && gc.spawnMap,
+        gc && gc.monsterSpawns, gc && gc.interface && gc.interface.spawnManager,
+        world && world.spawnData, gc && gc.spawnLocations];
+      for (const c of cands) {
+        if (!c) continue;
+        if (typeof c.query === 'function') {
+          const r = c.query(monster);
+          if (r !== null && r !== undefined) return r;
+        } else if (typeof c.get === 'function') {
+          const r = c.get(monster);
+          if (r !== null && r !== undefined) return r;
+        } else if (typeof c === 'object' && c[monster] !== undefined) {
+          return c[monster];
+        }
+      }
+      return null;
+    } catch (e) { return null; }
+  }
+
+  /** Configured words for the learning observer (REQ-25): rotation spell
+   *  words + healMagic/training words + previously registered words. */
+  function configuredWords() {
+    const words = new Set();
+    const spells = (state.config && state.config.rotation && state.config.rotation.spells) || [];
+    for (const s of spells) {
+      if (s && typeof s.word === 'string' && s.word.trim()) words.add(s.word.trim());
+    }
+    const hm = state.config && state.config.healMagic;
+    if (hm && typeof hm.word === 'string' && hm.word.trim()) words.add(hm.word.trim());
+    const tr = state.config && state.config.training;
+    if (tr && typeof tr.word === 'string' && tr.word.trim()) words.add(tr.word.trim());
+    const le = state.config && state.config.learning;
+    if (le && Array.isArray(le.knownWords)) {
+      for (const w of le.knownWords) if (typeof w === 'string' && w.trim()) words.add(w.trim());
+    }
+    return words;
+  }
+
   function buildCombatRules(cfg) {
     const spells = (cfg.rotation.spells || []).filter((s) => Number.isInteger(s.slot) && s.slot >= 1 && s.slot <= 12);
     return spells.map((spell, index) => ({
@@ -323,6 +505,7 @@ function createAgent(opts = {}) {
     state.config = cfg;
     state.armed = cfg.armed === true; // REQ-02: arm/keep-disarmed on every config push
     state.ctx = { mana: null, maxMana: null, health: null, lastFiredAt: {}, castsSinceFood: 0, lastEatAt: 0 };
+    if (state.killObserver) state.killObserver.reset(); // new session/config -> fresh kill baseline
     state.queue = createQueue({
       minInterval: cfg.queue.minIntervalMs,
       jitter: cfg.jitter,
@@ -370,7 +553,78 @@ function createAgent(opts = {}) {
       now: nowFn,
       log,
     });
-    state.modules = { healItems: healItems, healMagic: healMagic, runes: runes, training: training, eat: eat };
+
+    /* -------- slice-5 modules (REQ-18..22,24,25): ported automations -------- */
+
+    // REQ-18: auto trade broadcast — cadence anchor lives in state.timers
+    // (session-scoped, survives config rebuilds; agent restart = new session,
+    // mirroring the game's "toggle resets to OFF on logout").
+    const trade = TRADE_MOD.createTradeModule({
+      config: cfg.trade,
+      timers: state.timers,
+      readChannel: readTradeChannel,
+      readPremium: readPremium,
+      now: nowFn,
+      log,
+    });
+    // REQ-19: auto-loot list — per-monster destinations + default; the kill
+    // feed comes from the shared observer (observeKills in tickOnce).
+    const loot = LOOT_MOD.createLootModule({
+      config: cfg.loot,
+      readLootCommand: readLootCommand,
+      readPremium: readPremium,
+      now: nowFn,
+      log,
+    });
+    // REQ-20: spawn maps — read-only provider; the panel queries it via the
+    // getSpawns surface RPC; state flows through the snapshot.
+    const spawns = SPAWNS_MOD.createSpawnsModule({
+      config: cfg.spawns,
+      readSpawnData: readSpawnData,
+      readPremium: readPremium,
+      log,
+    });
+    // REQ-21: hunt session stats — accumulator fed per tick (tickOnce). The
+    // panel toggle is the session start/stop control (ON = start, OFF =
+    // freeze). The module INSTANCE survives rebuilds (applyConfig
+    // transitions), so unrelated config pushes never reset a running session.
+    if (!state.huntStatsModule) {
+      state.huntStatsModule = HUNT_STATS_MOD.createHuntStats({
+        config: cfg.huntStats,
+        readCounters: readHuntCounters,
+        killObserver: state.killObserver,
+        readPremium: readPremium,
+        now: nowFn,
+        log,
+      });
+    } else {
+      state.huntStatsModule.applyConfig(cfg.huntStats);
+    }
+    const huntStats = state.huntStatsModule;
+    // REQ-24: echo validation — carried-over validator, started from the
+    // heal-magic/training queue closures when a word is configured.
+    const echo = ECHO_MOD.createEchoModule({
+      playerName: function () { return (state.gameClient && state.gameClient.player && state.gameClient.player.name) || null; },
+      gameClient: state.gameClient,
+      document: doc,
+      now: nowFn,
+      log,
+    });
+    // REQ-25: unknown-word observation + registration offer (panel renders
+    // offers from the module state; confirm/decline via server + RPC).
+    const learning = LEARNING_MOD.createLearningModule({
+      config: cfg.learning,
+      playerName: function () { return (state.gameClient && state.gameClient.player && state.gameClient.player.name) || null; },
+      configuredWords: configuredWords,
+      gameClient: state.gameClient,
+      document: doc,
+      now: nowFn,
+      log,
+    });
+    state.modules = {
+      healItems: healItems, healMagic: healMagic, runes: runes, training: training, eat: eat,
+      trade: trade, loot: loot, spawns: spawns, huntStats: huntStats, echo: echo, learning: learning,
+    };
 
     /* -------- tree nodes: survival > combat > training > eat > loot (REQ-11) -------- */
 
@@ -429,6 +683,11 @@ function createAgent(opts = {}) {
             if (!d.fire) return false;
             state.queue.enqueue(function () {
               healMagic.fire(d, { gameClient: state.gameClient, document: doc });
+              // REQ-24 echo validation: words-path fires only (word configured);
+              // direct casts without a word skip validation entirely.
+              if (cfg.healMagic && typeof cfg.healMagic.word === 'string' && cfg.healMagic.word.trim()) {
+                echo.startForFire('heal-magic', cfg.healMagic.word);
+              }
             }, { kind: 'heal-magic' });
             return true;
           },
@@ -523,6 +782,10 @@ function createAgent(opts = {}) {
             if (!d.fire) return false;
             state.queue.enqueue(function () {
               training.fire(d, { gameClient: state.gameClient, document: doc });
+              // REQ-24 echo validation: only when a training word is configured.
+              if (cfg.training && typeof cfg.training.word === 'string' && cfg.training.word.trim()) {
+                echo.startForFire('training', cfg.training.word);
+              }
             }, { kind: 'training-cast' });
             ctx.castsSinceFood = (ctx.castsSinceFood || 0) + 1; // every-N-casts counts training casts
             return true;
@@ -560,21 +823,78 @@ function createAgent(opts = {}) {
       ],
     };
 
-    const loot = {
+    // REQ-19: auto-loot — route kills with loot to the configured destination
+    // via the game's own loot-command surface (feature-detected; degrade =
+    // record/no-op with honest panel state). Queue-aware, one route per tick.
+    const lootNode = {
       type: 'sequence',
       id: 'loot',
       children: [
-        { type: 'condition', id: 'loot-feasible', predicate: function () { return false; } }, // slice 5
-        { type: 'action', id: 'loot-collect', run: function () { return false; } },
+        {
+          type: 'condition',
+          id: 'loot-feasible',
+          predicate: function () {
+            if (!cfg.loot.on) return false;
+            const d = loot.decide();
+            if (!d.fire) return false;
+            return !state.queue.hasPending(function (e) { return e.kind === 'loot-route'; });
+          },
+        },
+        {
+          type: 'action',
+          id: 'loot-collect',
+          run: function () {
+            const d = loot.decide();
+            if (!d.fire) return false;
+            // NO-BYPASS (REQ-12): the game loot command runs ONLY inside the
+            // queue-dispatched closure.
+            state.queue.enqueue(function () { loot.fire(d); }, { kind: 'loot-route' });
+            return true;
+          },
+        },
       ],
     };
+
+    // REQ-18: auto trade broadcast — 3-min cadence (default, mirror the game)
+    // to the Trade channel via the game's own channel mechanism. Lowest
+    // priority: a chat broadcast never pre-empts survival/combat (REQ-11).
+    const tradeNode = {
+      type: 'sequence',
+      id: 'trade',
+      children: [
+        {
+          type: 'condition',
+          id: 'trade-due',
+          predicate: function () {
+            if (!cfg.trade.on) return false;
+            const d = trade.decide();
+            if (!d.fire) return false;
+            return !state.queue.hasPending(function (e) { return e.kind === 'trade-broadcast'; });
+          },
+        },
+        {
+          type: 'action',
+          id: 'trade-send',
+          run: function () {
+            const d = trade.decide();
+            if (!d.fire) return false;
+            // NO-BYPASS (REQ-12): the channel send runs ONLY inside the
+            // queue-dispatched closure.
+            state.queue.enqueue(function () { trade.fire(d); }, { kind: 'trade-broadcast' });
+            return true;
+          },
+        },
+      ],
+    };
+
     state.tree = createTree({
       root: {
         type: 'selector',
         id: 'priority-root',
         // heal (items + magic + legacy slot-heal) > runes > combat > training
-        // > eat > loot (REQ-11: survival/heal always beats combat/loot/training).
-        children: [healItemsNode, healMagicNode, survival, runesNode, combat, trainingNode, eatNode, loot],
+        // > eat > loot > trade (REQ-11: survival/heal always beats
+        // combat/loot/training; trade broadcast is the lowest priority).
+        children: [healItemsNode, healMagicNode, survival, runesNode, combat, trainingNode, eatNode, lootNode, tradeNode],
       },
     });
   }
@@ -639,6 +959,15 @@ function createAgent(opts = {}) {
       if (stats.mana !== null) ctx.mana = stats.mana;
       if (stats.maxMana !== null) ctx.maxMana = stats.maxMana;
       ctx.health = stats.health;
+      // Pre-tree READ-ONLY feeds (REQ-06: reads only — no actions here):
+      //  - huntStats: per-tick accumulation (REQ-21)
+      //  - loot: kill observations from the shared observer (REQ-19)
+      //  - learning: Default-channel unknown-word observation (REQ-25)
+      const killScan = state.killObserver ? state.killObserver.scan() : { kills: [], available: false };
+      const m = state.modules;
+      if (m.huntStats) m.huntStats.accumulate(killScan);
+      if (m.loot) m.loot.observeKills(killScan.kills);
+      if (m.learning) m.learning.observeChat();
       const result = state.tree.tick(ctx);
       state.lastPath = result.path;
       state.lastDispatch = state.queue.drain(); // eligible entries fire here, in the queue
@@ -708,6 +1037,30 @@ function createAgent(opts = {}) {
         const m = state.modules && state.modules.runes;
         return m ? m.getState() : null; // REQ-15 real module state (slice 4)
       },
+      getSpawns: function (monster) {
+        // REQ-20 read-only RPC: the panel queries spawn locations for a
+        // monster through the app; result lands in the module state.
+        const m = state.modules && state.modules.spawns;
+        if (!m || !state.ready) return { available: false, reason: 'not ready', monster: String(monster || '') };
+        return m.query(monster);
+      },
+      respondOffer: function (action, word) {
+        // REQ-25: user decision on a learning offer. 'decline' silences the
+        // word for the session (RPC, no rebuild); 'confirm' is handled by the
+        // server via a config push (knownWords). Refused pre-Connect (REQ-02).
+        if (!state.armed) return { ok: false, reason: 'not connected' };
+        const m = state.modules && state.modules.learning;
+        if (!m) return { ok: false, reason: 'not ready' };
+        if (action === 'decline') {
+          m.decline(word);
+          return { ok: true, action: 'decline', word: String(word || '') };
+        }
+        if (action === 'confirm') {
+          m.markKnown(word);
+          return { ok: true, action: 'confirm', word: String(word || '') };
+        }
+        return { ok: false, reason: 'unknown action' };
+      },
       getWalkState: function () { return null; }, // slice 6
       getPlayerInfo: readPlayerInfo,
       applyConfig: applyConfig,
@@ -749,6 +1102,12 @@ function createAgent(opts = {}) {
       modules: {
         runes: modules.runes ? modules.runes.getState() : null,
         eat: modules.eat ? modules.eat.getState() : null,
+        trade: modules.trade ? modules.trade.getState() : null,
+        loot: modules.loot ? modules.loot.getState() : null,
+        spawns: modules.spawns ? modules.spawns.getState() : null,
+        huntStats: modules.huntStats ? modules.huntStats.getState() : null,
+        echo: modules.echo ? modules.echo.getState() : null,
+        learning: modules.learning ? modules.learning.getState() : null,
       },
       warnings: state.warnings.slice(),
       errors: state.errors.slice(),

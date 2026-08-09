@@ -37,7 +37,8 @@ const OUTPUT = path.join(ROOT, 'minibia-desktop-agent.js');
  * The 8 pre-existing core modules + the 5 agent-bound adapters are the design
  * D2 set; core/tree + core/queue are the NEW engine modules this slice adds
  * (REQ-10/11/12); core/items + the 5 slice-4 modules (REQ-13..17) extend the
- * registry; agent/bootstrap is the wiring (REQ-04).
+ * registry; core/premium + core/kills + the 7 slice-5 modules (REQ-18..22,24,
+ * 25) extend it further; agent/bootstrap is the wiring (REQ-04).
  */
 const AGENT_MODULES = [
   ['core/jitter', 'src/core/jitter.js'],
@@ -51,6 +52,8 @@ const AGENT_MODULES = [
   ['core/tree', 'src/core/tree.js'],
   ['core/queue', 'src/core/queue.js'],
   ['core/items', 'src/core/items.js'],
+  ['core/premium', 'src/core/premium.js'],
+  ['core/kills', 'src/core/kills.js'],
   ['adapters/gameClient', 'src/adapters/gameClient.js'],
   ['adapters/firing', 'src/adapters/firing.js'],
   ['adapters/eat', 'src/adapters/eat.js'],
@@ -61,6 +64,12 @@ const AGENT_MODULES = [
   ['agent/modules/runes', 'src/agent/modules/runes.js'],
   ['agent/modules/training', 'src/agent/modules/training.js'],
   ['agent/modules/eat', 'src/agent/modules/eat.js'],
+  ['agent/modules/trade', 'src/agent/modules/trade.js'],
+  ['agent/modules/loot', 'src/agent/modules/loot.js'],
+  ['agent/modules/spawns', 'src/agent/modules/spawns.js'],
+  ['agent/modules/huntStats', 'src/agent/modules/huntStats.js'],
+  ['agent/modules/echo', 'src/agent/modules/echo.js'],
+  ['agent/modules/learning', 'src/agent/modules/learning.js'],
   ['agent/bootstrap', 'src/agent/bootstrap.js'],
 ];
 

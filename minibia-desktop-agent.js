@@ -1314,6 +1314,244 @@ module.exports = { readContainers, findSlotByCid };
 return module.exports;
 })();
 
+__mbModules['core/premium'] = (function () {
+'use strict';
+const module = { exports: {} };
+const exports = module.exports;
+const require = __mbRequire;
+'use strict';
+
+/**
+ * Premium-gating detection (REQ-22, task 5.5).
+ *
+ * The game gates its native automations behind Premium ("Premium active — all
+ * automation features unlocked", live inventory obs 10312). The desktop bot
+ * mirrors that: gated modules (trade, loot, spawns, huntStats) read the
+ * account's premium state at runtime and report a "Premium required" state in
+ * the panel when the account explicitly lacks Premium; they stay disabled
+ * then. The app MUST NOT hard-depend on any gated feature and MUST keep other
+ * modules functional (REQ-22).
+ *
+ * Semantics of `active`:
+ *   - true  — an explicit premium flag / active subscription field is present.
+ *   - false — an explicit non-premium flag is present (module reports
+ *             "Premium required" and never fires).
+ *   - null  — NO premium field is exposed on the client (feature absent). The
+ *             account may still have Premium (the field location is unprobed —
+ *             tools/automations-probe.js dumps candidates). Per REQ-22
+ *             "MUST NOT hard-depend", an unknown state NEVER blocks: the
+ *             module proceeds with its normal degrade paths.
+ *
+ * Pure node-testable: `readPremiumState` takes a gameClient-shaped object and
+ * an optional clock.
+ */
+
+/**
+ * Coerce a "valid until" value (number epoch-ms | Date | numeric string) to
+ * epoch ms. Returns null when unparseable.
+ */
+function toEpochMs(value) {
+  if (value === null || value === undefined) return null;
+  if (typeof value === 'object' && typeof value.getTime === 'function') return value.getTime();
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * Feature-detect the account's premium state over the live-probed candidate
+ * locations (obs 10312: the Hub shows the Premium banner; the exact client
+ * field is an open probe — automations-probe 5.5 dumps the candidates).
+ *
+ * @param {object|null} gameClient - page gameClient
+ * @param {() => number} [now=Date.now] - injectable clock (epoch ms)
+ * @returns {{gated: true, active: boolean|null, source: string|null}}
+ */
+function readPremiumState(gameClient, now = Date.now) {
+  if (!gameClient || typeof gameClient !== 'object') return { gated: true, active: null, source: null };
+  const p = gameClient.player;
+  const acct = gameClient.account;
+  const intf = gameClient.interface;
+
+  // Boolean flags first (explicit answer).
+  const booleanCandidates = [
+    ['player.premium', p && p.premium],
+    ['player.state.premium', p && p.state && p.state.premium],
+    ['player.vip', p && p.vip],
+    ['account.premium', acct && acct.premium],
+    ['gameClient.premium', gameClient.premium],
+    ['interface.premium', intf && intf.premium],
+  ];
+  for (const [source, value] of booleanCandidates) {
+    if (typeof value === 'boolean') return { gated: true, active: value, source };
+  }
+
+  // "Valid until" timestamps (premiumUntil / days-left numeric).
+  const untilCandidates = [
+    ['player.premiumUntil', p && p.premiumUntil],
+    ['player.state.premiumUntil', p && p.state && p.state.premiumUntil],
+    ['account.premiumUntil', acct && acct.premiumUntil],
+    ['gameClient.premiumUntil', gameClient.premiumUntil],
+  ];
+  for (const [source, value] of untilCandidates) {
+    const t = toEpochMs(value);
+    if (t !== null) return { gated: true, active: t > now(), source };
+  }
+
+  // String status fields ("Premium active", "inactive", "active", "none").
+  const stringCandidates = [
+    ['player.premiumStatus', p && p.premiumStatus],
+    ['account.subscription', acct && acct.subscription],
+    ['gameClient.premiumStatus', gameClient.premiumStatus],
+  ];
+  for (const [source, value] of stringCandidates) {
+    if (typeof value !== 'string' || !value.trim()) continue;
+    const s = value.trim().toLowerCase();
+    let active = null;
+    if (s.includes('premium')) {
+      active = !(s.includes('no ') || s.startsWith('inactive') || s === 'inactive');
+    } else if (/^(inactive|expired|none|no)/.test(s)) {
+      active = false;
+    } else if (/^(active|yes|enabled|true)/.test(s)) {
+      active = true;
+    }
+    if (active !== null) return { gated: true, active, source };
+  }
+
+  // Feature absent: unknown. NEVER blocks (REQ-22 no hard dependency).
+  return { gated: true, active: null, source: null };
+}
+
+/**
+ * REQ-22 gate predicate: a gated module is blocked ONLY when the account
+ * explicitly reports no Premium. Unknown state (null) is not blocked.
+ * @param {{gated?: boolean, active?: boolean|null}} state
+ * @returns {boolean}
+ */
+function isPremiumBlocked(state) {
+  return Boolean(state && state.gated && state.active === false);
+}
+
+module.exports = { readPremiumState, isPremiumBlocked, toEpochMs };
+
+return module.exports;
+})();
+
+__mbModules['core/kills'] = (function () {
+'use strict';
+const module = { exports: {} };
+const exports = module.exports;
+const require = __mbRequire;
+'use strict';
+
+/**
+ * Kill observation via active-creature diffs (REQ-21/REQ-19 feed, task 5.4).
+ *
+ * The game keeps the currently-active creatures on the client
+ * (`world.activeCreatures`, live-probed surface obs 10320). A KILL is a
+ * creature that was present in the previous scan and is absent now — a pure
+ * diff over the active set. This observer feeds:
+ *   - huntStats kills-per-hour + loot-per-hour (REQ-21),
+ *   - loot routing (REQ-19): a killed creature with loot info routes to the
+ *     configured destination.
+ *
+ * Feature-detect: `readActiveCreatures` returns the array or null. When the
+ * array is absent (unprobed location, uninitialized world) the observer
+ * reports `available: false` and produces no kills — the modules record the
+ * honest "no kill data" degrade instead of inventing events.
+ *
+ * Pure node-testable: injectable reader + clock.
+ */
+
+/** Identity of a creature entry (stable across scans). */
+function creatureId(entry) {
+  if (!entry || typeof entry !== 'object') return null;
+  if (entry.id !== undefined && entry.id !== null) return 'id|' + String(entry.id);
+  if (entry.speciesId !== undefined && entry.speciesId !== null) return 'sid|' + String(entry.speciesId);
+  if (entry.name !== undefined && entry.name !== null) return 'name|' + String(entry.name);
+  return null;
+}
+
+/** Best-effort display name of a creature entry. */
+function creatureName(entry) {
+  if (!entry || typeof entry !== 'object') return null;
+  if (typeof entry.name === 'string' && entry.name) return entry.name;
+  if (typeof entry.speciesName === 'string' && entry.speciesName) return entry.speciesName;
+  if (typeof entry.type === 'string' && entry.type) return entry.type;
+  return null;
+}
+
+/**
+ * Loot availability for a creature: true/false when the entry exposes a
+ * `loot` field; null when the field is absent (unknown — unprobed).
+ */
+function creatureLoot(entry) {
+  if (!entry || typeof entry !== 'object' || entry.loot === undefined) return null;
+  return Boolean(entry.loot);
+}
+
+/**
+ * Create the kill observer.
+ *
+ * @param {object} [opts]
+ * @param {() => Array<object>|null} [opts.readActiveCreatures] - feature-detect
+ *   reader for the live active-creature list; null/absent => unavailable
+ * @param {() => number} [opts.now=Date.now] - injectable clock (epoch ms)
+ * @returns {{
+ *   scan: () => {kills: Array<{id: string, name: string|null, loot: boolean|null}>, available: boolean},
+ *   reset: () => void,
+ * }}
+ */
+function createKillObserver({ readActiveCreatures = () => null, now = Date.now } = {}) {
+  let previous = new Map(); // id -> entry
+  let initialized = false;
+
+  /**
+   * Diff the current active set against the previous scan. Kills = creatures
+   * that disappeared since the last scan (player aggression or other causes —
+   * the game does not distinguish; v1 counts disappearances, feature-detected
+   * from the array). First scan only establishes the baseline.
+   * @returns {{kills: Array<{id: string, name: string|null, loot: boolean|null}>, available: boolean}}
+   */
+  function scan() {
+    const current = typeof readActiveCreatures === 'function' ? readActiveCreatures() : null;
+    if (!Array.isArray(current)) {
+      initialized = false;
+      previous = new Map();
+      return { kills: [], available: false };
+    }
+    const nowMap = new Map();
+    const kills = [];
+    for (const entry of current) {
+      const id = creatureId(entry);
+      if (id === null) continue;
+      nowMap.set(id, entry);
+    }
+    if (initialized) {
+      for (const [id, entry] of previous) {
+        if (!nowMap.has(id)) {
+          kills.push({ id, name: creatureName(entry), loot: creatureLoot(entry) });
+        }
+      }
+    }
+    previous = nowMap;
+    initialized = true;
+    return { kills, available: true };
+  }
+
+  /** Drop the baseline (agent rebuild / new session). */
+  function reset() {
+    previous = new Map();
+    initialized = false;
+  }
+
+  return { scan, reset };
+}
+
+module.exports = { createKillObserver, creatureId, creatureName, creatureLoot };
+
+return module.exports;
+})();
+
 __mbModules['adapters/gameClient'] = (function () {
 'use strict';
 const module = { exports: {} };
@@ -2851,6 +3089,1041 @@ module.exports = { createEatModule };
 return module.exports;
 })();
 
+__mbModules['agent/modules/trade'] = (function () {
+'use strict';
+const module = { exports: {} };
+const exports = module.exports;
+const require = __mbRequire;
+'use strict';
+
+/**
+ * Auto trade broadcast module (REQ-18, design D6 "Trade" row, task 5.1).
+ *
+ * Ports the game's native Hub -> Automations "Auto Trade Broadcast": send a
+ * configured message to the Trade channel every N minutes (default 3, mirror
+ * the game). The send goes through the game's OWN channel mechanism
+ * (channelManager) — feature-detected; never an invented protocol write.
+ *
+ * Session semantics (mirror the game): the toggle resets to OFF on session
+ * end. The desktop mirror: the panel/agent NEVER persist `trade.on` — the
+ * saved per-character config always carries `on:false` (server strips it
+ * before saving; disconnect clears it). Within a session, the cadence anchor
+ * (`timers.tradeLastSentAt`) lives in agent-owned state so config pushes do
+ * not reset the 3-minute clock; a fresh session (agent restart) restarts it —
+ * exactly like the game's logout reset.
+ *
+ * Degrade (unprobed send API): when the game's channel/send surface is
+ * absent, the module records "no native trade channel" in its state (panel
+ * sees it) and NEVER sends — no invented fallback.
+ *
+ * Premium gate (REQ-22): the game's trade automation is premium-gated; when
+ * the account explicitly lacks Premium the module reports "Premium required"
+ * and never sends. Unknown premium state never blocks.
+ *
+ * fire() runs ONLY inside a queue-dispatched closure (REQ-12 no-bypass).
+ */
+
+/**
+ * Create the trade broadcast module.
+ *
+ * @param {object} opts
+ * @param {object} opts.config - normalized trade config
+ *   { on: boolean, message: string, intervalMs: number }
+ * @param {object} [opts.timers] - shared session timers
+ *   { tradeLastSentAt: number } (agent-owned; survives config rebuilds)
+ * @param {() => {send: Function, label: string}|null} [opts.readChannel] -
+ *   feature-detected Trade-channel send accessor; null = unavailable
+ * @param {() => {gated: boolean, active: boolean|null, source: string|null}}
+ *   [opts.readPremium] - premium reader (REQ-22); unknown never blocks
+ * @param {() => number} [opts.now=Date.now] - injectable clock (epoch ms)
+ * @param {{error?: Function, warn?: Function}} [opts.log] - log sinks
+ * @returns {{
+ *   decide: (ctx: object) => {fire: boolean, reason: string, message?: string},
+ *   fire: (decision: object) => boolean,
+ *   getState: () => object,
+ *   isEnabled: () => boolean,
+ * }}
+ */
+function createTradeModule(opts = {}) {
+  const { config, timers = null, readChannel = null, readPremium = null, now = Date.now, log = {} } = opts;
+  const error = typeof log.error === 'function' ? log.error : () => {};
+
+  const state = { available: true, reason: 'ok' };
+
+  /** Eager premium read (REQ-22): the panel-facing state is computed on
+   *  getState — fresh regardless of whether the tree reached this module. */
+  function currentPremium() {
+    const p = typeof readPremium === 'function' ? readPremium() : null;
+    return {
+      gated: p ? p.gated : true,
+      active: p ? p.active : null,
+      blocked: Boolean(p && p.active === false),
+    };
+  }
+
+  /**
+   * Pure decision (REQ-18): ON + message configured + interval elapsed since
+   * the last send (default 3 minutes, mirror the game).
+   * @param {object} ctx - tick context (unused; cadence lives in timers)
+   * @returns {{fire: boolean, reason: string, message?: string}}
+   */
+  function decide() {
+    if (!config || config.on !== true) return { fire: false, reason: 'off' };
+    const premium = currentPremium();
+    if (premium.blocked) {
+      state.reason = 'premium-required';
+      return { fire: false, reason: 'premium-required' };
+    }
+    const message = String(config.message || '').trim();
+    if (!message) return { fire: false, reason: 'no-message' };
+    const intervalMs = Number(config.intervalMs) > 0 ? Number(config.intervalMs) : 180000; // 3 min default
+    const lastSentAt = timers ? Number(timers.tradeLastSentAt) || 0 : 0;
+    if (now() - lastSentAt < intervalMs) return { fire: false, reason: 'cooldown' };
+    state.reason = 'ok';
+    return { fire: true, reason: 'due', message };
+  }
+
+  /**
+   * Execute the Trade-channel send (QUEUE-DISPATCHED ONLY, REQ-12). The real
+   * send happens ONLY through the game's own channel mechanism (REQ-06
+   * handler boundary). Degrade: surface absent => record + no-op, never send.
+   * @param {{message: string}} decision - decided broadcast
+   * @returns {boolean} true when the channel send executed
+   */
+  function fire(decision = {}) {
+    const channel = typeof readChannel === 'function' ? readChannel() : null;
+    if (!channel || typeof channel.send !== 'function') {
+      state.available = false;
+      state.reason = 'no native trade channel';
+      error('trade: no native Trade-channel send surface — broadcast skipped (degrade)');
+      return false;
+    }
+    state.available = true;
+    state.reason = 'ok';
+    if (timers) timers.tradeLastSentAt = now();
+    try {
+      channel.send(decision.message);
+      return true;
+    } catch (e) {
+      error('trade: channel send failed: ' + (e && e.message ? e.message : e));
+      return false;
+    }
+  }
+
+  /** @returns {boolean} whether the module is configured ON */
+  function isEnabled() {
+    return Boolean(config && config.on === true);
+  }
+
+  /** @returns {object} module state (snapshot -> panel live state) */
+  function getState() {
+    return {
+      on: Boolean(config && config.on === true),
+      available: config && config.on === true ? state.available : false,
+      reason: config && config.on === true ? state.reason : 'off',
+      message: String((config && config.message) || ''),
+      intervalMs: Number(config && config.intervalMs) > 0 ? Number(config.intervalMs) : 180000,
+      lastSentAt: timers ? Number(timers.tradeLastSentAt) || 0 : 0,
+      premium: currentPremium(),
+    };
+  }
+
+  return { decide, fire, getState, isEnabled };
+}
+
+module.exports = { createTradeModule };
+
+return module.exports;
+})();
+
+__mbModules['agent/modules/loot'] = (function () {
+'use strict';
+const module = { exports: {} };
+const exports = module.exports;
+const require = __mbRequire;
+'use strict';
+
+/**
+ * Auto-loot list module (REQ-19, design "Loot" row, task 5.2).
+ *
+ * Ports the game's Hub -> Automations "Auto-Loot List" model: a destination
+ * PER MONSTER plus a default destination for "everything without its own
+ * destination" (mirror the game's Loot List, obs 10312). v1 = configuration
+ * + decision module: when a monster is killed and loot is available, the
+ * module routes the loot to the configured destination.
+ *
+ * - `route(monster)` (pure): per-monster destination wins; otherwise the
+ *   default destination; none configured => no route (recorded, no fire).
+ * - Kill feed: `observeKills(kills)` consumes kill observations from the
+ *   shared active-creature diff observer (core/kills); only kills WITH loot
+ *   info (`loot === true`) enter the bounded pending queue.
+ * - Fire path: the game's loot-command surface is FEATURE-DETECTED
+ *   (unprobed — tools/automations-probe.js 5.2 dumps candidates). When the
+ *   surface is absent the module records "no native loot command" (honest
+ *   panel state) and never invokes anything — degrade = record/no-op.
+ * - Premium gate (REQ-22): the game's auto-loot is premium-gated; an
+ *   explicit non-premium account reports "Premium required" and never fires.
+ *   Unknown premium state never blocks.
+ *
+ * fire() runs ONLY inside a queue-dispatched closure (REQ-12 no-bypass).
+ */
+
+const PENDING_CAP = 50;
+
+/**
+ * Create the loot routing module.
+ *
+ * @param {object} opts
+ * @param {object} opts.config - normalized loot config
+ *   { on: boolean, defaultDest: string|null, perMonster: Object<string,string> }
+ * @param {() => Function|null} [opts.readLootCommand] - feature-detected game
+ *   loot-command function (monster, destination) => void; null = unavailable
+ * @param {() => {gated: boolean, active: boolean|null, source: string|null}}
+ *   [opts.readPremium] - premium reader (REQ-22); unknown never blocks
+ * @param {() => number} [opts.now=Date.now] - injectable clock (epoch ms)
+ * @param {{error?: Function, warn?: Function}} [opts.log] - log sinks
+ * @returns {{
+ *   route: (monster: string) => {dest: string|null, source: string},
+ *   observeKills: (kills: Array<{name: string|null, loot: boolean|null}>) => void,
+ *   decide: () => {fire: boolean, reason: string, item?: object, route?: object},
+ *   fire: (decision: object) => boolean,
+ *   getState: () => object,
+ *   isEnabled: () => boolean,
+ * }}
+ */
+function createLootModule(opts = {}) {
+  const { config, readLootCommand = null, readPremium = null, now = Date.now, log = {} } = opts;
+  const error = typeof log.error === 'function' ? log.error : () => {};
+
+  const state = {
+    pending: [],
+    available: true,
+    reason: 'ok',
+    lastRouted: null,
+  };
+
+  /** Eager premium read (REQ-22): panel-facing state computed on getState. */
+  function currentPremium() {
+    const p = typeof readPremium === 'function' ? readPremium() : null;
+    return {
+      gated: p ? p.gated : true,
+      active: p ? p.active : null,
+      blocked: Boolean(p && p.active === false),
+    };
+  }
+
+  /**
+   * Pure destination resolution (REQ-19): per-monster first, then the default
+   * ("everything without its own destination"), else none.
+   * @param {string} monster - killed monster name
+   * @returns {{dest: string|null, source: 'per-monster'|'default'|'none'}}
+   */
+  function route(monster) {
+    const name = String(monster || '');
+    if (!name) return { dest: null, source: 'none' };
+    const per = config && config.perMonster && config.perMonster[name];
+    if (typeof per === 'string' && per.trim()) return { dest: per, source: 'per-monster' };
+    const def = config && config.defaultDest;
+    if (typeof def === 'string' && def.trim()) return { dest: def, source: 'default' };
+    return { dest: null, source: 'none' };
+  }
+
+  /**
+   * Consume kill observations (from the shared kill observer, core/kills).
+   * Only kills WITH loot info (`loot === true`) can be routed; the pending
+   * queue is bounded so a spammy feed cannot grow unboundedly.
+   * @param {Array<{name: string|null, loot: boolean|null}>} kills
+   */
+  function observeKills(kills = []) {
+    if (!Array.isArray(kills)) return;
+    for (const kill of kills) {
+      if (!kill || kill.loot !== true) continue; // no loot info => nothing to route
+      const monster = kill.name || 'unknown';
+      if (state.pending.some((p) => p.monster === monster && p.at === kill.at)) continue;
+      state.pending.push({ monster, at: now() });
+      if (state.pending.length > PENDING_CAP) state.pending.shift();
+    }
+  }
+
+  /**
+   * Pure decision: pending routable kill + a configured destination -> fire.
+   * @returns {{fire: boolean, reason: string, item?: object, route?: object}}
+   */
+  function decide() {
+    if (!config || config.on !== true) return { fire: false, reason: 'off' };
+    const premium = currentPremium();
+    if (premium.blocked) {
+      state.reason = 'premium-required';
+      return { fire: false, reason: 'premium-required' };
+    }
+    if (state.available === false) return { fire: false, reason: 'no-native-loot-command' };
+    if (state.pending.length === 0) return { fire: false, reason: 'no-pending' };
+    const item = state.pending[0];
+    const r = route(item.monster);
+    if (!r.dest) return { fire: false, reason: 'no-destination' };
+    state.reason = 'ok';
+    return { fire: true, reason: 'routed', item, route: r };
+  }
+
+  /**
+   * Execute the loot route (QUEUE-DISPATCHED ONLY, REQ-12). Degrade: no
+   * native loot command => record + no-op, and the module stops deciding
+   * (honest panel state; no re-enqueue churn). On success the pending item
+   * drains.
+   * @param {{item: {monster: string}, route: {dest: string}}} decision
+   * @returns {boolean} true when the game loot command executed
+   */
+  function fire(decision = {}) {
+    const cmd = typeof readLootCommand === 'function' ? readLootCommand() : null;
+    if (typeof cmd !== 'function') {
+      state.available = false;
+      state.reason = 'no native loot command';
+      error('loot: no native loot command surface — routing skipped (degrade)');
+      return false;
+    }
+    state.available = true;
+    state.reason = 'ok';
+    const item = decision.item || {};
+    try {
+      cmd(item.monster, decision.route && decision.route.dest);
+      state.pending.shift();
+      state.lastRouted = { monster: item.monster, dest: decision.route && decision.route.dest, at: now() };
+      return true;
+    } catch (e) {
+      error('loot: loot command failed: ' + (e && e.message ? e.message : e));
+      return false;
+    }
+  }
+
+  /** @returns {boolean} whether the module is configured ON */
+  function isEnabled() {
+    return Boolean(config && config.on === true);
+  }
+
+  /** @returns {object} module state (snapshot -> panel live state) */
+  function getState() {
+    const per = config && config.perMonster && typeof config.perMonster === 'object' ? config.perMonster : {};
+    return {
+      on: Boolean(config && config.on === true),
+      available: config && config.on === true ? state.available : false,
+      reason: config && config.on === true ? state.reason : 'off',
+      defaultDest: (config && config.defaultDest) || null,
+      perMonsterCount: Object.keys(per).length,
+      pendingCount: state.pending.length,
+      lastRouted: state.lastRouted,
+      premium: currentPremium(),
+    };
+  }
+
+  return { route, observeKills, decide, fire, getState, isEnabled };
+}
+
+module.exports = { createLootModule, PENDING_CAP };
+
+return module.exports;
+})();
+
+__mbModules['agent/modules/spawns'] = (function () {
+'use strict';
+const module = { exports: {} };
+const exports = module.exports;
+const require = __mbRequire;
+'use strict';
+
+/**
+ * Monster spawn maps provider (REQ-20, design "Spawns" row, task 5.3).
+ *
+ * Ports the game's Hub -> Automations "monster spawn maps" data read ("Pick a
+ * monster to see where it spawns"): v1 is a spawn-DATA PROVIDER that
+ * feature-detects the game's spawn-data structure (implementation probe —
+ * tools/automations-probe.js 5.3 dumps the candidates; the game loads spawn
+ * maps on demand per obs 10320) and exposes monster -> spawn locations.
+ * The panel displays the provider state via the live snapshot; the ROUTES
+ * consumption of spawn data is explicitly slice 6 (design: "ground-map
+ * overlay NOT required in v1").
+ *
+ * Degrade: when the game exposes no spawn data structure, the provider
+ * reports "no spawn data" in its state and the panel shows exactly that —
+ * never fails, never invents locations.
+ *
+ * Pure node-testable: the data reader is injected; the location normalizer is
+ * exported pure.
+ */
+
+/**
+ * Normalize a raw spawn-data read into a canonical location list
+ * [{x, y, z?}]. Accepts:
+ *   - an array of {x, y} / {x, y, z} / "x,y" strings
+ *   - a single {x, y} point
+ * Returns [] for shaped-but-empty data; null for unshaped garbage.
+ * @param {unknown} raw
+ * @returns {Array<{x: number, y: number, z?: number}>|null}
+ */
+function normalizeSpawnLocations(raw) {
+  if (raw === null || raw === undefined) return null;
+  const list = Array.isArray(raw) ? raw : [raw];
+  const out = [];
+  for (const item of list) {
+    if (item === null || item === undefined) continue;
+    if (typeof item === 'object') {
+      const x = Number(item.x);
+      const y = Number(item.y);
+      if (Number.isFinite(x) && Number.isFinite(y)) {
+        const z = Number(item.z);
+        out.push(Number.isFinite(z) ? { x, y, z } : { x, y });
+        continue;
+      }
+      if (typeof item.name === 'string' && Array.isArray(item.locations)) {
+        const nested = normalizeSpawnLocations(item.locations);
+        if (nested !== null) out.push(...nested);
+        continue;
+      }
+      return null; // shaped object we cannot interpret
+    }
+    if (typeof item === 'string') {
+      const parts = item.split(',').map((s) => Number(s.trim()));
+      if (parts.length >= 2 && parts.slice(0, 3).every(Number.isFinite)) {
+        out.push(parts.length >= 3 ? { x: parts[0], y: parts[1], z: parts[2] } : { x: parts[0], y: parts[1] });
+        continue;
+      }
+      return null;
+    }
+    return null;
+  }
+  return out.length > 0 ? out : null; // shaped-but-empty => "no spawn data"
+}
+
+/**
+ * Create the spawn-data provider module.
+ *
+ * @param {object} opts
+ * @param {object} opts.config - normalized spawns config { on: boolean }
+ * @param {(monster: string) => unknown} [opts.readSpawnData] - feature-detected
+ *   game spawn-data reader; null return/throw = "no spawn data"
+ * @param {() => {gated: boolean, active: boolean|null, source: string|null}}
+ *   [opts.readPremium] - premium reader (REQ-22); unknown never blocks
+ * @param {{error?: Function, warn?: Function}} [opts.log] - log sinks
+ * @returns {{
+ *   query: (monster: string) => object,
+ *   getState: () => object,
+ *   isEnabled: () => boolean,
+ * }}
+ */
+function createSpawnsModule(opts = {}) {
+  const { config, readSpawnData = null, readPremium = null, log = {} } = opts;
+  const warn = typeof log.warn === 'function' ? log.warn : () => {};
+
+  const state = { lastQuery: null };
+
+  /** Eager premium read (REQ-22): panel-facing state computed on getState. */
+  function currentPremium() {
+    const p = typeof readPremium === 'function' ? readPremium() : null;
+    return {
+      gated: p ? p.gated : true,
+      active: p ? p.active : null,
+      blocked: Boolean(p && p.active === false),
+    };
+  }
+
+  /**
+   * Query the spawn locations for a monster (read-only, REQ-20). The panel
+   * picker drives this via the getSpawns surface RPC; the result lands in the
+   * module state so the snapshot carries it into the panel live view.
+   * @param {string} monster
+   * @returns {{monster: string, locations: Array<{x:number,y:number,z?:number}>|null, available: boolean, reason: string}}
+   */
+  function query(monster) {
+    const name = String(monster || '').trim();
+    if (currentPremium().blocked) {
+      state.lastQuery = { monster: name, locations: null, available: false, reason: 'premium-required' };
+      return state.lastQuery;
+    }
+    if (!name) {
+      state.lastQuery = { monster: name, locations: null, available: false, reason: 'no-monster' };
+      return state.lastQuery;
+    }
+    let locations = null;
+    try {
+      const raw = typeof readSpawnData === 'function' ? readSpawnData(name) : null;
+      locations = normalizeSpawnLocations(raw);
+    } catch (e) {
+      warn('spawns: spawn data read failed: ' + (e && e.message ? e.message : e));
+      locations = null;
+    }
+    state.lastQuery = {
+      monster: name,
+      locations,
+      available: locations !== null,
+      reason: locations !== null ? 'ok' : 'no spawn data',
+    };
+    return state.lastQuery;
+  }
+
+  /** @returns {boolean} whether the module is configured ON */
+  function isEnabled() {
+    return Boolean(config && config.on === true);
+  }
+
+  /** @returns {object} module state (snapshot -> panel live state) */
+  function getState() {
+    const last = state.lastQuery || { monster: null, locations: null, available: false, reason: 'no spawn data' };
+    return {
+      on: Boolean(config && config.on === true),
+      available: last.available,
+      reason: last.reason,
+      lastQuery: last,
+      premium: currentPremium(),
+    };
+  }
+
+  return { query, getState, isEnabled };
+}
+
+module.exports = { createSpawnsModule, normalizeSpawnLocations };
+
+return module.exports;
+})();
+
+__mbModules['agent/modules/huntStats'] = (function () {
+'use strict';
+const module = { exports: {} };
+const exports = module.exports;
+const require = __mbRequire;
+'use strict';
+
+/**
+ * Hunt session stats module (REQ-21, design "Hunt stats" row, task 5.4).
+ *
+ * Ports the game's Hub -> Automations "hunt session tracker" ("Start one to
+ * track XP, gold, kills, and loot per hour", obs 10312). The module is an
+ * APP-SIDE accumulator fed by agent snapshots:
+ *
+ *   - `accumulate(scan)` runs once per engine tick (pre-tree, read-only) and
+ *     samples: XP/gold via feature-detected player counters, kills + loot via
+ *     the shared active-creature diff observer (core/kills).
+ *   - Per-hour rates: (current - baseline) / elapsed hours since session
+ *     start. The FIRST sample anchors the baseline.
+ *   - Session control from the panel: the huntStats module TOGGLE is the
+ *     session start/stop control (ON = start, OFF = stop+freeze). The module
+ *     INSTANCE survives config rebuilds (`applyConfig` transitions): an
+ *     unrelated config push while ON never resets a running session; only an
+ *     explicit off->on transition starts a fresh one.
+ *   - Counter sources are feature-detected (open probe 5.4,
+ *     tools/automations-probe.js dumps the candidates). Missing sources are
+ *     recorded per-metric in `available` (honest "no data" panel state) —
+ *     the tracker never invents numbers.
+ *
+ * Premium gate (REQ-22): the game's session tracker is premium-gated; an
+ * explicit non-premium account reports "Premium required" and stops
+ * accumulating. Unknown premium state never blocks.
+ *
+ * Pure node-testable: injected counter reader, kill observer, and clock.
+ */
+
+/**
+ * Create the hunt session stats module.
+ *
+ * @param {object} opts
+ * @param {object} opts.config - normalized huntStats config { on: boolean }
+ * @param {() => {xp: number|null, gold: number|null}} [opts.readCounters] -
+ *   feature-detected XP/gold counters (null metric = source absent)
+ * @param {object} [opts.killObserver] - core/kills observer (scan() per tick)
+ * @param {() => {gated: boolean, active: boolean|null, source: string|null}}
+ *   [opts.readPremium] - premium reader (REQ-22); unknown never blocks
+ * @param {() => number} [opts.now=Date.now] - injectable clock (epoch ms)
+ * @param {{error?: Function, warn?: Function}} [opts.log] - log sinks
+ * @returns {{
+ *   accumulate: (scan: {kills: Array<object>, available: boolean}) => void,
+ *   startSession: () => void,
+ *   stopSession: () => void,
+ *   getState: () => object,
+ *   isEnabled: () => boolean,
+ * }}
+ */
+function createHuntStats(opts = {}) {
+  let config = opts.config; // mutable: applyConfig drives session transitions
+  const { readCounters = null, killObserver = null, readPremium = null, now = Date.now, log = {} } = opts;
+  const warn = typeof log.warn === 'function' ? log.warn : () => {};
+
+  const state = {
+    running: false,
+    startedAt: 0,
+    baseline: null,
+    last: null, // {xp, gold, kills, loot, at}
+    killTotals: { kills: 0, loot: 0 }, // accumulates scan DELTAS (see accumulate)
+    totals: null, // {xp, gold, kills, loot} | null metric
+    perHour: null, // {xp, gold, kills, loot} | null metric
+    frozen: false,
+    available: { xp: false, gold: false, kills: false, loot: false },
+    lastSampleAt: 0,
+  };
+
+  /** Eager premium read (REQ-22): panel-facing state computed on getState. */
+  function currentPremium() {
+    const p = typeof readPremium === 'function' ? readPremium() : null;
+    return {
+      gated: p ? p.gated : true,
+      active: p ? p.active : null,
+      blocked: Boolean(p && p.active === false),
+    };
+  }
+
+  /**
+   * Sample the current raw counters + kill feed. Every metric is
+   * feature-detected; absent sources yield null (never invented).
+   * @param {{kills: Array<object>, available: boolean}} scan - kill observer scan
+   * @returns {{xp: number|null, gold: number|null, kills: number|null, loot: number|null, at: number}}
+   */
+  function sample(scan) {
+    const counters = typeof readCounters === 'function' ? readCounters() : null;
+    const xpRaw = counters && counters.xp;
+    const goldRaw = counters && counters.gold;
+    // null/undefined counters mean the SOURCE is absent (never coerce: Number(null) === 0).
+    const xp = (xpRaw !== null && xpRaw !== undefined && Number.isFinite(Number(xpRaw))) ? Number(xpRaw) : null;
+    const gold = (goldRaw !== null && goldRaw !== undefined && Number.isFinite(Number(goldRaw))) ? Number(goldRaw) : null;
+    const scanAvailable = Boolean(scan && scan.available && Array.isArray(scan.kills));
+    const kills = scanAvailable ? scan.kills.length : null;
+    // Loot v1 approximation (documented): counts kills whose entry carries
+    // loot:true. Entries without a loot field (unprobed shape — probe 5.4
+    // dumps the activeCreature entry keys) count 0. The source-level degrade
+    // ("no kill data") covers an absent activeCreatures array.
+    const loot = scanAvailable ? scan.kills.filter((k) => k && k.loot === true).length : null;
+    return { xp, gold, kills, loot, at: now() };
+  }
+
+  /** Start a hunt session (panel toggle ON). The next sample anchors the baseline. */
+  function startSession() {
+    state.running = true;
+    state.frozen = false;
+    state.baseline = null;
+    state.killTotals = { kills: 0, loot: 0 };
+    state.startedAt = now();
+  }
+
+  /** Stop the session (panel toggle OFF): stats freeze at the stop point (REQ-21). */
+  function stopSession() {
+    state.running = false;
+    state.frozen = true;
+  }
+
+  /**
+   * Per-tick accumulation (READ-ONLY, runs pre-tree in the agent tick).
+   *
+   * Two measurement families (documented):
+   *   - XP/gold are ABSOLUTE counters -> totals = current - baseline.
+   *   - kills/loot come from the shared kill observer whose scan() returns
+   *     DELTAS (creature disappearances since the last scan) -> totals
+   *     ACCUMULATE the scan deltas; per-hour = accumulated / elapsed hours.
+   *
+   * On stop the last computed snapshot stays frozen (REQ-21).
+   * @param {{kills: Array<object>, available: boolean}} scan
+   */
+  function accumulate(scan) {
+    if (!state.running) return;
+    if (currentPremium().blocked) {
+      state.running = false;
+      state.frozen = true; // frozen at the premium-block point, REQ-22
+      return;
+    }
+    const s = sample(scan);
+    state.lastSampleAt = s.at;
+    // Kill/loot deltas accumulate regardless of the baseline state.
+    if (s.kills !== null) state.killTotals.kills += s.kills;
+    if (s.loot !== null) state.killTotals.loot += s.loot;
+    if (!state.baseline) {
+      state.baseline = s; // first sample anchors the XP/gold baseline
+      state.available = {
+        xp: s.xp !== null, gold: s.gold !== null, kills: s.kills !== null, loot: s.loot !== null,
+      };
+      return;
+    }
+    const base = state.baseline;
+    // Elapsed hours; floored at 1 second so a same-tick rate cannot blow up
+    // to infinity (REQ-21 "per hour" semantics; sub-hour windows scale the
+    // rate accordingly, e.g. 0.5h doubles it).
+    const hours = Math.max(1 / 3600000, (s.at - state.startedAt) / 3600000);
+    const xp = s.xp !== null && base.xp !== null ? s.xp - base.xp : null;
+    const gold = s.gold !== null && base.gold !== null ? s.gold - base.gold : null;
+    // Kill/loot totals show ONLY while the kill source is live (honest
+    // degrade: an absent activeCreatures array reports "no data", never 0).
+    state.totals = {
+      xp,
+      gold,
+      kills: s.kills !== null ? state.killTotals.kills : null,
+      loot: s.loot !== null ? state.killTotals.loot : null,
+    };
+    state.perHour = {
+      xp: xp !== null ? xp / hours : null,
+      gold: gold !== null ? gold / hours : null,
+      kills: s.kills !== null ? state.killTotals.kills / hours : null,
+      loot: s.loot !== null ? state.killTotals.loot / hours : null,
+    };
+    state.available = {
+      xp: xp !== null,
+      gold: gold !== null,
+      kills: s.kills !== null,
+      loot: s.loot !== null,
+    };
+    state.last = s;
+  }
+
+  /**
+   * Config transition (the bootstrap calls this on EVERY rebuild; the module
+   * INSTANCE survives rebuilds so accumulated stats persist):
+   *   - off -> on : a hunt session STARTS (fresh baseline).
+   *   - on -> off : the session STOPS (stats freeze at the stop point,
+   *     REQ-21).
+   *   - on -> on : unrelated config pushes do NOT reset the running session.
+   * @param {object} next - normalized huntStats config
+   */
+  function applyConfig(next) {
+    const wasOn = Boolean(config && config.on === true);
+    const isOn = Boolean(next && next.on === true);
+    config = next || { on: false };
+    if (isOn && !state.running) startSession();
+    else if (!isOn && state.running) stopSession();
+  }
+
+  /** @returns {boolean} whether the module is configured ON */
+  function isEnabled() {
+    return Boolean(config && config.on === true);
+  }
+
+  /** @returns {object} module state (snapshot -> panel live state) */
+  function getState() {
+    return {
+      on: Boolean(config && config.on === true),
+      running: state.running,
+      startedAt: state.startedAt,
+      frozen: state.frozen,
+      totals: state.totals,
+      perHour: state.perHour,
+      available: state.available,
+      lastSampleAt: state.lastSampleAt,
+      premium: currentPremium(),
+    };
+  }
+
+  // Construction with the toggle ON = a hunt session in progress (the panel
+  // toggle is the start control; applyConfig drives later transitions).
+  if (config && config.on === true) startSession();
+
+  return { accumulate, applyConfig, startSession, stopSession, getState, isEnabled };
+}
+
+module.exports = { createHuntStats };
+
+return module.exports;
+})();
+
+__mbModules['agent/modules/echo'] = (function () {
+'use strict';
+const module = { exports: {} };
+const exports = module.exports;
+const require = __mbRequire;
+'use strict';
+
+/**
+ * Echo validation module (REQ-24, design "Echo" row, task 5.6).
+ *
+ * Carries the PROVEN userscript validation mechanism into the agent:
+ * src/core/validation.js (echo state machine, 2500ms window / 100ms poll) +
+ * src/adapters/chat.js (Default-channel-first reads) — unchanged semantics:
+ *
+ *   - After a WORDS-PATH fire (a slot whose config carries a `word` — the
+ *     game echoes the player's own typed word in the Default channel), the
+ *     agent polls for a new {name === player.name, message matching word}
+ *     entry within 2500ms (poll 100ms).
+ *   - pass -> counter increments (log).
+ *   - miss -> logged + the counter increments; NEVER refires (the validator
+ *     has no fire path by construction).
+ *   - skip -> when the firing path produces no echo (no `word` configured —
+ *     direct cast), validation is skipped entirely (REQ-24).
+ *
+ * Non-blocking: all timing flows through the validator's injectable
+ * schedule/clear/now; the engine tick never waits on it.
+ *
+ * Wire: bootstrap calls `startForFire(fireId, word)` from the heal-magic and
+ * training queue closures when their config carries a word.
+ */
+
+const VALID_MOD = require('core/validation');
+const CHAT_MOD = require('adapters/chat');
+
+/**
+ * Create the echo validation module.
+ *
+ * @param {object} opts
+ * @param {() => string|null} [opts.playerName] - current player name accessor
+ * @param {object|null} [opts.gameClient] - page gameClient (chat reads)
+ * @param {Document|null} [opts.document] - page DOM (chat DOM fallback)
+ * @param {() => number} [opts.now=Date.now] - injectable clock
+ * @param {(fn: () => void, ms: number) => object} [opts.schedule=setTimeout]
+ * @param {(handle: object) => void} [opts.clear=clearTimeout]
+ * @param {{error?: Function, warn?: Function, info?: Function}} [opts.log]
+ * @returns {{
+ *   startForFire: (fireId: string, word: string) => string,
+ *   getState: () => object,
+ * }}
+ */
+function createEchoModule(opts = {}) {
+  const {
+    playerName = () => null,
+    gameClient = null,
+    document: doc = null,
+    now = Date.now,
+    schedule = (typeof setTimeout === 'function' ? setTimeout : null),
+    clear = (typeof clearTimeout === 'function' ? clearTimeout : null),
+    log = {},
+  } = opts;
+  const info = typeof log.info === 'function' ? log.info : () => {};
+  const warn = typeof log.warn === 'function' ? log.warn : () => {};
+
+  const state = { passes: 0, misses: 0, active: false, lastResult: null, lastWord: null };
+
+  /** Proven userscript matcher (build-userscript.js buildValidator):
+   *  own message + exact word match, or /regex/ form. */
+  function matchesWord(entry, word) {
+    if (!entry || entry.name !== playerName()) return false;
+    const trimmed = String(word || '').trim();
+    if (!trimmed) return false;
+    const m = trimmed.match(/^\/(.+)\/([a-z]*)$/);
+    if (m) {
+      try { return new RegExp(m[1], m[2]).test(entry.message); } catch (e) { return false; }
+    }
+    return entry.message === trimmed;
+  }
+
+  const validator = VALID_MOD.createValidator({
+    windowMs: 2500, // REQ-24: echo window
+    pollMs: 100,    // REQ-24: poll cadence
+    enabled: true,
+    now: now,       // injectable clock (non-blocking, deterministic tests)
+    schedule: schedule,
+    clear: clear,
+    getCandidates: function () {
+      return CHAT_MOD.getRecentMessages({ gameClient: gameClient, document: doc }); // channel-first (REQ-24)
+    },
+    isMatch: function (entry) { return matchesWord(entry, state.lastWord); },
+    onResult: function (r) {
+      state.active = false;
+      state.lastResult = r.result;
+      if (r.result === 'pass') {
+        state.passes += 1;
+        info('echo ok: ' + r.fireId);
+      } else if (r.result === 'miss') {
+        state.misses += 1; // REQ-24: miss MUST log + increment; NO refire
+        warn('echo miss: ' + r.fireId + ' (REQ-24, no refire)');
+      }
+    },
+  });
+
+  /**
+   * Start validating the echo for a words-path fire. Skips entirely when the
+   * word is empty (no echo path — direct cast, REQ-24).
+   * @param {string} fireId - fired action identifier (log/counter label)
+   * @param {string} word - configured word (or /regex/)
+   * @returns {string} validator state ('passing' | 'disabled')
+   */
+  function startForFire(fireId, word) {
+    const trimmed = String(word || '').trim();
+    if (!trimmed) {
+      validator.dispose();
+      return 'disabled'; // no echo path — skip (REQ-24)
+    }
+    state.lastWord = trimmed;
+    state.active = true;
+    return validator.start(fireId);
+  }
+
+  /** @returns {object} module state (snapshot -> panel live state) */
+  function getState() {
+    const v = validator.getState();
+    return {
+      active: state.active,
+      passes: state.passes,
+      misses: state.misses,
+      lastResult: state.lastResult,
+      lastWord: state.lastWord,
+      validatorState: v.state,
+      deadline: v.deadline,
+    };
+  }
+
+  return { startForFire, getState };
+}
+
+module.exports = { createEchoModule };
+
+return module.exports;
+})();
+
+__mbModules['agent/modules/learning'] = (function () {
+'use strict';
+const module = { exports: {} };
+const exports = module.exports;
+const require = __mbRequire;
+'use strict';
+
+/**
+ * Unknown-word observation + registration offer (REQ-25, design "Learning"
+ * row, task 5.7).
+ *
+ * Carries the PROVEN userscript REQ-15 mechanism (src/core/dedupe.js +
+ * src/adapters/chat.js Default-channel reads, build-userscript.js
+ * observeUnknownWords/configuredWords/inferSid) into the agent, adapted to
+ * the desktop panel:
+ *
+ *   - Observe the Default channel for name === player.name messages matching
+ *     NO configured word (rotation spell words + healMagic/training words +
+ *     previously registered words). Entries are observed ONCE via the time
+ *     watermark (bounded identity-set fallback for entries without a time),
+ *     exactly like the userscript.
+ *   - The SAME unknown word seen >= 2x within 5 minutes (core/dedupe) ->
+ *     a registration OFFER {word, ts, sid} surfaces in the panel through the
+ *     module state (snapshot) — never written to config without the user.
+ *   - Confirm (panel button -> server -> config push): the word appends to
+ *     `learning.knownWords` in the per-character config and persists via the
+ *     REQ-09 store; the rebuilt module treats it as configured.
+ *   - Decline (panel button -> server -> respondOffer RPC): the word becomes
+ *     session-silent (core/dedupe.decline) — no offer reappears this session.
+ *
+ * Observation always runs while the agent is armed (REQ-25 MUST observe);
+ * the module has no toggle. `learning.knownWords` is the only persisted part.
+ */
+
+const DEDUPE_MOD = require('core/dedupe');
+const CHAT_MOD = require('adapters/chat');
+
+const SEEN_KEYS_CAP = 500;
+
+/**
+ * Create the learning module.
+ *
+ * @param {object} opts
+ * @param {object} opts.config - normalized learning config
+ *   { knownWords: Array<string> }
+ * @param {() => string|null} [opts.playerName] - current player name accessor
+ * @param {() => Set<string>} [opts.configuredWords] - words considered
+ *   configured (rotation + healMagic + training + knownWords)
+ * @param {object|null} [opts.gameClient] - page gameClient (chat + sid infer)
+ * @param {Document|null} [opts.document] - page DOM (chat DOM fallback)
+ * @param {() => number} [opts.now=Date.now] - injectable clock
+ * @param {{error?: Function, warn?: Function}} [opts.log] - log sinks
+ * @returns {{
+ *   observeChat: () => Array<{word: string, ts: number, sid: number|null}>,
+ *   decline: (word: string) => void,
+ *   markKnown: (word: string) => void,
+ *   getState: () => object,
+ * }}
+ */
+function createLearningModule(opts = {}) {
+  const {
+    config,
+    playerName = () => null,
+    configuredWords = () => new Set(),
+    gameClient = null,
+    document: doc = null,
+    now = Date.now,
+    log = {},
+  } = opts;
+  const warn = typeof log.warn === 'function' ? log.warn : () => {};
+
+  const state = { offers: [], chatWatermark: 0, seenChatKeys: new Set() };
+  const dedupe = DEDUPE_MOD.createDedupe({ windowMs: DEDUPE_MOD.DEFAULT_WINDOW_MS, known: configuredWords() });
+
+  /** Best-effort spell id for an observed word (spellbook entries; the live
+   *  spellbook is empty per obs 10320 — inference returns null, REQ-25
+   *  "best-effort sid"). */
+  function inferSid(word) {
+    try {
+      const sb = gameClient && gameClient.player && gameClient.player.spellbook;
+      const spells = sb && sb.spells;
+      if (!spells) return null;
+      const keys = Object.keys(spells);
+      for (let i = 0; i < keys.length; i += 1) {
+        const entry = spells[keys[i]] || {};
+        const raw = entry.words || entry.word || entry.runeSpellName || null;
+        if (typeof raw === 'string' && raw.trim() === word) return Number(keys[i]) || null;
+        if (Array.isArray(raw) && raw.indexOf(word) !== -1) return Number(keys[i]) || null;
+      }
+    } catch (e) { /* inference is best-effort */ }
+    return null;
+  }
+
+  /**
+   * Per-tick observation of the Default channel (REQ-25). Entries are
+   * observed once (time watermark; bounded identity set fallback). New
+   * offers append to the module state for the panel to render.
+   * @returns {Array<{word: string, ts: number, sid: number|null}>} new offers
+   */
+  function observeChat() {
+    const newOffers = [];
+    if (!configuredWords) return newOffers;
+    let entries = [];
+    try {
+      entries = CHAT_MOD.getRecentMessages({ gameClient: gameClient, document: doc });
+    } catch (e) { return newOffers; }
+    for (const entry of entries) {
+      if (!entry || entry.name !== playerName()) continue;
+      const msg = String(entry.message || '').trim();
+      if (!msg) continue;
+      const t = typeof entry.time === 'number' && Number.isFinite(entry.time) ? entry.time : null;
+      if (t !== null) {
+        if (t <= state.chatWatermark) continue; // already observed
+        state.chatWatermark = t;
+      } else {
+        const key = 'c|' + entry.name + '|' + msg;
+        if (state.seenChatKeys.has(key)) continue;
+        if (state.seenChatKeys.size >= SEEN_KEYS_CAP) state.seenChatKeys.clear(); // bounded
+        state.seenChatKeys.add(key);
+      }
+      const outcome = dedupe.observe(msg, t !== null ? t : now());
+      if (outcome === 'offer') {
+        const offer = { word: msg, ts: t !== null ? t : now(), sid: inferSid(msg) };
+        state.offers.push(offer);
+        if (state.offers.length > 20) state.offers.shift();
+        newOffers.push(offer);
+        warn('unknown word "' + msg + '" seen twice in 5 min — registration offered (REQ-25)');
+      }
+    }
+    return newOffers;
+  }
+
+  /** Decline an offer: session-silent for the word (REQ-25). */
+  function decline(word) {
+    const w = String(word || '').trim();
+    if (!w) return;
+    dedupe.decline(w);
+    state.offers = state.offers.filter((o) => o.word !== w);
+  }
+
+  /** Mark a word configured (confirm path; the rebuild also refreshes known). */
+  function markKnown(word) {
+    const w = String(word || '').trim();
+    if (!w) return;
+    dedupe.markKnown(w);
+    state.offers = state.offers.filter((o) => o.word !== w);
+  }
+
+  /** @returns {object} module state (snapshot -> panel live state + offers) */
+  function getState() {
+    return {
+      on: true, // observation always runs while armed (REQ-25 MUST)
+      offers: state.offers.map((o) => ({ word: o.word, ts: o.ts, sid: o.sid })),
+      knownWords: Array.from(configuredWords()).sort(),
+      silencedCount: 0,
+    };
+  }
+
+  return { observeChat, decline, markKnown, getState };
+}
+
+module.exports = { createLearningModule, SEEN_KEYS_CAP };
+
+return module.exports;
+})();
+
 __mbModules['agent/bootstrap'] = (function () {
 'use strict';
 const module = { exports: {} };
@@ -2898,12 +4171,21 @@ const CD_MOD = require('core/cooldown');
 const GC_MOD = require('adapters/gameClient');
 const FIRING_MOD = require('adapters/firing');
 const CHAT_MOD = require('adapters/chat');
+const PREMIUM_MOD = require('core/premium');
+const KILLS_MOD = require('core/kills');
 // Slice-4 modules (REQ-13..17) — pure decision modules, tree-wired below.
 const HEAL_ITEMS_MOD = require('agent/modules/heal-items');
 const HEAL_MAGIC_MOD = require('agent/modules/heal-magic');
 const RUNES_MOD = require('agent/modules/runes');
 const TRAINING_MOD = require('agent/modules/training');
 const EAT_MODULE_MOD = require('agent/modules/eat');
+// Slice-5 modules (REQ-18..22,24,25) — ported automations + carry-overs.
+const TRADE_MOD = require('agent/modules/trade');
+const LOOT_MOD = require('agent/modules/loot');
+const SPAWNS_MOD = require('agent/modules/spawns');
+const HUNT_STATS_MOD = require('agent/modules/huntStats');
+const ECHO_MOD = require('agent/modules/echo');
+const LEARNING_MOD = require('agent/modules/learning');
 
 /** Minimal slice-2 config shape (per-character store lands in slice 3). */
 const DEFAULT_CONFIG = {
@@ -2915,10 +4197,18 @@ const DEFAULT_CONFIG = {
   // Shapes match app/store/characters.ts defaultConfig (slice 3) + additive
   // settings: runes.healThreshold, eat.slot, eat.cids (design extensions).
   healItems: { on: false, threshold: 50, slotCids: [] },
-  healMagic: { on: false, threshold: 150, slot: null, sid: null },
+  healMagic: { on: false, threshold: 150, slot: null, sid: null, word: null },
   runes: { on: false, attackSlot: null, healSlot: null, healThreshold: null },
-  training: { on: false, slot: null, sid: null, reserve: 0 },
+  training: { on: false, slot: null, sid: null, reserve: 0, word: null },
   eat: { on: false, everyCasts: 0, warningWindowSec: 60, fallbackIntervalSec: 10, slot: null, cids: [] },
+  // Slice-5 modules — ALL OFF by default (opt-in). Shapes match
+  // app/store/characters.ts defaultConfig + additive: healMagic/training word
+  // (echo validation REQ-24), learning.knownWords (REQ-25 registration).
+  trade: { on: false, message: '', intervalMs: 180000 },
+  loot: { on: false, defaultDest: null, perMonster: {} },
+  spawns: { on: false },
+  huntStats: { on: false },
+  learning: { knownWords: [] },       // REQ-25: observation always runs while armed
   armed: false,                                      // interconnection gate (REQ-02, slice 3)
 };
 
@@ -2935,10 +4225,15 @@ function normalizeConfig(raw) {
     survival: { on: true, threshold: 50, slot: null },
     rotation: { spells: [] },
     healItems: { on: false, threshold: 50, slotCids: [] },
-    healMagic: { on: false, threshold: 150, slot: null, sid: null },
+    healMagic: { on: false, threshold: 150, slot: null, sid: null, word: null },
     runes: { on: false, attackSlot: null, healSlot: null, healThreshold: null },
-    training: { on: false, slot: null, sid: null, reserve: 0 },
+    training: { on: false, slot: null, sid: null, reserve: 0, word: null },
     eat: { on: false, everyCasts: 0, warningWindowSec: 60, fallbackIntervalSec: 10, slot: null, cids: [] },
+    trade: { on: false, message: '', intervalMs: 180000 },
+    loot: { on: false, defaultDest: null, perMonster: {} },
+    spawns: { on: false },
+    huntStats: { on: false },
+    learning: { knownWords: [] },
     armed: false,
   };
   if (Number.isFinite(src.queue && src.queue.minIntervalMs) && src.queue.minIntervalMs >= 0) {
@@ -2984,6 +4279,34 @@ function normalizeConfig(raw) {
   if (Number.isFinite(ea.fallbackIntervalSec) && ea.fallbackIntervalSec > 0) cfg.eat.fallbackIntervalSec = ea.fallbackIntervalSec;
   if (Number.isInteger(ea.slot)) cfg.eat.slot = ea.slot;
   if (Array.isArray(ea.cids)) cfg.eat.cids = ea.cids.map(Number).filter(Number.isInteger).filter((n) => n >= 0);
+  // --- Slice-5 module normalization (REQ-18..22,24,25) ---
+  const hm5 = src.healMagic && typeof src.healMagic === 'object' ? src.healMagic : {};
+  if (typeof hm5.word === 'string') cfg.healMagic.word = hm5.word; // echo validation (REQ-24)
+  const tr5 = src.training && typeof src.training === 'object' ? src.training : {};
+  if (typeof tr5.word === 'string') cfg.training.word = tr5.word;   // echo validation (REQ-24)
+  const td = src.trade && typeof src.trade === 'object' ? src.trade : {};
+  if (typeof td.on === 'boolean') cfg.trade.on = td.on;
+  if (typeof td.message === 'string') cfg.trade.message = td.message;
+  if (Number.isFinite(td.intervalMs) && td.intervalMs > 0) cfg.trade.intervalMs = td.intervalMs;
+  const lt = src.loot && typeof src.loot === 'object' ? src.loot : {};
+  if (typeof lt.on === 'boolean') cfg.loot.on = lt.on;
+  if (typeof lt.defaultDest === 'string') cfg.loot.defaultDest = lt.defaultDest;
+  if (lt.perMonster && typeof lt.perMonster === 'object' && !Array.isArray(lt.perMonster)) {
+    cfg.loot.perMonster = {};
+    for (const key of Object.keys(lt.perMonster)) {
+      if (typeof lt.perMonster[key] === 'string') cfg.loot.perMonster[key] = lt.perMonster[key];
+    }
+  }
+  const sp = src.spawns && typeof src.spawns === 'object' ? src.spawns : {};
+  if (typeof sp.on === 'boolean') cfg.spawns.on = sp.on;
+  const hs = src.huntStats && typeof src.huntStats === 'object' ? src.huntStats : {};
+  if (typeof hs.on === 'boolean') cfg.huntStats.on = hs.on;
+  const le = src.learning && typeof src.learning === 'object' ? src.learning : {};
+  if (Array.isArray(le.knownWords)) {
+    cfg.learning.knownWords = le.knownWords
+      .filter((w) => typeof w === 'string' && w.trim())
+      .map((w) => w.trim());
+  }
   cfg.armed = src.armed === true; // REQ-02: only an explicit true arms
   return cfg;
 }
@@ -3039,7 +4362,19 @@ function createAgent(opts = {}) {
     lastDispatch: [],
     warnings: [],
     errors: [],
+    // Session-scoped state (survives config rebuilds within a session,
+    // reset on agent restart): the trade cadence anchor (REQ-18 "toggle
+    // resets on logout") + the kill observer baseline.
+    timers: { tradeLastSentAt: 0 },
   };
+
+  // Shared active-creature diff observer (core/kills): feeds huntStats
+  // kills/loot (REQ-21) and loot routing (REQ-19). Baseline resets on every
+  // rebuild (new session/config).
+  state.killObserver = KILLS_MOD.createKillObserver({
+    readActiveCreatures: readActiveCreatures,
+    now: nowFn,
+  });
 
   /* ------------------------------ tree + queue ----------------------------- */
 
@@ -3124,6 +4459,126 @@ function createAgent(opts = {}) {
     return wait;
   }
 
+  /* ------------------- slice-5 feature-detect readers (REQ-18..22) ------------------- */
+
+  /** Premium gate (REQ-22, core/premium): feature-detect over the probed
+   *  candidate locations; unknown state never blocks (no hard dependency). */
+  function readPremium() {
+    return PREMIUM_MOD.readPremiumState(state.gameClient, nowFn);
+  }
+
+  /** Live active-creature list (kill feed, REQ-21/19): world.activeCreatures
+   *  probed (obs 10320); null when the array is absent (kill source degrade). */
+  function readActiveCreatures() {
+    try {
+      const gc = state.gameClient;
+      const world = gc && gc.world;
+      const list = (world && world.activeCreatures) || (gc && gc.activeCreatures) || (world && world.creatures);
+      return Array.isArray(list) ? list : null;
+    } catch (e) { return null; }
+  }
+
+  /** XP/gold counters (REQ-21): player.state/player candidates, feature-detected. */
+  function readHuntCounters() {
+    try {
+      const p = state.gameClient && state.gameClient.player;
+      if (!p) return { xp: null, gold: null };
+      const rawXp = (p.state && p.state.xp) || p.xp || (p.state && p.state.experience);
+      const rawGold = (p.state && p.state.gold) || p.gold || (p.state && p.state.money);
+      const xp = Number.isFinite(Number(rawXp)) ? Number(rawXp) : null;
+      const gold = Number.isFinite(Number(rawGold)) ? Number(rawGold) : null;
+      return { xp, gold };
+    } catch (e) { return { xp: null, gold: null }; }
+  }
+
+  /** Trade-channel send surface (REQ-18, design D6): channelManager resolved
+   *  by id 2 (Trade — live-probed channels, obs 10320) with the send method
+   *  feature-detected. Returns {send, label} or null (degrade). */
+  function readTradeChannel() {
+    try {
+      const gc = state.gameClient;
+      const manager = (gc && ((gc.interface && gc.interface.channelManager) || gc.channelManager)) || null;
+      if (!manager) return null;
+      let channel = null;
+      if (typeof manager.getChannelById === 'function') channel = manager.getChannelById(2);
+      if (!channel && typeof manager.getChannel === 'function') {
+        try { channel = manager.getChannel(2); } catch (e) { channel = null; }
+      }
+      if (!channel && manager.channels && manager.channels[2]) channel = manager.channels[2];
+      if (!channel && typeof manager.getChannel === 'function') {
+        try { channel = manager.getChannel('Trade'); } catch (e) { channel = null; }
+      }
+      if (!channel || typeof channel !== 'object') return null;
+      const send = channel.send || channel.sendMessage || channel.sendChat
+        || channel.message || channel.sendChannelMessage;
+      if (typeof send !== 'function') return null;
+      return { send: send.bind(channel), label: 'Trade(2)' };
+    } catch (e) { return null; }
+  }
+
+  /** Loot-command surface (REQ-19): feature-detected game function
+   *  (monster, destination) => void; null = unavailable (degrade). */
+  function readLootCommand() {
+    try {
+      const gc = state.gameClient;
+      const cands = [gc && gc.lootCommands, gc && gc.autoLoot, gc && gc.lootManager,
+        gc && gc.interface && gc.interface.lootManager, gc && gc.loot];
+      for (const c of cands) {
+        if (!c) continue;
+        for (const name of ['routeLoot', 'sendLoot', 'setDestination', 'route', 'assign', 'command']) {
+          if (typeof c[name] === 'function') return c[name].bind(c);
+        }
+        if (typeof c === 'function') return c;
+      }
+      return null;
+    } catch (e) { return null; }
+  }
+
+  /** Spawn-map data reader (REQ-20): feature-detect the game's spawn-data
+   *  structure (open probe 5.3); returns raw locations or null ("no spawn
+   *  data"). Pure normalization lives in the spawns module. */
+  function readSpawnData(monster) {
+    try {
+      const gc = state.gameClient;
+      const world = gc && gc.world;
+      const cands = [gc && gc.spawns, world && world.spawns, gc && gc.spawnMap,
+        gc && gc.monsterSpawns, gc && gc.interface && gc.interface.spawnManager,
+        world && world.spawnData, gc && gc.spawnLocations];
+      for (const c of cands) {
+        if (!c) continue;
+        if (typeof c.query === 'function') {
+          const r = c.query(monster);
+          if (r !== null && r !== undefined) return r;
+        } else if (typeof c.get === 'function') {
+          const r = c.get(monster);
+          if (r !== null && r !== undefined) return r;
+        } else if (typeof c === 'object' && c[monster] !== undefined) {
+          return c[monster];
+        }
+      }
+      return null;
+    } catch (e) { return null; }
+  }
+
+  /** Configured words for the learning observer (REQ-25): rotation spell
+   *  words + healMagic/training words + previously registered words. */
+  function configuredWords() {
+    const words = new Set();
+    const spells = (state.config && state.config.rotation && state.config.rotation.spells) || [];
+    for (const s of spells) {
+      if (s && typeof s.word === 'string' && s.word.trim()) words.add(s.word.trim());
+    }
+    const hm = state.config && state.config.healMagic;
+    if (hm && typeof hm.word === 'string' && hm.word.trim()) words.add(hm.word.trim());
+    const tr = state.config && state.config.training;
+    if (tr && typeof tr.word === 'string' && tr.word.trim()) words.add(tr.word.trim());
+    const le = state.config && state.config.learning;
+    if (le && Array.isArray(le.knownWords)) {
+      for (const w of le.knownWords) if (typeof w === 'string' && w.trim()) words.add(w.trim());
+    }
+    return words;
+  }
+
   function buildCombatRules(cfg) {
     const spells = (cfg.rotation.spells || []).filter((s) => Number.isInteger(s.slot) && s.slot >= 1 && s.slot <= 12);
     return spells.map((spell, index) => ({
@@ -3181,6 +4636,7 @@ function createAgent(opts = {}) {
     state.config = cfg;
     state.armed = cfg.armed === true; // REQ-02: arm/keep-disarmed on every config push
     state.ctx = { mana: null, maxMana: null, health: null, lastFiredAt: {}, castsSinceFood: 0, lastEatAt: 0 };
+    if (state.killObserver) state.killObserver.reset(); // new session/config -> fresh kill baseline
     state.queue = createQueue({
       minInterval: cfg.queue.minIntervalMs,
       jitter: cfg.jitter,
@@ -3228,7 +4684,78 @@ function createAgent(opts = {}) {
       now: nowFn,
       log,
     });
-    state.modules = { healItems: healItems, healMagic: healMagic, runes: runes, training: training, eat: eat };
+
+    /* -------- slice-5 modules (REQ-18..22,24,25): ported automations -------- */
+
+    // REQ-18: auto trade broadcast — cadence anchor lives in state.timers
+    // (session-scoped, survives config rebuilds; agent restart = new session,
+    // mirroring the game's "toggle resets to OFF on logout").
+    const trade = TRADE_MOD.createTradeModule({
+      config: cfg.trade,
+      timers: state.timers,
+      readChannel: readTradeChannel,
+      readPremium: readPremium,
+      now: nowFn,
+      log,
+    });
+    // REQ-19: auto-loot list — per-monster destinations + default; the kill
+    // feed comes from the shared observer (observeKills in tickOnce).
+    const loot = LOOT_MOD.createLootModule({
+      config: cfg.loot,
+      readLootCommand: readLootCommand,
+      readPremium: readPremium,
+      now: nowFn,
+      log,
+    });
+    // REQ-20: spawn maps — read-only provider; the panel queries it via the
+    // getSpawns surface RPC; state flows through the snapshot.
+    const spawns = SPAWNS_MOD.createSpawnsModule({
+      config: cfg.spawns,
+      readSpawnData: readSpawnData,
+      readPremium: readPremium,
+      log,
+    });
+    // REQ-21: hunt session stats — accumulator fed per tick (tickOnce). The
+    // panel toggle is the session start/stop control (ON = start, OFF =
+    // freeze). The module INSTANCE survives rebuilds (applyConfig
+    // transitions), so unrelated config pushes never reset a running session.
+    if (!state.huntStatsModule) {
+      state.huntStatsModule = HUNT_STATS_MOD.createHuntStats({
+        config: cfg.huntStats,
+        readCounters: readHuntCounters,
+        killObserver: state.killObserver,
+        readPremium: readPremium,
+        now: nowFn,
+        log,
+      });
+    } else {
+      state.huntStatsModule.applyConfig(cfg.huntStats);
+    }
+    const huntStats = state.huntStatsModule;
+    // REQ-24: echo validation — carried-over validator, started from the
+    // heal-magic/training queue closures when a word is configured.
+    const echo = ECHO_MOD.createEchoModule({
+      playerName: function () { return (state.gameClient && state.gameClient.player && state.gameClient.player.name) || null; },
+      gameClient: state.gameClient,
+      document: doc,
+      now: nowFn,
+      log,
+    });
+    // REQ-25: unknown-word observation + registration offer (panel renders
+    // offers from the module state; confirm/decline via server + RPC).
+    const learning = LEARNING_MOD.createLearningModule({
+      config: cfg.learning,
+      playerName: function () { return (state.gameClient && state.gameClient.player && state.gameClient.player.name) || null; },
+      configuredWords: configuredWords,
+      gameClient: state.gameClient,
+      document: doc,
+      now: nowFn,
+      log,
+    });
+    state.modules = {
+      healItems: healItems, healMagic: healMagic, runes: runes, training: training, eat: eat,
+      trade: trade, loot: loot, spawns: spawns, huntStats: huntStats, echo: echo, learning: learning,
+    };
 
     /* -------- tree nodes: survival > combat > training > eat > loot (REQ-11) -------- */
 
@@ -3287,6 +4814,11 @@ function createAgent(opts = {}) {
             if (!d.fire) return false;
             state.queue.enqueue(function () {
               healMagic.fire(d, { gameClient: state.gameClient, document: doc });
+              // REQ-24 echo validation: words-path fires only (word configured);
+              // direct casts without a word skip validation entirely.
+              if (cfg.healMagic && typeof cfg.healMagic.word === 'string' && cfg.healMagic.word.trim()) {
+                echo.startForFire('heal-magic', cfg.healMagic.word);
+              }
             }, { kind: 'heal-magic' });
             return true;
           },
@@ -3381,6 +4913,10 @@ function createAgent(opts = {}) {
             if (!d.fire) return false;
             state.queue.enqueue(function () {
               training.fire(d, { gameClient: state.gameClient, document: doc });
+              // REQ-24 echo validation: only when a training word is configured.
+              if (cfg.training && typeof cfg.training.word === 'string' && cfg.training.word.trim()) {
+                echo.startForFire('training', cfg.training.word);
+              }
             }, { kind: 'training-cast' });
             ctx.castsSinceFood = (ctx.castsSinceFood || 0) + 1; // every-N-casts counts training casts
             return true;
@@ -3418,21 +4954,78 @@ function createAgent(opts = {}) {
       ],
     };
 
-    const loot = {
+    // REQ-19: auto-loot — route kills with loot to the configured destination
+    // via the game's own loot-command surface (feature-detected; degrade =
+    // record/no-op with honest panel state). Queue-aware, one route per tick.
+    const lootNode = {
       type: 'sequence',
       id: 'loot',
       children: [
-        { type: 'condition', id: 'loot-feasible', predicate: function () { return false; } }, // slice 5
-        { type: 'action', id: 'loot-collect', run: function () { return false; } },
+        {
+          type: 'condition',
+          id: 'loot-feasible',
+          predicate: function () {
+            if (!cfg.loot.on) return false;
+            const d = loot.decide();
+            if (!d.fire) return false;
+            return !state.queue.hasPending(function (e) { return e.kind === 'loot-route'; });
+          },
+        },
+        {
+          type: 'action',
+          id: 'loot-collect',
+          run: function () {
+            const d = loot.decide();
+            if (!d.fire) return false;
+            // NO-BYPASS (REQ-12): the game loot command runs ONLY inside the
+            // queue-dispatched closure.
+            state.queue.enqueue(function () { loot.fire(d); }, { kind: 'loot-route' });
+            return true;
+          },
+        },
       ],
     };
+
+    // REQ-18: auto trade broadcast — 3-min cadence (default, mirror the game)
+    // to the Trade channel via the game's own channel mechanism. Lowest
+    // priority: a chat broadcast never pre-empts survival/combat (REQ-11).
+    const tradeNode = {
+      type: 'sequence',
+      id: 'trade',
+      children: [
+        {
+          type: 'condition',
+          id: 'trade-due',
+          predicate: function () {
+            if (!cfg.trade.on) return false;
+            const d = trade.decide();
+            if (!d.fire) return false;
+            return !state.queue.hasPending(function (e) { return e.kind === 'trade-broadcast'; });
+          },
+        },
+        {
+          type: 'action',
+          id: 'trade-send',
+          run: function () {
+            const d = trade.decide();
+            if (!d.fire) return false;
+            // NO-BYPASS (REQ-12): the channel send runs ONLY inside the
+            // queue-dispatched closure.
+            state.queue.enqueue(function () { trade.fire(d); }, { kind: 'trade-broadcast' });
+            return true;
+          },
+        },
+      ],
+    };
+
     state.tree = createTree({
       root: {
         type: 'selector',
         id: 'priority-root',
         // heal (items + magic + legacy slot-heal) > runes > combat > training
-        // > eat > loot (REQ-11: survival/heal always beats combat/loot/training).
-        children: [healItemsNode, healMagicNode, survival, runesNode, combat, trainingNode, eatNode, loot],
+        // > eat > loot > trade (REQ-11: survival/heal always beats
+        // combat/loot/training; trade broadcast is the lowest priority).
+        children: [healItemsNode, healMagicNode, survival, runesNode, combat, trainingNode, eatNode, lootNode, tradeNode],
       },
     });
   }
@@ -3497,6 +5090,15 @@ function createAgent(opts = {}) {
       if (stats.mana !== null) ctx.mana = stats.mana;
       if (stats.maxMana !== null) ctx.maxMana = stats.maxMana;
       ctx.health = stats.health;
+      // Pre-tree READ-ONLY feeds (REQ-06: reads only — no actions here):
+      //  - huntStats: per-tick accumulation (REQ-21)
+      //  - loot: kill observations from the shared observer (REQ-19)
+      //  - learning: Default-channel unknown-word observation (REQ-25)
+      const killScan = state.killObserver ? state.killObserver.scan() : { kills: [], available: false };
+      const m = state.modules;
+      if (m.huntStats) m.huntStats.accumulate(killScan);
+      if (m.loot) m.loot.observeKills(killScan.kills);
+      if (m.learning) m.learning.observeChat();
       const result = state.tree.tick(ctx);
       state.lastPath = result.path;
       state.lastDispatch = state.queue.drain(); // eligible entries fire here, in the queue
@@ -3566,6 +5168,30 @@ function createAgent(opts = {}) {
         const m = state.modules && state.modules.runes;
         return m ? m.getState() : null; // REQ-15 real module state (slice 4)
       },
+      getSpawns: function (monster) {
+        // REQ-20 read-only RPC: the panel queries spawn locations for a
+        // monster through the app; result lands in the module state.
+        const m = state.modules && state.modules.spawns;
+        if (!m || !state.ready) return { available: false, reason: 'not ready', monster: String(monster || '') };
+        return m.query(monster);
+      },
+      respondOffer: function (action, word) {
+        // REQ-25: user decision on a learning offer. 'decline' silences the
+        // word for the session (RPC, no rebuild); 'confirm' is handled by the
+        // server via a config push (knownWords). Refused pre-Connect (REQ-02).
+        if (!state.armed) return { ok: false, reason: 'not connected' };
+        const m = state.modules && state.modules.learning;
+        if (!m) return { ok: false, reason: 'not ready' };
+        if (action === 'decline') {
+          m.decline(word);
+          return { ok: true, action: 'decline', word: String(word || '') };
+        }
+        if (action === 'confirm') {
+          m.markKnown(word);
+          return { ok: true, action: 'confirm', word: String(word || '') };
+        }
+        return { ok: false, reason: 'unknown action' };
+      },
       getWalkState: function () { return null; }, // slice 6
       getPlayerInfo: readPlayerInfo,
       applyConfig: applyConfig,
@@ -3607,6 +5233,12 @@ function createAgent(opts = {}) {
       modules: {
         runes: modules.runes ? modules.runes.getState() : null,
         eat: modules.eat ? modules.eat.getState() : null,
+        trade: modules.trade ? modules.trade.getState() : null,
+        loot: modules.loot ? modules.loot.getState() : null,
+        spawns: modules.spawns ? modules.spawns.getState() : null,
+        huntStats: modules.huntStats ? modules.huntStats.getState() : null,
+        echo: modules.echo ? modules.echo.getState() : null,
+        learning: modules.learning ? modules.learning.getState() : null,
       },
       warnings: state.warnings.slice(),
       errors: state.errors.slice(),

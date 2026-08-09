@@ -77,6 +77,8 @@ function readBody(req) {
  * @param {string} opts.staticDir - panel assets dir (index.html etc.)
  * @param {() => Promise<{name: string, vocationId: number|null, vocationLabel: string}|null>} opts.identity
  * @param {(config: object) => Promise<unknown>} opts.applyConfig - push to the in-page agent
+ * @param {(action: 'confirm'|'decline', word: string) => Promise<unknown>} [opts.respondOffer] -
+ *   REQ-25 agent RPC for offer decisions (decline = session-silent)
  * @param {() => Promise<unknown>} [opts.snapshot] - live state payload
  * @param {object} opts.store - {loadCharacter, saveCharacter} (app/store/characters.ts)
  * @param {string} [opts.host='127.0.0.1'] - REQ-05: local only
@@ -87,6 +89,7 @@ function createPanelServer(opts) {
   const staticDir = opts.staticDir;
   const identityFn = opts.identity;
   const applyConfigFn = opts.applyConfig;
+  const respondOfferFn = typeof opts.respondOffer === 'function' ? opts.respondOffer : async () => null;
   const snapshotFn = typeof opts.snapshot === 'function' ? opts.snapshot : async () => null;
   const store = opts.store;
   const host = opts.host || '127.0.0.1';
@@ -121,6 +124,12 @@ function createPanelServer(opts) {
         const { config } = store.loadCharacter({ name });
         config.character = name;
         config.connected = true;
+        // REQ-18: the trade toggle is SESSION-scoped — a NEW session starts
+        // with the toggle OFF (mirror the game: "Toggle resets to OFF on
+        // logout"; the user re-enables it each session via the panel toggle,
+        // which flows through /api/config with a live on-state that is never
+        // persisted). The connect push AND the pre-fill carry on:false.
+        if (config.modules && config.modules.trade) config.modules.trade.on = false;
         await applyConfigFn(Object.assign({}, config, { armed: true }));
         store.saveCharacter({ name, config });
         lastCharacter = name;
@@ -141,7 +150,13 @@ function createPanelServer(opts) {
         }
         config.character = name;
         config.connected = true;
-        await applyConfigFn(Object.assign({}, config, { armed: true }));
+        // Deep-clone the push payload: the REQ-18 session-scoped strip below
+        // must never leak into the LIVE push (applies whatever the
+        // applyConfigFn implementation does with the object).
+        const pushCfg = JSON.parse(JSON.stringify(Object.assign({}, config, { armed: true })));
+        await applyConfigFn(pushCfg);
+        // REQ-18: session-scoped trade toggle — see /api/connect note.
+        if (config.modules && config.modules.trade) config.modules.trade.on = false;
         store.saveCharacter({ name, config });
         lastCharacter = name;
         sendJson(res, 200, { ok: true });
@@ -154,10 +169,54 @@ function createPanelServer(opts) {
         if (name) {
           const { config } = store.loadCharacter({ name });
           config.connected = false;
+          // REQ-18: the trade toggle resets to OFF on session end (mirror the
+          // game's "Toggle resets to OFF on logout").
+          if (config.modules && config.modules.trade) config.modules.trade.on = false;
           store.saveCharacter({ name, config });
         }
         lastCharacter = null;
         sendJson(res, 200, { ok: true });
+        return;
+      }
+      if (req.method === 'POST' && url === '/api/offer') {
+        const body = await readBody(req);
+        const name = typeof body.character === 'string' && body.character ? body.character : lastCharacter;
+        if (!name) {
+          sendJson(res, 409, { ok: false, reason: 'not connected' });
+          return;
+        }
+        const word = String(body.word || '').trim();
+        if (!word) {
+          sendJson(res, 400, { ok: false, reason: 'word required' });
+          return;
+        }
+        if (body.action === 'decline') {
+          // REQ-25: declined = session-silent for the word (agent RPC; no
+          // config write — the offer must NOT persist without confirmation).
+          await respondOfferFn('decline', word);
+          sendJson(res, 200, { ok: true, action: 'decline', word });
+          return;
+        }
+        if (body.action === 'confirm') {
+          // REQ-25: registration writes config ONLY with user confirmation:
+          // append the word to the character's learning.knownWords, persist
+          // via the REQ-09 store, and push the updated config to the agent.
+          const { config } = store.loadCharacter({ name });
+          config.character = name;
+          if (!config.modules.learning || typeof config.modules.learning !== 'object') {
+            config.modules.learning = { on: false, knownWords: [] };
+          }
+          const known = config.modules.learning.knownWords || [];
+          if (known.indexOf(word) === -1) known.push(word);
+          config.modules.learning.knownWords = known;
+          config.connected = true;
+          await applyConfigFn(Object.assign({}, config, { armed: true }));
+          store.saveCharacter({ name, config });
+          lastCharacter = name;
+          sendJson(res, 200, { ok: true, action: 'confirm', word, config });
+          return;
+        }
+        sendJson(res, 400, { ok: false, reason: 'action must be confirm or decline' });
         return;
       }
 

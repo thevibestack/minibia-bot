@@ -32,11 +32,13 @@ test('REQ-09: missing file -> defaults (first run), no warning', (t) => {
   assert.deepEqual(config.jitter, { min: 50, max: 400 });
   assert.deepEqual(config.session, { startedAt: null });
   assert.deepEqual(config.routes, []);
-  // All 10 modules present and OFF (opt-in per spec).
+  // All modules present and OFF (opt-in per spec); learning (REQ-25, slice 5)
+  // follows the same shape — its `on` is inert (observation always runs while
+  // armed), the persisted part is knownWords.
   const ids = Object.keys(config.modules);
   assert.deepEqual(ids, [
     'healItems', 'healMagic', 'runes', 'training', 'eat',
-    'trade', 'loot', 'spawns', 'huntStats', 'routes',
+    'trade', 'loot', 'spawns', 'huntStats', 'routes', 'learning',
   ]);
   for (const id of ids) assert.equal(config.modules[id].on, false, id + ' defaults off');
 });

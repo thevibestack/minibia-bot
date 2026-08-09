@@ -51,6 +51,11 @@ function defaultConfig(characterName) {
       spawns: { on: false },
       huntStats: { on: false },
       routes: { on: false },
+      // REQ-25 (slice 5): registration offers persist confirmed words here.
+      // `on` follows the all-modules-OFF store convention; the agent treats
+      // observation as always-active while armed (REQ-25 MUST observe) and
+      // only reads knownWords.
+      learning: { on: false, knownWords: [] },
     },
     routes: [],
     session: { startedAt: null },

@@ -188,6 +188,22 @@
         if (state.gate !== GATE_ARMED) return { state: refuse(state, action), effects: [] };
         return { state, effects: [{ type: 'push-config' }] };
 
+      case 'CONFIRM_OFFER': {
+        if (state.gate !== GATE_ARMED) return { state: refuse(state, action), effects: [] };
+        return {
+          state,
+          effects: [{ type: 'offer-confirm', word: String(action.word || '') }],
+        };
+      }
+
+      case 'DECLINE_OFFER': {
+        if (state.gate !== GATE_ARMED) return { state: refuse(state, action), effects: [] };
+        return {
+          state,
+          effects: [{ type: 'offer-decline', word: String(action.word || '') }],
+        };
+      }
+
       case 'PREFILL_CONFIG': {
         if (state.gate !== GATE_CONFIRMED && state.gate !== GATE_ARMED) {
           return { state: refuse(state, action), effects: [] };
@@ -255,6 +271,55 @@
     }
   }
 
+  /* ------------------------------ slice 5 helpers ------------------------------ */
+
+  /**
+   * REQ-22: gated modules whose snapshot state reports premium-blocked
+   * ("Premium required"). Reads the live snapshot payload (agent state
+   * modules). Pure.
+   * @param {object|null} snapshot - /api/snapshot payload (SNAPSHOT action data)
+   * @returns {Array<{id: string, label: string}>}
+   */
+  function premiumBlockedModules(snapshot) {
+    const gated = { trade: 'Auto trade broadcast', loot: 'Auto-loot', spawns: 'Spawn maps', huntStats: 'Hunt stats' };
+    const out = [];
+    const modules = snapshot && snapshot.agent && snapshot.agent.modules;
+    if (!modules || typeof modules !== 'object') return out;
+    for (const id of Object.keys(gated)) {
+      const m = modules[id];
+      if (m && m.premium && m.premium.blocked === true) {
+        out.push({ id, label: gated[id] });
+      }
+    }
+    return out;
+  }
+
+  /**
+   * REQ-25: open learning offers carried by the live snapshot (agent state
+   * modules.learning.offers). Pure.
+   * @param {object|null} snapshot - SNAPSHOT payload
+   * @returns {Array<{word: string, ts: number, sid: number|null}>}
+   */
+  function snapshotOffers(snapshot) {
+    const offers = snapshot && snapshot.agent && snapshot.agent.modules
+      && snapshot.agent.modules.learning && snapshot.agent.modules.learning.offers;
+    return Array.isArray(offers) ? offers : [];
+  }
+
+  /** REQ-25: offer row HTML (word + time + best-effort sid + Confirm/Decline). */
+  function renderOffer(offer) {
+    const when = offer.ts
+      ? new Date(offer.ts).toLocaleTimeString() + ' ' + new Date(offer.ts).toLocaleDateString()
+      : 'now';
+    const sid = Number.isInteger(offer.sid) ? offer.sid : null;
+    return '<div class="learning-offer">'
+      + '<code>' + escapeHtml(offer.word) + '</code>'
+      + ' <span class="offer-time">(' + escapeHtml(when) + (sid !== null ? ', sid ' + sid : '') + ')</span>'
+      + ' <button type="button" class="offer-btn" data-offer-action="confirm" data-word="' + escapeHtml(offer.word) + '">Confirm</button>'
+      + ' <button type="button" class="offer-btn" data-offer-action="decline" data-word="' + escapeHtml(offer.word) + '">Decline</button>'
+      + '</div>';
+  }
+
   /* ------------------------------ render ------------------------------ */
 
   /** Status bar: gate state, confirmed player, refusal/error, controls. */
@@ -301,14 +366,30 @@
     return '<section class="config-form">' + head + body + '</section>';
   }
 
-  /** Live state view placeholder — snapshot polling payload (500ms). */
+  /** Live state view: snapshot payload + REQ-22 premium notice + REQ-25
+   *  learning offers (word + time + Confirm/Decline). */
   function renderLiveState(state) {
     const head = '<h2>Live state</h2>';
     let body;
     if (state.snapshot === null) {
       body = '<div class="live-empty">No snapshot yet — connecting…</div>';
     } else {
-      body = '<pre class="live-payload">' + escapeHtml(JSON.stringify(state.snapshot, null, 2)) + '</pre>';
+      const parts = [];
+      const blocked = premiumBlockedModules(state.snapshot);
+      if (blocked.length > 0) {
+        parts.push('<div class="premium-required">Premium required — '
+          + blocked.map((b) => escapeHtml(b.label)).join(', ')
+          + ' stay disabled (REQ-22).</div>');
+      }
+      const offers = snapshotOffers(state.snapshot);
+      if (offers.length > 0) {
+        parts.push('<div class="offers">'
+          + '<h3>Registration offers</h3>'
+          + offers.map(renderOffer).join('')
+          + '</div>');
+      }
+      parts.push('<pre class="live-payload">' + escapeHtml(JSON.stringify(state.snapshot, null, 2)) + '</pre>');
+      body = parts.join('');
     }
     return '<section class="live-state">' + head + body + '</section>';
   }
@@ -336,6 +417,9 @@
     dispatch,
     gateLabel,
     escapeHtml,
+    premiumBlockedModules,
+    snapshotOffers,
+    renderOffer,
     renderStatusBar,
     renderModuleList,
     renderConfigForm,
