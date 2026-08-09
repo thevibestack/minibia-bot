@@ -106,3 +106,25 @@ test('REQ-14: fire calls __handleClick via the proven firing path', () => {
   assert.equal(ok, true);
   assert.deepEqual(clicks, [2]);
 });
+
+/* -------------------- PR 3 — urgent priority + reserve (D1/D2, REQ-29/31) -------------------- */
+
+test('REQ-29 (PR3): a firing decision carries priority "urgent" for the queue (D1)', () => {
+  const m = moduleWith();
+  const d = m.decide(ctx);
+  assert.equal(d.fire, true);
+  assert.equal(d.priority, 'urgent', 'the heal enqueues head-inserted, preempting in-flight work');
+});
+
+test('REQ-31/D2 (PR3): healMagic.reserve honored — mana below cost + reserve pauses', () => {
+  const m = moduleWith({ reserve: 30 }, { getSpellCost: () => 20 });
+  assert.equal(m.decide({ ...ctx, mana: 49 }).fire, false);
+  assert.equal(m.decide({ ...ctx, mana: 49 }).reason, 'reserve');
+  assert.equal(m.decide({ ...ctx, mana: 50 }).fire, true, 'cost 20 + reserve 30 = 50 — equality passes');
+  assert.equal(m.decide({ ...ctx, mana: 50 }).reason, 'low-hp');
+});
+
+test('REQ-31/D2 (PR3): reserve 0 (default) keeps the plain mana gate', () => {
+  const m = moduleWith({}, { getSpellCost: () => 20 });
+  assert.equal(m.decide({ ...ctx, mana: 20 }).fire, true, 'no reserve — cost-only gate');
+});

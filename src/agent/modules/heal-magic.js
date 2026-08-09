@@ -44,7 +44,7 @@ const FIRING_MOD = require('../../adapters/firing');
  * @param {() => number} [opts.now=Date.now] - injectable clock
  * @param {{error?: Function, warn?: Function}} [opts.log] - log sinks
  * @returns {{
- *   decide: (ctx: object) => {fire: boolean, reason: string, slot?: number},
+ *   decide: (ctx: object) => {fire: boolean, reason: string, slot?: number, priority?: string},
  *   fire: () => boolean,
  *   isEnabled: () => boolean,
  * }}
@@ -57,7 +57,7 @@ function createHealMagic(opts = {}) {
   /**
    * Pure decision (REQ-14).
    * @param {object} ctx - tick context { health, mana, maxMana }
-   * @returns {{fire: boolean, reason: string, slot?: number}}
+   * @returns {{fire: boolean, reason: string, slot?: number, priority?: string}}
    */
   function decide(ctx = {}) {
     if (!config || config.on !== true) return { fire: false, reason: 'off' };
@@ -76,18 +76,22 @@ function createHealMagic(opts = {}) {
     }
 
     // Mana feasibility (REQ-14: "gated by mana feasibility (REQ-01 semantics)").
+    // Per-module reserve (D2, REQ-31): healMagic.reserve — the cast must not
+    // fire below cost + reserve.
     const cost = typeof getSpellCost === 'function' ? getSpellCost(config.sid) : null;
     if (cost === null) return { fire: false, reason: 'no-cost' };
     const feas = FEAS_MOD.canCast({
       mana: ctx.mana,
       cost,
-      reserve: 0,
+      reserve: Number(config.reserve) || 0,
       maxMana: ctx.maxMana,
       key: 'heal-magic-' + slot,
       warned,
       onWarn: warn,
     });
-    if (!feas.fire) return { fire: false, reason: feas.reason === 'never' ? 'never' : 'insufficient' };
+    if (!feas.fire) {
+      return { fire: false, reason: feas.reason === 'never' ? 'never' : feas.reason === 'reserve' ? 'reserve' : 'insufficient' };
+    }
 
     // Cooldowns: GLOBAL_COOLDOWN defers to a later tick (REQ-14).
     if (typeof readCooldown === 'function') {
@@ -105,7 +109,10 @@ function createHealMagic(opts = {}) {
       }
     }
 
-    return { fire: true, reason: 'low-hp', slot };
+    // D1 (REQ-29): the heal decision carries priority 'urgent' so the
+    // bootstrap enqueues it head-inserted — it preempts in-flight rune/
+    // training/attack work (the queue defers them to a later drain).
+    return { fire: true, reason: 'low-hp', slot, priority: 'urgent' };
   }
 
   /**

@@ -69,7 +69,7 @@ const DEFAULT_CONFIG = {
   // Shapes match app/store/characters.ts defaultConfig (slice 3) + additive
   // settings: runes.healThreshold, eat.slot, eat.cids (design extensions).
   healItems: { on: false, threshold: 50, slotCids: [] },
-  healMagic: { on: false, threshold: 150, slot: null, sid: null, word: null },
+  healMagic: { on: false, threshold: 150, slot: null, sid: null, word: null, reserve: 0 },
   runes: { on: false, attackSlot: null, healSlot: null, healThreshold: null },
   training: { on: false, slot: null, sid: null, reserve: 0, word: null },
   eat: { on: false, everyCasts: 0, warningWindowSec: 60, fallbackIntervalSec: 10, slot: null, cids: [] },
@@ -98,7 +98,7 @@ function normalizeConfig(raw) {
     survival: { on: true, threshold: 50, slot: null },
     rotation: { spells: [] },
     healItems: { on: false, threshold: 50, slotCids: [] },
-    healMagic: { on: false, threshold: 150, slot: null, sid: null, word: null },
+    healMagic: { on: false, threshold: 150, slot: null, sid: null, word: null, reserve: 0 },
     runes: { on: false, attackSlot: null, healSlot: null, healThreshold: null },
     training: { on: false, slot: null, sid: null, reserve: 0, word: null },
     eat: { on: false, everyCasts: 0, warningWindowSec: 60, fallbackIntervalSec: 10, slot: null, cids: [] },
@@ -136,6 +136,7 @@ function normalizeConfig(raw) {
   if (Number.isFinite(hm.threshold)) cfg.healMagic.threshold = hm.threshold;
   if (Number.isInteger(hm.slot)) cfg.healMagic.slot = hm.slot;
   if (Number.isInteger(hm.sid)) cfg.healMagic.sid = hm.sid;
+  if (Number.isFinite(hm.reserve) && hm.reserve >= 0) cfg.healMagic.reserve = hm.reserve; // D2 (REQ-31)
   const rn = src.runes && typeof src.runes === 'object' ? src.runes : {};
   if (typeof rn.on === 'boolean') cfg.runes.on = rn.on;
   if (Number.isInteger(rn.attackSlot)) cfg.runes.attackSlot = rn.attackSlot;
