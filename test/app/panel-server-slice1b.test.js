@@ -124,3 +124,116 @@ test('REQ-27: GET /api/profiles returns an empty list when nothing is saved', as
   assert.deepEqual(body.profiles, []);
   assert.equal(body.current, 'Flamamex');
 });
+
+/* ---------------------- /api/load-profile (2.4, D6) ---------------------- */
+
+test('REQ-27: POST /api/load-profile cross-loads with per-sid rejection — incompatible spells blanked, rest applies', async (t) => {
+  const { srv, calls, base } = await makeServer(t);
+  // Gobernador is a SORCERER: his config carries Flame Strike (sid 4,
+  // sorcerer-only) as the heal spell and Intense Healing (sid 3, druid) as
+  // training — the former MUST be rejected on Flamamex (druid).
+  const gob = store.defaultConfig('Gobernador');
+  gob.modules.healMagic = { on: true, threshold: 120, slot: 2, sid: 4, word: 'exori flam' };
+  gob.modules.training = { on: true, slot: 3, sid: 3, reserve: 30 };
+  gob.modules.trade = { on: true, message: 'WTS runes', intervalMs: 180000 };
+  store.saveCharacter({ baseDir: base, name: 'Gobernador', config: gob });
+
+  const res = await fetch(srv.url + '/api/load-profile', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ character: 'Flamamex', from: 'Gobernador' }),
+  });
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.equal(body.ok, true);
+  assert.equal(body.from, 'Gobernador');
+  assert.deepEqual(body.rejected, [
+    { key: 'healMagic.sid', reason: 'vocation mismatch — requires sorcerer' },
+  ]);
+  assert.equal(body.config.character, 'Flamamex', 'accepted config renames to the current character');
+  assert.equal(body.config.modules.healMagic.sid, null, 'rejected sid blanked');
+  assert.equal(body.config.modules.training.sid, 3, 'compatible sid kept (the rest applies)');
+  assert.equal(body.config.modules.training.reserve, 30);
+  assert.equal(body.config.modules.trade.on, false, 'REQ-18 session-scoped trade OFF on load');
+  assert.equal(calls.applyConfig.length, 1, 'one armed push');
+  assert.equal(calls.applyConfig[0].armed, true);
+  assert.equal(calls.applyConfig[0].modules.healMagic.sid, null, 'push carries the sanitized config');
+
+  const reloaded = store.loadCharacter({ baseDir: base, name: 'Flamamex' });
+  assert.equal(reloaded.config.modules.healMagic.sid, null, 'sanitized config persisted');
+  assert.equal(reloaded.config.modules.training.sid, 3, 'accepted part persisted');
+});
+
+test('REQ-27: load-profile rejects unknown and invalid sids', async (t) => {
+  const { srv, base } = await makeServer(t);
+  const gob = store.defaultConfig('Gobernador');
+  gob.modules.healMagic = { on: true, threshold: 120, slot: 2, sid: 999 };
+  gob.modules.training = { on: true, slot: 3, sid: 'abc' };
+  store.saveCharacter({ baseDir: base, name: 'Gobernador', config: gob });
+
+  const body = await (await fetch(srv.url + '/api/load-profile', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ character: 'Flamamex', from: 'Gobernador' }),
+  })).json();
+  assert.deepEqual(body.rejected, [
+    { key: 'healMagic.sid', reason: 'unknown spell (sid 999)' },
+    { key: 'training.sid', reason: 'invalid spell id' },
+  ]);
+  assert.equal(body.config.modules.healMagic.sid, null);
+  assert.equal(body.config.modules.training.sid, null);
+});
+
+test('REQ-27: load-profile refused while no character is connected', async (t) => {
+  const { srv } = await makeServer(t);
+  const res = await fetch(srv.url + '/api/load-profile', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ from: 'Gobernador' }),
+  });
+  assert.equal(res.status, 409);
+  assert.equal((await res.json()).reason, 'not connected');
+});
+
+test('REQ-27: load-profile requires the from profile name', async (t) => {
+  const { srv } = await makeServer(t);
+  await fetch(srv.url + '/api/connect', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ character: 'Flamamex' }),
+  });
+  const res = await fetch(srv.url + '/api/load-profile', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ character: 'Flamamex', from: '' }),
+  });
+  assert.equal(res.status, 400);
+  assert.equal((await res.json()).reason, 'from required');
+});
+
+test('REQ-27: load-profile refuses when the target is not the confirmed character', async (t) => {
+  const { srv, base } = await makeServer(t);
+  saveProfile(base, 'Gobernador');
+  const res = await fetch(srv.url + '/api/load-profile', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ character: 'SomeoneElse', from: 'Gobernador' }),
+  });
+  assert.equal(res.status, 409);
+  assert.equal((await res.json()).reason, 'character mismatch');
+});
+
+test('REQ-27: load-profile degrades when the spell catalog RPC is unavailable', async (t) => {
+  const { srv, base } = await makeServer(t, { spellCatalog: null });
+  saveProfile(base, 'Gobernador');
+  await fetch(srv.url + '/api/connect', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ character: 'Flamamex' }),
+  });
+  const res = await fetch(srv.url + '/api/load-profile', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ character: 'Flamamex', from: 'Gobernador' }),
+  });
+  assert.equal(res.status, 503);
+  assert.equal((await res.json()).reason, 'spell catalog unavailable');
+});

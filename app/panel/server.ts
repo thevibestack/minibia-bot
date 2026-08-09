@@ -85,6 +85,45 @@ function readBody(req) {
 }
 
 /**
+ * Validate + sanitize the spell-bearing config keys against the client
+ * catalog (design D5/D6, REQ-27/28): every integer sid in healMagic.sid /
+ * training.sid must resolve to a spell the CURRENT character can cast
+ * (vocation + level; mana when ctx.mana is provided). Returns
+ * {rejected: [{key, reason}], config} — each rejected sid is blanked (null)
+ * in the returned config so "the rest applies" (REQ-27 cross-load).
+ * @param {object} config
+ * @param {Array<object>} catalog - raw client catalog rows ({sid, vocations, level, mana})
+ * @param {{vocationLabel: string, playerLevel: number|null, mana: number|null}} ctx
+ * @returns {{rejected: Array<{key: string, reason: string}>, config: object}}
+ */
+function validateAndSanitize(config, catalog, ctx) {
+  const bySid = Object.create(null);
+  for (const spell of (Array.isArray(catalog) ? catalog : [])) {
+    if (spell && typeof spell === 'object' && Number.isInteger(Number(spell.sid))) {
+      bySid[Number(spell.sid)] = spell;
+    }
+  }
+  const rejected = [];
+  const sidError = (key, sid) => {
+    const n = Number(sid);
+    if (!Number.isInteger(n)) return { key, reason: 'invalid spell id' };
+    const spell = bySid[n];
+    if (!spell) return { key, reason: 'unknown spell (sid ' + n + ')' };
+    const err = GC.spellValidationError(spell, ctx);
+    return err ? { key, reason: err.reason } : null;
+  };
+  const out = JSON.parse(JSON.stringify(config));
+  for (const mkey of ['healMagic', 'training']) {
+    const m = out.modules && out.modules[mkey];
+    if (m && m.sid !== null && m.sid !== undefined) {
+      const err = sidError(mkey + '.sid', m.sid);
+      if (err) { rejected.push(err); m.sid = null; }
+    }
+  }
+  return { rejected, config: out };
+}
+
+/**
  * @param {object} opts
  * @param {string} opts.staticDir - panel assets dir (index.html etc.)
  * @param {() => Promise<{name: string, vocationId: number|null, vocationLabel: string}|null>} opts.identity
@@ -260,6 +299,57 @@ function createPanelServer(opts) {
         store.saveCharacter({ name, config });
         lastCharacter = name;
         sendJson(res, 200, { ok: true });
+        return;
+      }
+      if (req.method === 'POST' && url === '/api/load-profile') {
+        // REQ-27 (slice 1b, design D6): cross-load another character's
+        // config. Every spell sid is validated against the CURRENT
+        // character's vocation (+ level) via the live catalog; incompatible
+        // entries are REJECTED with a visible reason and blanked, the rest
+        // applies (merge + persist + push). Mana is NOT checked here — the
+        // save path (/api/config) re-checks it (REQ-28).
+        const body = await readBody(req);
+        const name = typeof body.character === 'string' && body.character ? body.character : lastCharacter;
+        if (!name) {
+          sendJson(res, 409, { ok: false, reason: 'not connected' });
+          return;
+        }
+        const from = typeof body.from === 'string' ? body.from.trim() : '';
+        if (!from) {
+          sendJson(res, 400, { ok: false, reason: 'from required' });
+          return;
+        }
+        const identity = await identityFn();
+        if (!identity || !identity.name) {
+          sendJson(res, 409, { ok: false, reason: 'not connected' });
+          return;
+        }
+        if (name !== identity.name) {
+          sendJson(res, 409, { ok: false, reason: 'character mismatch' });
+          return;
+        }
+        const raw = await spellCatalogFn();
+        if (!raw || !Array.isArray(raw.spells)) {
+          // No catalog = no validation = no cross-load (the rejection list
+          // would be a lie). Honest degrade.
+          sendJson(res, 503, { ok: false, reason: 'spell catalog unavailable' });
+          return;
+        }
+        const src = store.loadCharacter({ name: from });
+        const { rejected, config } = validateAndSanitize(src.config, raw.spells, {
+          vocationLabel: identity.vocationLabel || raw.vocationLabel || '',
+          playerLevel: raw.playerLevel,
+          mana: null,
+        });
+        config.character = name;
+        config.connected = true;
+        // REQ-18 session-scoped trade toggle: a cross-load starts like a new
+        // session (OFF until the user re-enables it in this session).
+        if (config.modules && config.modules.trade) config.modules.trade.on = false;
+        await applyConfigFn(Object.assign({}, config, { armed: true }));
+        store.saveCharacter({ name, config });
+        lastCharacter = name;
+        sendJson(res, 200, { ok: true, from, rejected, config });
         return;
       }
       if (req.method === 'POST' && url === '/api/disconnect') {
