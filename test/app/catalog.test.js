@@ -48,12 +48,35 @@ test('REQ-07: every entry has the shape the panel/agent needs', () => {
   }
 });
 
-test('REQ-07: npcTrades.json asset loads as an array (0 rows in the current extraction)', () => {
+test('REQ-07: npcTrades.json asset loads as normalized flat rows (W-1 live shape)', () => {
   const trades = catalog.loadNpcTrades();
-  assert.ok(Array.isArray(trades), 'npcTrades.json is a JSON array');
-  assert.equal(trades.length, 0,
-    'current extraction was captured without the npcTrades page input — re-running '
-    + 'tools/extract-catalog.js with it repopulates this asset (documented in app/catalog.ts)');
+  assert.ok(Array.isArray(trades), 'npcTrades.json normalizes to a flat array');
+  assert.equal(trades.length, 1096,
+    'W-1 live extraction: 279 item cids -> 1,096 trade rows {cid, npc, price, region}');
+  const beatrice = trades.find((t) => t.npc === 'Beatrice' && t.cid === 1736);
+  assert.ok(beatrice, 'a row for Beatrice trading cid 1736 exists');
+  assert.equal(beatrice.price, 10);
+  assert.equal(beatrice.region, 'main');
+});
+
+test('REQ-07: normalizeNpcTrades accepts array, object and junk sources', () => {
+  assert.equal(catalog.normalizeNpcTrades(null), null);
+  assert.equal(catalog.normalizeNpcTrades('nope'), null);
+  assert.equal(catalog.normalizeNpcTrades(42), null);
+  // Object shape (live client, W-1): {cid: [{name, price, region}]}
+  const fromObject = catalog.normalizeNpcTrades({
+    '1736': [{ name: 'Beatrice', price: 10, region: 'main' }, null, 'junk'],
+    '24': [{ name: 'Gorn', price: 5 }],
+  });
+  assert.equal(fromObject.length, 2, 'junk entries dropped');
+  const beatriceRow = fromObject.find((t) => t.npc === 'Beatrice');
+  assert.deepEqual(beatriceRow, { cid: 1736, npc: 'Beatrice', price: 10, region: 'main', buy: null, sell: null });
+  const gornRow = fromObject.find((t) => t.npc === 'Gorn');
+  assert.equal(gornRow.cid, 24);
+  assert.equal(gornRow.region, null, 'missing region stays null');
+  // Array shape (historical derived contract) passes through untouched.
+  const arrayRow = [{ npc: 'Arito', price: 90, buy: true, sell: false }];
+  assert.deepEqual(catalog.normalizeNpcTrades(arrayRow), arrayRow);
 });
 
 test('REQ-07: corrupt or missing assets degrade to null (no crash)', (t) => {

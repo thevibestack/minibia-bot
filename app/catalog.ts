@@ -11,13 +11,15 @@
  *                    copied from tools/extract-catalog.js output. Each
  *                    entry: {cid, name, article, type, weight,
  *                    runeSpellName, imageDataURL, npcTrades[]}.
- *  - npcTrades.json — flat trade rows {npc, price, buy, sell} DERIVED from
- *                    the catalog entries' npcTrades arrays. The current
- *                    local extraction was captured without the npcTrades
- *                    page input, so it holds 0 rows; re-running
- *                    tools/extract-catalog.js WITH the trades input and
- *                    re-deriving repopulates it (see tools/extract-catalog.js
- *                    usage note).
+ *  - npcTrades.json — trade rows. Two shapes are accepted (both observed):
+ *                      (a) the pre-W-1 contract: flat rows
+ *                          {npc, price, buy, sell} DERIVED from the catalog
+ *                          entries' npcTrades arrays;
+ *                      (b) the W-1 live-client shape: an OBJECT keyed by
+ *                          item cid -> [{name, price, region}, ...]
+ *                          (gameClient.npcTrades, captured verbatim from the
+ *                          page). loadNpcTrades normalizes BOTH to a flat
+ *                          array (see normalizeNpcTrades).
  *
  * Pure Node module (no globals): loadCatalog/loadNpcTrades/assetPath are
  * testable against the real assets or a temp dir.
@@ -89,16 +91,57 @@ function loadCatalog(opts = {}) {
 }
 
 /**
- * Load the flat npcTrades asset (design: 279 rows when extracted with the
- * trades input; [] until then — never null for a valid JSON array).
+ * Normalize a raw npcTrades asset into a flat array of trade rows.
+ *
+ * Accepted shapes (both observed in the repo):
+ *  - ARRAY of rows -> passed through (the historical derived contract,
+ *    {npc, price, buy, sell}).
+ *  - OBJECT keyed by item cid -> array of {name, price, region} (the W-1
+ *    live-client shape captured verbatim from gameClient.npcTrades).
+ *    Each {name, price, region} row becomes {cid, npc: name, price, region}
+ *    so callers can resolve by item and by NPC; buy/sell are absent in the
+ *    live shape and stay null.
+ * Anything else (missing, corrupt, wrong shape) -> null (offline degrade,
+ * REQ-07 never crashes).
+ * @param {unknown} raw
+ * @returns {Array<object>|null}
+ */
+function normalizeNpcTrades(raw) {
+  if (Array.isArray(raw)) return raw;
+  if (raw && typeof raw === 'object') {
+    const rows = [];
+    for (const cidKey of Object.keys(raw)) {
+      const list = raw[cidKey];
+      if (!Array.isArray(list)) continue;
+      const cid = /^\d+$/.test(cidKey) ? Number(cidKey) : cidKey;
+      for (const entry of list) {
+        if (!entry || typeof entry !== 'object') continue;
+        const npc = typeof entry.name === 'string' ? entry.name : null;
+        if (!npc) continue;
+        rows.push({
+          cid,
+          npc,
+          price: typeof entry.price === 'number' && Number.isFinite(entry.price) ? entry.price : null,
+          region: typeof entry.region === 'string' ? entry.region : null,
+          buy: typeof entry.buy === 'boolean' ? entry.buy : null,
+          sell: typeof entry.sell === 'boolean' ? entry.sell : null,
+        });
+      }
+    }
+    return rows;
+  }
+  return null;
+}
+
+/**
+ * Load the npcTrades asset (normalized flat rows; see normalizeNpcTrades).
  * @param {{dir?: string}} [opts]
- * @returns {Array<{npc: string, price: number, buy: boolean, sell: boolean}>|null}
+ * @returns {Array<object>|null}
  */
 function loadNpcTrades(opts = {}) {
   const embedded = readEmbeddedAsset(NPC_TRADES_FILENAME);
   const rows = embedded !== null ? embedded : readJsonAsset(assetPath(opts.dir, NPC_TRADES_FILENAME));
-  if (!Array.isArray(rows)) return null;
-  return rows;
+  return normalizeNpcTrades(rows);
 }
 
 /**
@@ -168,6 +211,7 @@ module.exports = {
   readJsonAsset,
   readEmbeddedAsset,
   loadCatalog,
+  normalizeNpcTrades,
   loadNpcTrades,
   buildIndex,
   createCatalog,
