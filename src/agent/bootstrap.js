@@ -1150,6 +1150,16 @@ function createAgent(opts = {}) {
         };
       },
       getPlayerInfo: readPlayerInfo,
+      getSpellCatalog: function () {
+        // REQ-28 (slice 1b, design D5): client spell catalog RPC — enumerates
+        // interface.getSpell(sid) until 30 consecutive unknown sids and
+        // returns the RAW list + player context (level, vocation label). The
+        // PANEL/server filters it by what the current character can cast;
+        // the page never filters here so one RPC serves every vocation.
+        // Returns null while the game client is not ready (degrade).
+        if (!state.gameClient) return null;
+        return GC_MOD.enumerateSpellCatalog(state.gameClient, { maxUnknown: 30, limit: 400 });
+      },
       applyConfig: applyConfig,
     };
   }

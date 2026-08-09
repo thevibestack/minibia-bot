@@ -4,7 +4,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { JSDOM } = require('jsdom');
 
-const { readStats, readCooldown } = require('../../src/adapters/gameClient');
+const { readStats, readCooldown, enumerateSpellCatalog, filterCatalogByVocation, spellValidationError } = require('../../src/adapters/gameClient');
 
 function makeDoc(bodyHtml) {
   const dom = new JSDOM(`<!DOCTYPE html><html><body>${bodyHtml}</body></html>`);
@@ -100,4 +100,85 @@ test('REQ-02: spellbook/cooldowns absent -> nulls so core falls back to config p
   assert.equal(c.source, 'absent');
   assert.equal(c.cooldown, null);
   assert.equal(c.globalCooldown, null);
+});
+
+/* ------------------- spell catalog (slice 1b, REQ-28, design D5) ------------------- */
+
+/** Mock page interface: spells 0..4 real, then N unknown sids. */
+function makeInterface({ unknown = 30 } = {}) {
+  const table = {
+    0: { name: 'Light', words: 'utevo lux', mana: 20, level: 0, vocations: ['sorcerer', 'druid'] },
+    1: { name: 'Heal Friend', words: 'exura sio', mana: 160, level: 2, vocations: ['sorcerer', 'druid'] },
+    2: { name: 'Great Light', words: 'utevo gran lux', mana: 50, level: 4, vocations: ['sorcerer', 'druid'] },
+    3: { name: 'Intense Healing', words: 'exura gran', mana: 170, level: 8, vocations: ['druid'] },
+    4: { name: 'Flame Strike', words: 'exori flam', mana: 20, level: 5, vocations: ['sorcerer'] },
+  };
+  return { getSpell: (sid) => (sid in table ? table[sid] : null) };
+}
+
+test('REQ-28: enumerateSpellCatalog scans interface.getSpell until 30 unknown sids (~65)', () => {
+  const gc = {
+    interface: makeInterface(),
+    player: { level: 20, vocation: 4 },
+    hotbarManager: { __VOCATION_NAMES: { 4: 'druid' } },
+  };
+  const out = enumerateSpellCatalog(gc, { maxUnknown: 30, limit: 400 });
+  assert.ok(out, 'catalog enumerated');
+  assert.equal(out.spells.length, 5, 'stops after the unknown streak, no invented entries');
+  assert.deepEqual(out.spells[0], { sid: 0, name: 'Light', words: 'utevo lux', mana: 20, level: 0, vocations: ['sorcerer', 'druid'] });
+  assert.deepEqual(out.spells[3].vocations, ['druid'], 'vocations stay string arrays (probe obs 10457)');
+  assert.equal(out.playerLevel, 20, 'player level read for the level filter');
+  assert.equal(out.vocationLabel, 'druid', 'vocation label via hotbarManager.__VOCATION_NAMES');
+});
+
+test('REQ-28: enumerateSpellCatalog normalizes malformed rows and tolerates throwing getSpell', () => {
+  const intf = {
+    getSpell: (sid) => {
+      if (sid === 0) return { name: 'Odd', mana: '20', vocations: 'druid' }; // string mana, wrong vocations
+      if (sid === 1) throw new Error('boom');                                // throwing sid = unknown
+      return null;
+    },
+  };
+  const out = enumerateSpellCatalog({ interface: intf, player: {} });
+  assert.equal(out.spells.length, 1);
+  assert.equal(out.spells[0].mana, 20, 'string mana coerced');
+  assert.deepEqual(out.spells[0].vocations, [], 'non-array vocations dropped');
+  assert.equal(out.playerLevel, null);
+  assert.equal(out.vocationLabel, null);
+});
+
+test('REQ-28: enumerateSpellCatalog returns null when the interface is not ready', () => {
+  assert.equal(enumerateSpellCatalog(null), null);
+  assert.equal(enumerateSpellCatalog({}), null);
+  assert.equal(enumerateSpellCatalog({ interface: {} }), null);
+});
+
+test('REQ-28: filterCatalogByVocation keeps only spells the vocation label + level can cast', () => {
+  const spells = [
+    { sid: 0, name: 'Light', mana: 20, level: 0, vocations: ['sorcerer', 'druid'] },
+    { sid: 3, name: 'Intense Healing', mana: 170, level: 8, vocations: ['druid'] },
+    { sid: 4, name: 'Flame Strike', mana: 20, level: 5, vocations: ['sorcerer'] },
+    { sid: 9, name: 'Open-ended', mana: 30, level: 1, vocations: [] }, // empty = unrestricted
+    { sid: 12, name: 'No vocations key', mana: 10, level: 1 },          // absent = unrestricted
+  ];
+  const filtered = filterCatalogByVocation(spells, { vocationLabel: 'druid', playerLevel: 8 });
+  assert.deepEqual(filtered.map((s) => s.sid), [0, 3, 9, 12],
+    'sorcerer-only spell filtered; level 8 qualifies level-8 spell');
+  const lowLevel = filterCatalogByVocation(spells, { vocationLabel: 'druid', playerLevel: 1 });
+  assert.deepEqual(lowLevel.map((s) => s.sid), [0, 9, 12], 'level filter drops the level-8 spell');
+  assert.deepEqual(filterCatalogByVocation(null, { vocationLabel: 'druid' }), [], 'non-array degrades');
+  assert.deepEqual(filterCatalogByVocation(spells, {}), spells, 'no filter -> all pass');
+});
+
+test('REQ-28: spellValidationError explains why a sid cannot apply (vocation/level/mana)', () => {
+  const spell = { sid: 3, name: 'Intense Healing', mana: 170, level: 8, vocations: ['druid'] };
+  assert.equal(spellValidationError(spell, { vocationLabel: 'druid', playerLevel: 8, mana: 200 }), null,
+    'fully compatible -> null');
+  assert.match(spellValidationError(spell, { vocationLabel: 'sorcerer' }).reason, /vocation mismatch/);
+  assert.match(spellValidationError(spell, { vocationLabel: 'druid', playerLevel: 4 }).reason, /level too high/);
+  assert.match(spellValidationError(spell, { vocationLabel: 'druid', playerLevel: 8, mana: 80 }).reason,
+    /not enough mana — costs 170, you have 80/);
+  assert.deepEqual(spellValidationError(null, {}), { reason: 'unknown spell' });
+  assert.equal(spellValidationError(spell, { vocationLabel: 'druid', playerLevel: 8, mana: null }), null,
+    'mana null = not checked (cross-load path)');
 });
