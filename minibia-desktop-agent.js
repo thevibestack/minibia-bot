@@ -1062,8 +1062,15 @@ const { randomDelay } = require('core/jitter');
  * ONE queue instance that enforces a minimum global interval between ANY two
  * dispatched actions (default ~150ms, configurable). Properties:
  *
- *  - FIFO, single dispatch: entries dispatch in enqueue order, one at a time,
+ *  - FIFO, single dispatch: entries dispatch in array order, one at a time,
  *    never concurrently (throttle=0 still serializes).
+ *  - Priority classes (D1, REQ-29): entries carry `priority` ('normal' |
+ *    'urgent', default 'normal'). Urgent entries head-insert BEFORE every
+ *    normal entry (FIFO within the urgent class), so a preemptive heal
+ *    enqueued AFTER in-flight rune/training/combat work still dispatches
+ *    FIRST — the in-flight sequence defers to a later drain. Normal entries
+ *    keep plain push-at-tail FIFO. Priority only reorders; it NEVER bypasses
+ *    the throttle or the jitter (see below).
  *  - Global minimum interval: an entry's fire time is computed AT DRAIN TIME
  *    relative to the last actual dispatch — `lastDispatchAt + minInterval +
  *    jitterMs` — so two actions enqueued 10ms apart fire no earlier than
@@ -1076,7 +1083,8 @@ const { randomDelay } = require('core/jitter');
  *    deterministic schedules). The jitter is ADDED on top of the throttle
  *    gap, never subtracted: fire time is never earlier than the interval.
  *  - Defer, never drop, never reorder: entries whose fire time has not
- *    arrived stay pending and drain in a later call.
+ *    arrived stay pending and drain in a later call (an urgent jump DEFERS
+ *    the skipped normals — it never drops them).
  *  - No bypass: the queue is the ONLY dispatch path; the wiring guarantees
  *    game-handler invocations happen exclusively inside dispatched closures.
  *
@@ -1084,11 +1092,12 @@ const { randomDelay } = require('core/jitter');
  * deterministic and unit-testable in node without real timers.
  *
  * createQueue(opts) -> {
- *   enqueue(action, { kind, jitterMs }) -> entry,
+ *   enqueue(action, { kind, priority, jitterMs }) -> entry,
  *   drain() -> Array<entry>,              // dispatched eligible prefix
  *   hasPending(predicate) -> boolean,
  *   pendingCount() -> number,
- *   stats() -> { enqueued, dispatched, failed, pending, lastDispatchAt, minInterval }
+ *   stats() -> { enqueued, urgentEnqueued, dispatched, failed, pending,
+ *                pendingUrgent, lastDispatchAt, minInterval }
  * }
  */
 
@@ -1122,8 +1131,14 @@ function createQueue(opts = {}) {
   const dispatchFn = typeof opts.dispatch === 'function' ? opts.dispatch : () => {};
 
   let lastDispatchAt = null; // timestamp of the last actually dispatched action
-  let pending = [];          // FIFO of { action, kind, jitterMs, fireAt }
-  const counters = { enqueued: 0, dispatched: 0, failed: 0 };
+  let pending = [];          // FIFO-by-class of { action, kind, priority, jitterMs, fireAt }
+  const counters = { enqueued: 0, urgentEnqueued: 0, dispatched: 0, failed: 0 };
+
+  /** Coerce the priority option: only 'urgent' is a class; anything else
+   *  (missing, 'normal', unknown) normalizes to 'normal' (D1). */
+  function coercePriority(value) {
+    return value === 'urgent' ? 'urgent' : 'normal';
+  }
 
   /** Draw this entry's jitter delay (enqueue time — deterministic w/ seed). */
   function drawJitter(override) {
@@ -1134,13 +1149,18 @@ function createQueue(opts = {}) {
   /**
    * Enqueue an action. The entry's jitter is drawn NOW; its fire time is
    * computed at drain time against the actual last dispatch so the global
-   * interval holds no matter when enqueue happened. The first entry's fire
-   * base is its OWN enqueue time (a fixed reference — never the drain time,
-   * which would drift and defer it forever).
+   * interval holds no matter when enqueued. The first entry's fire base is
+   * its OWN enqueue time (a fixed reference — never the drain time, which
+   * would drift and defer it forever).
+   *
+   * Urgent entries (D1, REQ-29 preemption) head-insert right after the LAST
+   * urgent entry — before every normal entry — so a preemptive heal jumps
+   * in-flight work. FIFO holds within each priority class. Priority only
+   * reorders dispatch order; the throttle + jitter still apply at drain.
    *
    * @param {Function} action - () => void; invoked ONLY through dispatch
-   * @param {{kind?: string, jitterMs?: number}} [entryOpts]
-   * @returns {{action: Function, kind: string, jitterMs: number}} the entry
+   * @param {{kind?: string, priority?: 'normal'|'urgent', jitterMs?: number}} [entryOpts]
+   * @returns {{action: Function, kind: string, priority: string, jitterMs: number}} the entry
    */
   function enqueue(action, entryOpts = {}) {
     if (typeof action !== 'function') {
@@ -1149,11 +1169,21 @@ function createQueue(opts = {}) {
     const entry = {
       action,
       kind: typeof entryOpts.kind === 'string' ? entryOpts.kind : 'action',
+      priority: coercePriority(entryOpts.priority),
       jitterMs: drawJitter(entryOpts.jitterMs),
       enqueuedAt: nowFn(), // fixed reference for the first-dispatch slot
       fireAt: null,        // computed at drain time
     };
-    pending.push(entry);
+    if (entry.priority === 'urgent') {
+      // Head-insert: find the boundary after the LAST urgent entry and splice
+      // there — urgent stays FIFO among urgents and always precedes normals.
+      let i = 0;
+      while (i < pending.length && pending[i].priority === 'urgent') i += 1;
+      pending.splice(i, 0, entry);
+      counters.urgentEnqueued += 1;
+    } else {
+      pending.push(entry);
+    }
     counters.enqueued += 1;
     return entry;
   }
@@ -1203,9 +1233,11 @@ function createQueue(opts = {}) {
   function stats() {
     return {
       enqueued: counters.enqueued,
+      urgentEnqueued: counters.urgentEnqueued,
       dispatched: counters.dispatched,
       failed: counters.failed,
       pending: pending.length,
+      pendingUrgent: pending.reduce(function (n, e) { return n + (e.priority === 'urgent' ? 1 : 0); }, 0),
       lastDispatchAt,
       minInterval,
     };
@@ -2650,7 +2682,7 @@ const FIRING_MOD = require('adapters/firing');
  * @param {() => number} [opts.now=Date.now] - injectable clock
  * @param {{error?: Function, warn?: Function}} [opts.log] - log sinks
  * @returns {{
- *   decide: (ctx: object) => {fire: boolean, reason: string, slot?: number},
+ *   decide: (ctx: object) => {fire: boolean, reason: string, slot?: number, priority?: string},
  *   fire: () => boolean,
  *   isEnabled: () => boolean,
  * }}
@@ -2663,7 +2695,7 @@ function createHealMagic(opts = {}) {
   /**
    * Pure decision (REQ-14).
    * @param {object} ctx - tick context { health, mana, maxMana }
-   * @returns {{fire: boolean, reason: string, slot?: number}}
+   * @returns {{fire: boolean, reason: string, slot?: number, priority?: string}}
    */
   function decide(ctx = {}) {
     if (!config || config.on !== true) return { fire: false, reason: 'off' };
@@ -2682,18 +2714,22 @@ function createHealMagic(opts = {}) {
     }
 
     // Mana feasibility (REQ-14: "gated by mana feasibility (REQ-01 semantics)").
+    // Per-module reserve (D2, REQ-31): healMagic.reserve — the cast must not
+    // fire below cost + reserve.
     const cost = typeof getSpellCost === 'function' ? getSpellCost(config.sid) : null;
     if (cost === null) return { fire: false, reason: 'no-cost' };
     const feas = FEAS_MOD.canCast({
       mana: ctx.mana,
       cost,
-      reserve: 0,
+      reserve: Number(config.reserve) || 0,
       maxMana: ctx.maxMana,
       key: 'heal-magic-' + slot,
       warned,
       onWarn: warn,
     });
-    if (!feas.fire) return { fire: false, reason: feas.reason === 'never' ? 'never' : 'insufficient' };
+    if (!feas.fire) {
+      return { fire: false, reason: feas.reason === 'never' ? 'never' : feas.reason === 'reserve' ? 'reserve' : 'insufficient' };
+    }
 
     // Cooldowns: GLOBAL_COOLDOWN defers to a later tick (REQ-14).
     if (typeof readCooldown === 'function') {
@@ -2711,7 +2747,10 @@ function createHealMagic(opts = {}) {
       }
     }
 
-    return { fire: true, reason: 'low-hp', slot };
+    // D1 (REQ-29): the heal decision carries priority 'urgent' so the
+    // bootstrap enqueues it head-inserted — it preempts in-flight rune/
+    // training/attack work (the queue defers them to a later drain).
+    return { fire: true, reason: 'low-hp', slot, priority: 'urgent' };
   }
 
   /**
@@ -4623,7 +4662,7 @@ const DEFAULT_CONFIG = {
   // Shapes match app/store/characters.ts defaultConfig (slice 3) + additive
   // settings: runes.healThreshold, eat.slot, eat.cids (design extensions).
   healItems: { on: false, threshold: 50, slotCids: [] },
-  healMagic: { on: false, threshold: 150, slot: null, sid: null, word: null },
+  healMagic: { on: false, threshold: 150, slot: null, sid: null, word: null, reserve: 0 },
   runes: { on: false, attackSlot: null, healSlot: null, healThreshold: null },
   training: { on: false, slot: null, sid: null, reserve: 0, word: null },
   eat: { on: false, everyCasts: 0, warningWindowSec: 60, fallbackIntervalSec: 10, slot: null, cids: [] },
@@ -4652,7 +4691,7 @@ function normalizeConfig(raw) {
     survival: { on: true, threshold: 50, slot: null },
     rotation: { spells: [] },
     healItems: { on: false, threshold: 50, slotCids: [] },
-    healMagic: { on: false, threshold: 150, slot: null, sid: null, word: null },
+    healMagic: { on: false, threshold: 150, slot: null, sid: null, word: null, reserve: 0 },
     runes: { on: false, attackSlot: null, healSlot: null, healThreshold: null },
     training: { on: false, slot: null, sid: null, reserve: 0, word: null },
     eat: { on: false, everyCasts: 0, warningWindowSec: 60, fallbackIntervalSec: 10, slot: null, cids: [] },
@@ -4690,6 +4729,7 @@ function normalizeConfig(raw) {
   if (Number.isFinite(hm.threshold)) cfg.healMagic.threshold = hm.threshold;
   if (Number.isInteger(hm.slot)) cfg.healMagic.slot = hm.slot;
   if (Number.isInteger(hm.sid)) cfg.healMagic.sid = hm.sid;
+  if (Number.isFinite(hm.reserve) && hm.reserve >= 0) cfg.healMagic.reserve = hm.reserve; // D2 (REQ-31)
   const rn = src.runes && typeof src.runes === 'object' ? src.runes : {};
   if (typeof rn.on === 'boolean') cfg.runes.on = rn.on;
   if (Number.isInteger(rn.attackSlot)) cfg.runes.attackSlot = rn.attackSlot;
@@ -5261,8 +5301,9 @@ function createAgent(opts = {}) {
             const d = healItems.decide(ctx);
             if (!d.fire) return false;
             // NO-BYPASS (REQ-12): the real __useItemOnSelf/mouse.use call
-            // happens ONLY inside the queue-dispatched closure.
-            state.queue.enqueue(function () { healItems.fire(d.item); }, { kind: 'heal-item' });
+            // happens ONLY inside the queue-dispatched closure. Priority
+            // 'urgent' (D1, REQ-29): the heal jumps in-flight work.
+            state.queue.enqueue(function () { healItems.fire(d.item); }, { kind: 'heal-item', priority: 'urgent' });
             logEvent('healItems', 'use-item', d.item && d.item.cid !== undefined ? d.item.cid : d.reason || 'heal');
             return true;
           },
@@ -5292,6 +5333,11 @@ function createAgent(opts = {}) {
           run: function (ctx) {
             const d = healMagic.decide(ctx);
             if (!d.fire) return false;
+            // D1 (REQ-29): the heal carries priority 'urgent' from the module
+            // decision — head-inserted before ANY normal entry, so it
+            // preempts rune/training/attack work already in flight (the
+            // queue defers that work to a later drain). Throttle + jitter
+            // still apply at drain (REQ-12 — no bypass, ever).
             state.queue.enqueue(function () {
               healMagic.fire(d, { gameClient: state.gameClient, document: doc });
               // REQ-24 echo validation: words-path fires only (word configured);
@@ -5300,7 +5346,7 @@ function createAgent(opts = {}) {
                 echo.startForFire('heal-magic', cfg.healMagic.word);
               }
               logEvent('healMagic', 'cast', d.reason || 'heal');
-            }, { kind: 'heal-magic' });
+            }, { kind: 'heal-magic', priority: d.priority || 'normal' });
             return true;
           },
         },
@@ -5328,7 +5374,9 @@ function createAgent(opts = {}) {
           run: function (ctx) {
             // NO-BYPASS (REQ-12): the action enqueues a closure; the real
             // __handleClick call happens ONLY inside the queue-dispatched
-            // closure, never inline during the tree tick.
+            // closure, never inline during the tree tick. Priority 'urgent'
+            // (D1, REQ-29): the legacy survival heal also preempts in-flight
+            // rune/training/attack work.
             state.queue.enqueue(function () {
               FIRING_MOD.fireSlot(cfg.survival.slot, {
                 mode: 'handleClick',
@@ -5337,7 +5385,7 @@ function createAgent(opts = {}) {
                 log,
               });
               logEvent('survival', 'fire-slot', cfg.survival.slot);
-            }, { kind: 'survival-heal' });
+            }, { kind: 'survival-heal', priority: 'urgent' });
             return true;
           },
         },

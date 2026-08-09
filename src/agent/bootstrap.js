@@ -708,8 +708,9 @@ function createAgent(opts = {}) {
             const d = healItems.decide(ctx);
             if (!d.fire) return false;
             // NO-BYPASS (REQ-12): the real __useItemOnSelf/mouse.use call
-            // happens ONLY inside the queue-dispatched closure.
-            state.queue.enqueue(function () { healItems.fire(d.item); }, { kind: 'heal-item' });
+            // happens ONLY inside the queue-dispatched closure. Priority
+            // 'urgent' (D1, REQ-29): the heal jumps in-flight work.
+            state.queue.enqueue(function () { healItems.fire(d.item); }, { kind: 'heal-item', priority: 'urgent' });
             logEvent('healItems', 'use-item', d.item && d.item.cid !== undefined ? d.item.cid : d.reason || 'heal');
             return true;
           },
@@ -739,6 +740,11 @@ function createAgent(opts = {}) {
           run: function (ctx) {
             const d = healMagic.decide(ctx);
             if (!d.fire) return false;
+            // D1 (REQ-29): the heal carries priority 'urgent' from the module
+            // decision — head-inserted before ANY normal entry, so it
+            // preempts rune/training/attack work already in flight (the
+            // queue defers that work to a later drain). Throttle + jitter
+            // still apply at drain (REQ-12 — no bypass, ever).
             state.queue.enqueue(function () {
               healMagic.fire(d, { gameClient: state.gameClient, document: doc });
               // REQ-24 echo validation: words-path fires only (word configured);
@@ -747,7 +753,7 @@ function createAgent(opts = {}) {
                 echo.startForFire('heal-magic', cfg.healMagic.word);
               }
               logEvent('healMagic', 'cast', d.reason || 'heal');
-            }, { kind: 'heal-magic' });
+            }, { kind: 'heal-magic', priority: d.priority || 'normal' });
             return true;
           },
         },
@@ -775,7 +781,9 @@ function createAgent(opts = {}) {
           run: function (ctx) {
             // NO-BYPASS (REQ-12): the action enqueues a closure; the real
             // __handleClick call happens ONLY inside the queue-dispatched
-            // closure, never inline during the tree tick.
+            // closure, never inline during the tree tick. Priority 'urgent'
+            // (D1, REQ-29): the legacy survival heal also preempts in-flight
+            // rune/training/attack work.
             state.queue.enqueue(function () {
               FIRING_MOD.fireSlot(cfg.survival.slot, {
                 mode: 'handleClick',
@@ -784,7 +792,7 @@ function createAgent(opts = {}) {
                 log,
               });
               logEvent('survival', 'fire-slot', cfg.survival.slot);
-            }, { kind: 'survival-heal' });
+            }, { kind: 'survival-heal', priority: 'urgent' });
             return true;
           },
         },
