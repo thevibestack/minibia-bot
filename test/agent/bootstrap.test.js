@@ -64,13 +64,16 @@ function teardown(dom) {
   dom.window.close();
 }
 
-/** Default slice-2 config: survival sample leaf + optional combat spells. */
+/** Default slice-2 config: survival sample leaf + optional combat spells.
+ *  armed:true is the REQ-02 gate extension (slice 3) — the agent refuses
+ *  every action until an explicit armed push arrives. */
 function seedConfig(overrides = {}) {
   return {
     queue: { minIntervalMs: 150 },
     jitter: { min: 50, max: 400 },
     survival: { on: true, threshold: 50, slot: 1 },
     rotation: { spells: overrides.spells || [] },
+    armed: true,
   };
 }
 

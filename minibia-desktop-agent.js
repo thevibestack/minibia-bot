@@ -2002,9 +2002,14 @@ const DEFAULT_CONFIG = {
   jitter: { min: 50, max: 400 },
   survival: { on: true, threshold: 50, slot: null }, // sample leaf — slice 4 real module
   rotation: { spells: [] },                          // combat leaf rules (userscript shape)
+  armed: false,                                      // interconnection gate (REQ-02, slice 3)
 };
 
-/** Deep-ish merge of known keys over the defaults (unknown keys dropped). */
+/**
+ * Deep-ish merge of known keys over the defaults (unknown keys dropped).
+ * `armed` is the REQ-02 gate flag: ONLY an explicit true arms the engine —
+ * anything else leaves the agent disarmed ("not connected").
+ */
 function normalizeConfig(raw) {
   const src = raw && typeof raw === 'object' ? raw : {};
   const cfg = {
@@ -2012,6 +2017,7 @@ function normalizeConfig(raw) {
     jitter: { min: 50, max: 400 },
     survival: { on: true, threshold: 50, slot: null },
     rotation: { spells: [] },
+    armed: false,
   };
   if (Number.isFinite(src.queue && src.queue.minIntervalMs) && src.queue.minIntervalMs >= 0) {
     cfg.queue.minIntervalMs = src.queue.minIntervalMs;
@@ -2029,6 +2035,7 @@ function normalizeConfig(raw) {
   if (src.rotation && Array.isArray(src.rotation.spells)) {
     cfg.rotation.spells = src.rotation.spells.filter((s) => s && typeof s === 'object');
   }
+  cfg.armed = src.armed === true; // REQ-02: only an explicit true arms
   return cfg;
 }
 
@@ -2068,6 +2075,7 @@ function createAgent(opts = {}) {
     ready: false,
     running: false,
     destroyed: false,
+    armed: false, // REQ-02 gate: false until the panel confirms + pushes armed:true
     gameClient: null,
     config: null,
     tree: null,
@@ -2157,6 +2165,7 @@ function createAgent(opts = {}) {
   /** Rebuild tree + queue from the current config (applyConfig path). */
   function rebuild(cfg) {
     state.config = cfg;
+    state.armed = cfg.armed === true; // REQ-02: arm/keep-disarmed on every config push
     state.ctx = { mana: null, maxMana: null, health: null, lastFiredAt: {} };
     state.queue = createQueue({
       minInterval: cfg.queue.minIntervalMs,
@@ -2275,9 +2284,11 @@ function createAgent(opts = {}) {
 
   /** One tree tick + queue drain. At most one action enqueued per tick
    *  (the tree halts after the first executed action; actions are
-   *  queue-aware and enqueue themselves — REQ-12 no-bypass). */
+   *  queue-aware and enqueue themselves — REQ-12 no-bypass). No tick while
+   *  disarmed: the REQ-02 gate refuses ANY module action pre-Connect. */
   function tickOnce() {
     if (!state.ready || !state.running || state.destroyed) return null;
+    if (!state.armed) return null; // interconnection gate (REQ-02)
     try {
       const stats = GC_MOD.readStats({ gameClient: state.gameClient, document: doc });
       const ctx = state.ctx;
@@ -2302,7 +2313,10 @@ function createAgent(opts = {}) {
     if (!p) return null;
     let label = null;
     try {
-      const table = win && win.__VOCATION_NAMES;
+      // Live-probed location (obs 10320): hotbarManager.__VOCATION_NAMES.
+      const hb = state.gameClient.interface && state.gameClient.interface.hotbarManager
+        || state.gameClient.hotbarManager || null;
+      const table = hb && hb.__VOCATION_NAMES || (win && win.__VOCATION_NAMES) || null;
       if (table && p.vocation !== undefined && table[p.vocation]) label = table[p.vocation];
     } catch (e) { label = null; }
     return { name: p.name !== undefined ? p.name : null, vocationId: p.vocation !== undefined ? p.vocation : null, vocationLabel: label };
@@ -2321,6 +2335,8 @@ function createAgent(opts = {}) {
       readStats: function () { return GC_MOD.readStats({ gameClient: state.gameClient, document: doc }); },
       readCooldown: function (sid) { return GC_MOD.readCooldown(sid, { gameClient: state.gameClient }); },
       fireSlot: function (slot, mode) {
+        // REQ-02 gate: app-driven RPC fires are refused before Connect.
+        if (!state.armed) return { ok: false, reason: 'not connected' };
         // REQ-12 no-bypass: even app-driven RPC fires go through the queue.
         state.queue.enqueue(function () {
           FIRING_MOD.fireSlot(slot, {
@@ -2365,6 +2381,7 @@ function createAgent(opts = {}) {
     return {
       ready: state.ready,
       running: state.running,
+      armed: state.armed,
       playerName: (state.gameClient && state.gameClient.player && state.gameClient.player.name) || null,
       health: state.ctx.health,
       mana: state.ctx.mana,

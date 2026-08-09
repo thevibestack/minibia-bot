@@ -35,11 +35,27 @@ const fs = require('node:fs');
 const launch = require('./cdp/launch.ts');
 const targets = require('./cdp/targets.ts');
 const bridge = require('./cdp/bridge.ts');
+const panelServer = require('./panel/server.ts');
 
 const VERSION_PATH = '/json/version';
 const ENDPOINT_TIMEOUT_MS = 15000;
 const FREE_PORT_PROBE_MS = 400;
 const FREE_PORT_TRIES = 20;
+
+/** Page-side snapshot read (REQ-04 sparse RPC, one evaluate per poll). */
+const SNAPSHOT_EXPRESSION = [
+  '(() => {',
+  '  try {',
+  '    var a = window.__mbAgent;',
+  '    if (!a || typeof a.readStats !== "function") return null;',
+  '    return {',
+  '      stats: a.readStats(),',
+  '      player: typeof a.getPlayerInfo === "function" ? a.getPlayerInfo() : null,',
+  '      agent: window.__mbAgentHandle ? window.__mbAgentHandle.getState() : null,',
+  '    };',
+  '  } catch (e) { return null; }',
+  '})()',
+].join('\n');
 
 /** @typedef {import('./cdp/bridge.ts')} CdpSession */
 
@@ -135,7 +151,10 @@ async function waitForEndpoint(port, opts = {}) {
  * @param {Function} [opts.WebSocketCtor] injectable WebSocket (tests)
  * @param {Function} [opts.spawnImpl] injectable child_process.spawn (tests)
  * @param {Function} [opts.onState] state/event callback (picker/panel)
- * @returns {Promise<{child: object|null, session: object|null, port: number|null, stop(): Promise<void>, identity(): Promise<object|null>}>}
+ * @param {boolean} [opts.panel] start the control-panel server (slice 3)
+ * @param {string} [opts.panelStaticDir] panel assets dir (default app/panel)
+ * @param {object} [opts.store] per-character store {loadCharacter, saveCharacter}
+ * @returns {Promise<{child: object|null, session: object|null, port: number|null, stop(): Promise<void>, identity(): Promise<object|null>, panel: object|null}>}
  */
 async function runMain(opts) {
   const launchEnabled = opts.launch !== false;
@@ -146,12 +165,16 @@ async function runMain(opts) {
   const onState = typeof opts.onState === 'function' ? opts.onState : () => {};
   const injectionSource = typeof opts.injectionSource === 'string' ? opts.injectionSource : '';
   const probeExpression = typeof opts.probeExpression === 'string' ? opts.probeExpression : '';
+  const enablePanel = opts.panel === true;
+  const panelStaticDir = opts.panelStaticDir || path.join(__dirname, 'panel');
+  const store = opts.store || null;
 
   let child = null;
   let session = null;
   let killOnExit = null;
   let stopped = false;
   let chosenPort = null;
+  let panel = null;
 
   function emit(state) { onState(Object.assign({ port: chosenPort }, state)); }
 
@@ -170,6 +193,25 @@ async function runMain(opts) {
       }
     }
     return session;
+  }
+
+  /** Start the control-panel server (slice 3, REQ-05/08): 127.0.0.1 only,
+   *  serves the panel shell and the gate/config/snapshot API. */
+  async function startPanel() {
+    if (!enablePanel || !session || !store) return null;
+    const applyConfig = (config) => bridge.evaluate(
+      session,
+      'window.__mbAgent && window.__mbAgent.applyConfig(' + JSON.stringify(config) + ')',
+    );
+    panel = await panelServer.createPanelServer({
+      staticDir: panelStaticDir,
+      identity: () => bridge.getPlayerIdentity(session),
+      applyConfig,
+      snapshot: () => bridge.evaluate(session, SNAPSHOT_EXPRESSION),
+      store,
+    });
+    emit({ phase: 'panel-ready', url: panel.url });
+    return panel;
   }
 
   /* ---- PRIMARY: launch own dedicated instance (REQ-01/03) ---- */
@@ -194,7 +236,8 @@ async function runMain(opts) {
       const found = targets.filterTargets(body);
       if (found.length === 0) throw new Error('launched Chrome shows no minibia.com page target');
       await attachAndInject(found[0].webSocketDebuggerUrl);
-      return { child, session, port: chosenPort, stop, identity };
+      await startPanel();
+      return { child, session, port: chosenPort, stop, identity, panel };
     } catch (err) {
       emit({ phase: 'launch-failed', error: (err && err.message) || String(err) });
       // Fall through to the secondary scan (REQ-01 actionable picker).
@@ -208,20 +251,22 @@ async function runMain(opts) {
     emit({ phase: 'targets-found', targets: found });
     try {
       await attachAndInject(found[0].webSocketDebuggerUrl);
-      return { child, session, port: null, stop, identity }; // ws url carries the port in scan mode
+      await startPanel();
+      return { child, session, port: null, stop, identity, panel }; // ws url carries the port in scan mode
     } catch (err) {
       emit({ phase: 'attach-failed', error: (err && err.message) || String(err) });
     }
   }
   const picker = targets.describePickerResult({ targets: found, errors, ports: scanPorts });
   emit({ phase: 'no-target', message: picker.message });
-  return { child: null, session: null, port: null, stop, identity };
+  return { child: null, session: null, port: null, stop, identity, panel };
 
   /* ---- cleanup (REQ-03 kill-on-quit + explicit stop) ---- */
   async function stop() {
     if (stopped) return;
     stopped = true;
     if (killOnExit) killOnExit.unregister();
+    if (panel) { try { await panel.close(); } catch (e) { /* best-effort */ } }
     if (session) { try { session.close(); } catch (e) { /* best-effort */ } }
     if (child) await launch.killChrome(child.proc, { isAlive: (p) => { try { process.kill(p.pid, 0); return true; } catch (e) { return false; } } });
   }

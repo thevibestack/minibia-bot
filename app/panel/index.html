@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Minibia Bot — Control Panel</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <!--
+    Minibia Desktop Bot — control panel (REQ-08).
+    SEPARATE window served by the app on 127.0.0.1. The game window stays
+    clean: this document is never injected into the game page, and the
+    agent bundle (window.__mbAgent) never touches this DOM.
+  -->
+  <header id="status-bar" aria-live="polite"></header>
+  <main>
+    <section id="module-list" aria-label="Modules"></section>
+    <section id="config-form" aria-label="Configuration"></section>
+    <section id="live-state" aria-label="Live state"></section>
+  </main>
+  <script src="state.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

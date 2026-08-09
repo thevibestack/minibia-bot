@@ -1,0 +1,107 @@
+/* Minibia Desktop Bot — control panel styles (task 3.3, REQ-08).
+ * Standalone window UI; nothing here is injected into the game page. */
+
+:root {
+  color-scheme: dark;
+  --bg: #14161a;
+  --panel: #1d2128;
+  --panel-2: #242a33;
+  --text: #dde3ea;
+  --muted: #8b95a3;
+  --accent: #4f9cf7;
+  --ok: #3fbf6f;
+  --warn: #e8b64c;
+  --err: #e0655f;
+  --border: #303845;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+/* ------------------------------- status bar ------------------------------ */
+#status-bar { padding: 12px 16px; background: var(--panel); border-bottom: 1px solid var(--border); }
+
+.status-bar { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+
+.gate {
+  padding: 2px 10px;
+  border-radius: 999px;
+  font-weight: 600;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+}
+.gate-disconnected { color: var(--muted); }
+.gate-probing { color: var(--warn); }
+.gate-confirmed { color: var(--accent); }
+.gate-armed { color: var(--ok); }
+
+.player em { color: var(--muted); font-style: normal; }
+
+.refusal { color: var(--err); }
+.error { color: var(--err); }
+
+#status-bar button {
+  margin-left: 4px;
+  padding: 4px 14px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text);
+  cursor: pointer;
+}
+#status-bar button:hover { border-color: var(--accent); }
+
+/* ------------------------------ module list ------------------------------ */
+#module-list { padding: 16px; }
+
+.module-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 10px; }
+
+.module-toggle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+  user-select: none;
+}
+.module-toggle input[type="checkbox"] { accent-color: var(--accent); width: 16px; height: 16px; }
+.module-toggle:has(input:checked) { border-color: var(--accent); }
+.module-toggle input:disabled { opacity: 0.45; cursor: not-allowed; }
+
+/* ------------------------------ config form ------------------------------ */
+#config-form { padding: 0 16px; }
+
+.config-form h2, .live-state h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+
+.config-shell {
+  padding: 14px;
+  background: var(--panel);
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  color: var(--muted);
+}
+
+/* ------------------------------- live state ------------------------------ */
+#live-state { padding: 16px; }
+
+.live-payload {
+  max-height: 320px;
+  overflow: auto;
+  padding: 10px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space: pre-wrap;
+}
+
+.live-empty { color: var(--muted); }
