@@ -54,6 +54,7 @@ const AGENT_MODULES = [
   ['core/items', 'src/core/items.js'],
   ['core/premium', 'src/core/premium.js'],
   ['core/kills', 'src/core/kills.js'],
+  ['core/log', 'src/core/log.js'], // D8 (slice 1a): readable activity log ring
   ['adapters/gameClient', 'src/adapters/gameClient.js'],
   ['adapters/firing', 'src/adapters/firing.js'],
   ['adapters/eat', 'src/adapters/eat.js'],

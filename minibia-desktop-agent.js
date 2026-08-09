@@ -1552,6 +1552,83 @@ module.exports = { createKillObserver, creatureId, creatureName, creatureLoot };
 return module.exports;
 })();
 
+__mbModules['core/log'] = (function () {
+'use strict';
+const module = { exports: {} };
+const exports = module.exports;
+const require = __mbRequire;
+'use strict';
+
+/**
+ * Ring-buffer activity log (design D8, REQ-26 "never raw JSON").
+ *
+ * The agent-side readable log: fire closures and log sinks push events
+ * {ts, module, action, result}; the panel renders them as formatted rows.
+ * The buffer is capped (default 200 entries, oldest evicted) and the clock
+ * is injectable for tests. Pure module — no DOM, no network.
+ */
+
+/**
+ * Create an activity-log ring buffer.
+ *
+ * @param {object} [opts]
+ * @param {number} [opts.cap=200] - max entries held (positive integer)
+ * @param {() => number} [opts.now=Date.now] - injectable clock (ts fallback)
+ * @returns {{
+ *   push: (event: {ts?: number, module: string, action: string, result?: *}) => number,
+ *   read: () => Array<{ts: number, module: string, action: string, result: *}>,
+ *   size: () => number,
+ *   clear: () => number,
+ * }}
+ */
+function createLogRing(opts = {}) {
+  const cap = Number.isInteger(opts.cap) && opts.cap > 0 ? opts.cap : 200;
+  const nowFn = typeof opts.now === 'function' ? opts.now : Date.now;
+  const entries = [];
+
+  return {
+    /**
+     * Push one event. The entry is normalized (never mutated by the caller):
+     * `ts` defaults to the injected clock; `module`/`action` are coerced to
+     * strings; the oldest entry is evicted when the cap is reached.
+     * @returns {number} new buffer length
+     */
+    push(event) {
+      const src = event && typeof event === 'object' ? event : {};
+      const ts = Number.isFinite(Number(src.ts)) ? Number(src.ts) : nowFn();
+      entries.push({
+        ts,
+        module: String(src.module === undefined || src.module === null ? 'agent' : src.module),
+        action: String(src.action === undefined || src.action === null ? 'event' : src.action),
+        result: src.result !== undefined ? src.result : null,
+      });
+      while (entries.length > cap) entries.shift();
+      return entries.length;
+    },
+
+    /** Snapshot copy of the buffer, oldest first. */
+    read() {
+      return entries.slice();
+    },
+
+    /** Number of entries currently held. */
+    size() {
+      return entries.length;
+    },
+
+    /** Drop every entry. @returns {number} 0 */
+    clear() {
+      entries.length = 0;
+      return 0;
+    },
+  };
+}
+
+module.exports = { createLogRing };
+
+return module.exports;
+})();
+
 __mbModules['adapters/gameClient'] = (function () {
 'use strict';
 const module = { exports: {} };
@@ -4395,6 +4472,7 @@ const FIRING_MOD = require('adapters/firing');
 const CHAT_MOD = require('adapters/chat');
 const PREMIUM_MOD = require('core/premium');
 const KILLS_MOD = require('core/kills');
+const LOG_MOD = require('core/log'); // D8 (slice 1a): readable activity log ring
 // Slice-4 modules (REQ-13..17) — pure decision modules, tree-wired below.
 const HEAL_ITEMS_MOD = require('agent/modules/heal-items');
 const HEAL_MAGIC_MOD = require('agent/modules/heal-magic');
@@ -4565,10 +4643,32 @@ function createAgent(opts = {}) {
   const clearTimeoutFn = typeof opts.clearTimeout === 'function' ? opts.clearTimeout : (win && win.clearTimeout ? win.clearTimeout.bind(win) : null);
   const setIntervalFn = typeof opts.setInterval === 'function' ? opts.setInterval : (win && win.setInterval ? win.setInterval.bind(win) : null);
   const clearIntervalFn = typeof opts.clearInterval === 'function' ? opts.clearInterval : (win && win.clearInterval ? win.clearInterval.bind(win) : null);
-  const log = opts.log || {
+  const baseLog = opts.log || {
     error: (m) => { state.errors.push(String(m)); try { if (win && win.console) win.console.error('[__mbAgent] ' + m); } catch (e) { /* best-effort */ } },
     warn: (m) => { state.warnings.push(String(m)); try { if (win && win.console) win.console.warn('[__mbAgent] ' + m); } catch (e) { /* best-effort */ } },
     info: (m) => { try { if (win && win.console) win.console.info('[__mbAgent] ' + m); } catch (e) { /* best-effort */ } },
+  };
+
+  // D8 (slice 1a): session-scoped readable activity log. Every sink call and
+  // every queue-dispatched fire closure pushes an entry; the panel renders
+  // them as formatted rows (REQ-26 — never raw JSON). Session-scoped like
+  // state.timers: survives config rebuilds, resets on agent restart.
+  const logRing = LOG_MOD.createLogRing({ cap: 200, now: nowFn });
+
+  /** Best-effort readable-log push — logging never breaks the agent. */
+  function logEvent(module, action, result) {
+    try {
+      logRing.push({ ts: nowFn(), module: module, action: action, result: result });
+    } catch (e) { /* best-effort */ }
+  }
+
+  // Mirror every sink into the ring (module 'agent', level as action) so
+  // agent-level alerts/errors surface in the panel log too. Injected sinks
+  // keep their exact call signature.
+  const log = {
+    error: (m) => { logEvent('agent', 'error', m); if (typeof baseLog.error === 'function') baseLog.error(m); },
+    warn: (m) => { logEvent('agent', 'warn', m); if (typeof baseLog.warn === 'function') baseLog.warn(m); },
+    info: (m) => { logEvent('agent', 'info', m); if (typeof baseLog.info === 'function') baseLog.info(m); },
   };
 
   const state = {
@@ -4594,6 +4694,10 @@ function createAgent(opts = {}) {
     // reset on agent restart): the trade cadence anchor (REQ-18 "toggle
     // resets on logout") + the kill observer baseline.
     timers: { tradeLastSentAt: 0 },
+    // D8 (slice 1a): readable activity log ring (cap 200) — fed by the log
+    // sinks above and the fire closures below; carried in getState() so the
+    // panel renders formatted rows (REQ-26, never raw JSON).
+    logBuffer: logRing,
   };
 
   // Shared active-creature diff observer (core/kills): feeds huntStats
@@ -5035,6 +5139,7 @@ function createAgent(opts = {}) {
             // NO-BYPASS (REQ-12): the real __useItemOnSelf/mouse.use call
             // happens ONLY inside the queue-dispatched closure.
             state.queue.enqueue(function () { healItems.fire(d.item); }, { kind: 'heal-item' });
+            logEvent('healItems', 'use-item', d.item && d.item.cid !== undefined ? d.item.cid : d.reason || 'heal');
             return true;
           },
         },
@@ -5070,6 +5175,7 @@ function createAgent(opts = {}) {
               if (cfg.healMagic && typeof cfg.healMagic.word === 'string' && cfg.healMagic.word.trim()) {
                 echo.startForFire('heal-magic', cfg.healMagic.word);
               }
+              logEvent('healMagic', 'cast', d.reason || 'heal');
             }, { kind: 'heal-magic' });
             return true;
           },
@@ -5106,6 +5212,7 @@ function createAgent(opts = {}) {
                 document: doc,
                 log,
               });
+              logEvent('survival', 'fire-slot', cfg.survival.slot);
             }, { kind: 'survival-heal' });
             return true;
           },
@@ -5126,6 +5233,7 @@ function createAgent(opts = {}) {
         if (state.queue.hasPending(function (e) { return e.kind === d.kind; })) return false;
         state.queue.enqueue(function () {
           runes.fire(d, { gameClient: state.gameClient, document: doc });
+          logEvent('runes', d.kind || 'runes', d.reason || null);
         }, { kind: d.kind });
         return true;
       },
@@ -5168,6 +5276,7 @@ function createAgent(opts = {}) {
               if (cfg.training && typeof cfg.training.word === 'string' && cfg.training.word.trim()) {
                 echo.startForFire('training', cfg.training.word);
               }
+              logEvent('training', 'cast', d.reason || null);
             }, { kind: 'training-cast' });
             ctx.castsSinceFood = (ctx.castsSinceFood || 0) + 1; // every-N-casts counts training casts
             return true;
@@ -5198,7 +5307,7 @@ function createAgent(opts = {}) {
           run: function (ctx) {
             const d = eat.decide(ctx);
             if (!d.fire) return false;
-            state.queue.enqueue(function () { eat.fire(ctx, d); }, { kind: 'eat' });
+            state.queue.enqueue(function () { eat.fire(ctx, d); logEvent('eat', 'eat', d.reason || null); }, { kind: 'eat' });
             return true;
           },
         },
@@ -5230,7 +5339,7 @@ function createAgent(opts = {}) {
             if (!d.fire) return false;
             // NO-BYPASS (REQ-12): the game loot command runs ONLY inside the
             // queue-dispatched closure.
-            state.queue.enqueue(function () { loot.fire(d); }, { kind: 'loot-route' });
+            state.queue.enqueue(function () { loot.fire(d); logEvent('loot', 'route', d.reason || null); }, { kind: 'loot-route' });
             return true;
           },
         },
@@ -5262,7 +5371,7 @@ function createAgent(opts = {}) {
             if (!d.fire) return false;
             // NO-BYPASS (REQ-12): the channel send runs ONLY inside the
             // queue-dispatched closure.
-            state.queue.enqueue(function () { trade.fire(d); }, { kind: 'trade-broadcast' });
+            state.queue.enqueue(function () { trade.fire(d); logEvent('trade', 'broadcast', d.reason || null); }, { kind: 'trade-broadcast' });
             return true;
           },
         },
@@ -5400,6 +5509,7 @@ function createAgent(opts = {}) {
             document: doc,
             log,
           });
+          logEvent('rpc', 'fire-slot', slot);
         }, { kind: 'rpc-fire-slot-' + slot });
         return true;
       },
@@ -5411,6 +5521,7 @@ function createAgent(opts = {}) {
         // REQ-12 no-bypass: the real eat attempt runs inside the queue.
         state.queue.enqueue(function () {
           m.fire(state.ctx, { fire: true, reason: 'rpc', force: true });
+          logEvent('eat', 'rpc-eat', 'queued');
         }, { kind: 'eat-rpc' });
         return { result: 'queued' };
       },
@@ -5459,7 +5570,7 @@ function createAgent(opts = {}) {
         if (!m) return { ok: false, reason: 'not ready' };
         const d = m.decideWalkTo(x, y);
         if (!d.fire) return { ok: false, reason: d.reason };
-        state.queue.enqueue(function () { m.fireWalk(d); }, { kind: 'walk-to' });
+        state.queue.enqueue(function () { m.fireWalk(d); logEvent('routes', 'walk-to', String(d.x) + ',' + String(d.y)); }, { kind: 'walk-to' });
         return {
           ok: true,
           method: d.method && d.method.name ? d.method.name : 'native-autowalk',
@@ -5518,6 +5629,7 @@ function createAgent(opts = {}) {
       },
       warnings: state.warnings.slice(),
       errors: state.errors.slice(),
+      logBuffer: state.logBuffer.read(), // D8 (slice 1a): readable log rows for the panel
     };
   }
 
