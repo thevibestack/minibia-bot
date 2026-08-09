@@ -36,7 +36,8 @@ const OUTPUT = path.join(ROOT, 'minibia-desktop-agent.js');
  * Registry name -> source path. Order matters for the registry (deps first).
  * The 8 pre-existing core modules + the 5 agent-bound adapters are the design
  * D2 set; core/tree + core/queue are the NEW engine modules this slice adds
- * (REQ-10/11/12); agent/bootstrap is the wiring (REQ-04).
+ * (REQ-10/11/12); core/items + the 5 slice-4 modules (REQ-13..17) extend the
+ * registry; agent/bootstrap is the wiring (REQ-04).
  */
 const AGENT_MODULES = [
   ['core/jitter', 'src/core/jitter.js'],
@@ -49,11 +50,17 @@ const AGENT_MODULES = [
   ['core/dedupe', 'src/core/dedupe.js'],
   ['core/tree', 'src/core/tree.js'],
   ['core/queue', 'src/core/queue.js'],
+  ['core/items', 'src/core/items.js'],
   ['adapters/gameClient', 'src/adapters/gameClient.js'],
   ['adapters/firing', 'src/adapters/firing.js'],
   ['adapters/eat', 'src/adapters/eat.js'],
   ['adapters/chat', 'src/adapters/chat.js'],
   ['adapters/catalog', 'src/adapters/catalog.js'],
+  ['agent/modules/heal-items', 'src/agent/modules/heal-items.js'],
+  ['agent/modules/heal-magic', 'src/agent/modules/heal-magic.js'],
+  ['agent/modules/runes', 'src/agent/modules/runes.js'],
+  ['agent/modules/training', 'src/agent/modules/training.js'],
+  ['agent/modules/eat', 'src/agent/modules/eat.js'],
   ['agent/bootstrap', 'src/agent/bootstrap.js'],
 ];
 
@@ -71,14 +78,18 @@ const HEADER = `/* =============================================================
 
 /**
  * Wrap src/agent/* sources: the standard wrapModule rewrite covers './x'
- * requires; src/agent files require '../core/x' and '../adapters/x', which
- * wrapModule leaves untouched — post-process the wrapped output so every
- * require resolves to a registry key.
+ * requires; src/agent files require '../core/x' and '../adapters/x', and
+ * src/agent/modules/* files require '../../core/x' and '../../adapters/x',
+ * which wrapModule leaves untouched — post-process the wrapped output so
+ * every require resolves to a registry key.
  */
 function wrapAgentModule(regName, source) {
   return wrapModule(regName, source)
     .replace(/require\('\.\.\/core\//g, "require('core/")
-    .replace(/require\('\.\.\/adapters\//g, "require('adapters/");
+    .replace(/require\('\.\.\/adapters\//g, "require('adapters/")
+    .replace(/require\('\.\.\/\.\.\/core\//g, "require('core/")
+    .replace(/require\('\.\.\/\.\.\/adapters\//g, "require('adapters/")
+    .replace(/require\('\.\/modules\//g, "require('agent/modules/");
 }
 
 /** Bundle every agent module into the registry + the boot epilogue. @returns {string} */
@@ -96,7 +107,9 @@ function bundleAgent() {
   ];
   for (const [regName, file] of AGENT_MODULES) {
     const source = fs.readFileSync(path.join(ROOT, file), 'utf8');
-    if (regName === 'agent/bootstrap') {
+    if (regName.startsWith('agent/')) {
+      // agent/* files (bootstrap + modules) use ../core, ../adapters and
+      // ../../core / ../../adapters relative requires — rewrite them all.
       parts.push(wrapAgentModule(regName, source));
     } else {
       parts.push(wrapModule(regName, source));

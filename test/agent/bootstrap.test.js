@@ -87,11 +87,14 @@ test('2.5: bundle boots and exposes the REQ-04 __mbAgent surface', async () => {
       assert.equal(typeof s[key], 'function', 'surface key ' + key + ' present (REQ-04)');
     }
     assert.equal(typeof dom.window.__mbAgentHandle, 'object', 'full handle exposed for tests/app control');
-    // Slice stubs: later-slice modules report unavailable until wired.
+    // Slice-4 surfaces wired: the eat RPC is gated by the REQ-02 gate
+    // (disarmed here -> refused), the rune state reports the real module.
     // (JSON-normalize: objects created in the jsdom realm carry a different
     // prototype, so deepStrictEqual would reject them.)
-    assert.equal(JSON.stringify(s.eatFood()), JSON.stringify({ result: 'unavailable', reason: 'eat module lands in slice 4' }));
-    assert.equal(s.getRuneState(), null, 'rune state lands in slice 4');
+    assert.equal(JSON.stringify(s.eatFood()), JSON.stringify({ ok: false, reason: 'not connected' }),
+      'eatFood RPC refused pre-arm (REQ-02 gate)');
+    assert.equal(JSON.stringify(s.getRuneState()), JSON.stringify({ on: false, available: false, reason: 'off', lastFireAt: 0 }),
+      'getRuneState reports the real rune module (REQ-15)');
     assert.equal(s.getWalkState(), null, 'walk state lands in slice 6');
   } finally {
     teardown(dom);

@@ -4,28 +4,27 @@
  * In-page agent bootstrap for the CDP-injected desktop app (REQ-04/10/11/12,
  * design D2/D3/D4).
  *
- * SLICE 2 SKELETON — this slice proves the engine SHAPE end to end:
+ * The engine SHAPE proven end to end:
  *
  *   gameClient + hotbarManager ready
- *        -> tree (Selector[survival, combat, loot]) ticks in-page at jittered
- *           cadence, reads stats into the shared ctx
+ *        -> tree ticks in-page at jittered cadence, reads stats into ctx
  *        -> the tree executes AT MOST ONE action per tick (REQ-10)
  *        -> every action dispatches through the ONE global Action Queue
  *           (REQ-12, no bypass: game handlers are invoked ONLY inside
  *           queue-dispatched closures)
  *
- * The survival branch is a SAMPLE leaf (config.survival: hp <= threshold ->
- * fireSlot on the configured hotbar slot). The combat branch wraps the
- * EXISTING rotation engine (src/core/rotation.js) unchanged as the COMBAT
- * node (design D4): its rule actions enqueue through the same queue. The
- * loot branch is a stub that always fails (loot module lands in slice 5).
- * Real module wiring (heal-items, eat, runes, trade, ...) lands with the
- * module slices (4/5/6) — this slice only proves the wiring contract.
+ * Tree priority (REQ-11): heal items (REQ-13) > heal magic (REQ-14) >
+ * legacy survival slot-heal (slices 2/3 sample leaf, retained for config
+ * backward compatibility) > runes (REQ-15) > combat (rotation leaf, design
+ * D4) > training (REQ-16) > eat (REQ-17) > loot (slice-5 stub).
+ *
+ * Slice-4 modules live in src/agent/modules/*.js — pure decision factories
+ * (node-testable) wired here as tree nodes; each action enqueues a closure
+ * that runs the module's game-handler call (REQ-12 no-bypass).
  *
  * Exposes window.__mbAgent with the REQ-04 surface:
  *   { readStats, readCooldown, fireSlot, eatFood, getChat,
  *     getRuneState, getWalkState, getPlayerInfo, applyConfig }
- * Modules that land later return null / "unavailable" until wired.
  *
  * In-page tick cadence: self-scheduling jittered setTimeout (50-400ms via
  * core/jitter), the SAME pattern the userscript uses (no Worker — the
@@ -41,13 +40,27 @@ const CD_MOD = require('../core/cooldown');
 const GC_MOD = require('../adapters/gameClient');
 const FIRING_MOD = require('../adapters/firing');
 const CHAT_MOD = require('../adapters/chat');
+// Slice-4 modules (REQ-13..17) — pure decision modules, tree-wired below.
+const HEAL_ITEMS_MOD = require('./modules/heal-items');
+const HEAL_MAGIC_MOD = require('./modules/heal-magic');
+const RUNES_MOD = require('./modules/runes');
+const TRAINING_MOD = require('./modules/training');
+const EAT_MODULE_MOD = require('./modules/eat');
 
 /** Minimal slice-2 config shape (per-character store lands in slice 3). */
 const DEFAULT_CONFIG = {
   queue: { minIntervalMs: 150 },
   jitter: { min: 50, max: 400 },
-  survival: { on: true, threshold: 50, slot: null }, // sample leaf — slice 4 real module
+  survival: { on: true, threshold: 50, slot: null }, // legacy generic slot-heal leaf (slices 2/3 shape)
   rotation: { spells: [] },                          // combat leaf rules (userscript shape)
+  // Slice-4 modules — ALL OFF by default (spec: "Optional, user-activated").
+  // Shapes match app/store/characters.ts defaultConfig (slice 3) + additive
+  // settings: runes.healThreshold, eat.slot, eat.cids (design extensions).
+  healItems: { on: false, threshold: 50, slotCids: [] },
+  healMagic: { on: false, threshold: 150, slot: null, sid: null },
+  runes: { on: false, attackSlot: null, healSlot: null, healThreshold: null },
+  training: { on: false, slot: null, sid: null, reserve: 0 },
+  eat: { on: false, everyCasts: 0, warningWindowSec: 60, fallbackIntervalSec: 10, slot: null, cids: [] },
   armed: false,                                      // interconnection gate (REQ-02, slice 3)
 };
 
@@ -63,6 +76,11 @@ function normalizeConfig(raw) {
     jitter: { min: 50, max: 400 },
     survival: { on: true, threshold: 50, slot: null },
     rotation: { spells: [] },
+    healItems: { on: false, threshold: 50, slotCids: [] },
+    healMagic: { on: false, threshold: 150, slot: null, sid: null },
+    runes: { on: false, attackSlot: null, healSlot: null, healThreshold: null },
+    training: { on: false, slot: null, sid: null, reserve: 0 },
+    eat: { on: false, everyCasts: 0, warningWindowSec: 60, fallbackIntervalSec: 10, slot: null, cids: [] },
     armed: false,
   };
   if (Number.isFinite(src.queue && src.queue.minIntervalMs) && src.queue.minIntervalMs >= 0) {
@@ -81,6 +99,33 @@ function normalizeConfig(raw) {
   if (src.rotation && Array.isArray(src.rotation.spells)) {
     cfg.rotation.spells = src.rotation.spells.filter((s) => s && typeof s === 'object');
   }
+  // --- Slice-4 module normalization (unknown keys dropped, invalid values default) ---
+  const hi = src.healItems && typeof src.healItems === 'object' ? src.healItems : {};
+  if (typeof hi.on === 'boolean') cfg.healItems.on = hi.on;
+  if (Number.isFinite(hi.threshold)) cfg.healItems.threshold = hi.threshold;
+  if (Array.isArray(hi.slotCids)) cfg.healItems.slotCids = hi.slotCids.map(Number).filter(Number.isInteger).filter((n) => n >= 0);
+  const hm = src.healMagic && typeof src.healMagic === 'object' ? src.healMagic : {};
+  if (typeof hm.on === 'boolean') cfg.healMagic.on = hm.on;
+  if (Number.isFinite(hm.threshold)) cfg.healMagic.threshold = hm.threshold;
+  if (Number.isInteger(hm.slot)) cfg.healMagic.slot = hm.slot;
+  if (Number.isInteger(hm.sid)) cfg.healMagic.sid = hm.sid;
+  const rn = src.runes && typeof src.runes === 'object' ? src.runes : {};
+  if (typeof rn.on === 'boolean') cfg.runes.on = rn.on;
+  if (Number.isInteger(rn.attackSlot)) cfg.runes.attackSlot = rn.attackSlot;
+  if (Number.isInteger(rn.healSlot)) cfg.runes.healSlot = rn.healSlot;
+  if (Number.isFinite(rn.healThreshold)) cfg.runes.healThreshold = rn.healThreshold;
+  const tr = src.training && typeof src.training === 'object' ? src.training : {};
+  if (typeof tr.on === 'boolean') cfg.training.on = tr.on;
+  if (Number.isInteger(tr.slot)) cfg.training.slot = tr.slot;
+  if (Number.isInteger(tr.sid)) cfg.training.sid = tr.sid;
+  if (Number.isFinite(tr.reserve) && tr.reserve >= 0) cfg.training.reserve = tr.reserve;
+  const ea = src.eat && typeof src.eat === 'object' ? src.eat : {};
+  if (typeof ea.on === 'boolean') cfg.eat.on = ea.on;
+  if (Number.isFinite(ea.everyCasts) && ea.everyCasts >= 0) cfg.eat.everyCasts = Math.floor(ea.everyCasts);
+  if (Number.isFinite(ea.warningWindowSec) && ea.warningWindowSec > 0) cfg.eat.warningWindowSec = ea.warningWindowSec;
+  if (Number.isFinite(ea.fallbackIntervalSec) && ea.fallbackIntervalSec > 0) cfg.eat.fallbackIntervalSec = ea.fallbackIntervalSec;
+  if (Number.isInteger(ea.slot)) cfg.eat.slot = ea.slot;
+  if (Array.isArray(ea.cids)) cfg.eat.cids = ea.cids.map(Number).filter(Number.isInteger).filter((n) => n >= 0);
   cfg.armed = src.armed === true; // REQ-02: only an explicit true arms
   return cfg;
 }
@@ -127,6 +172,7 @@ function createAgent(opts = {}) {
     tree: null,
     queue: null,
     engine: null,
+    modules: null, // slice-4 module handles (built in rebuild)
     ctx: {},
     ticker: null,
     pollTimer: null,
@@ -151,9 +197,73 @@ function createAgent(opts = {}) {
           || (sb.spells && sb.spells[spell.sid]) || null;
         if (entry && entry.cost !== undefined) cost = Number(entry.cost);
       }
+      // Slice-4 (probed, obs 10320): spellbook is EMPTY — spells resolve via
+      // interface.getSpell(sid). Adds the probed location as a fallback.
+      if ((cost === null || !Number.isFinite(cost)) && state.gameClient && state.gameClient.interface) {
+        const intf = state.gameClient.interface;
+        if (typeof intf.getSpell === 'function') {
+          const entry = intf.getSpell(spell.sid);
+          if (entry && entry.cost !== undefined) cost = Number(entry.cost);
+        }
+      }
     } catch (e) { cost = null; }
     if ((cost === null || !Number.isFinite(cost)) && Number.isFinite(Number(spell.cost))) cost = Number(spell.cost);
     return cost !== null && Number.isFinite(cost) ? cost : null;
+  }
+
+  /** Live-probed hotbar manager accessor (obs 10320 location). */
+  function readHotbar() {
+    const gc = state.gameClient;
+    return gc && ((gc.interface && gc.interface.hotbarManager) || gc.hotbarManager) || null;
+  }
+
+  /** Live-probed vocation gate hotbarManager.__canPlayerCastSpell(sid)
+   *  (obs 10320). Returns true/false when the gate exists; null when the
+   *  feature is absent (callers skip the gate, never block). */
+  function canCastSpell(sid) {
+    try {
+      const hb = readHotbar();
+      if (hb && typeof hb.__canPlayerCastSpell === 'function') {
+        return hb.__canPlayerCastSpell(sid) === true;
+      }
+    } catch (e) { /* gate read failure => unknown */ }
+    return null;
+  }
+
+  /** Live-probed native rune windows: hotbarManager.__runeAttackUntil /
+   *  __runeHealUntil (epoch-ms "active until"). Returns null when the fields
+   *  are ABSENT (feature not present => the rune module degrades, design D7 —
+   *  no invented fallback loop). */
+  function readRuneTimers() {
+    try {
+      const hb = readHotbar();
+      if (!hb) return null;
+      const attackUntil = hb.__runeAttackUntil;
+      const healUntil = hb.__runeHealUntil;
+      if (attackUntil === undefined && healUntil === undefined) return null;
+      return { attackUntil: attackUntil === undefined ? null : attackUntil, healUntil: healUntil === undefined ? null : healUntil };
+    } catch (e) { return null; }
+  }
+
+  /** Post-rune-fire wait in ms: __getRuneEffectiveCooldown() when present,
+   *  plus player attackSlowness when exposed (REQ-15 "respect global cooldown
+   *  and player.attackSlowness"). Feature-detected; 0 when absent. */
+  function readRuneAfterFireWait() {
+    let wait = 0;
+    try {
+      const hb = readHotbar();
+      if (hb && typeof hb.__getRuneEffectiveCooldown === 'function') {
+        const v = hb.__getRuneEffectiveCooldown();
+        if (Number.isFinite(Number(v))) wait = Math.max(wait, Number(v));
+      }
+    } catch (e) { /* best-effort */ }
+    try {
+      const p = state.gameClient && state.gameClient.player;
+      const sl = (p && p.state && p.state.attackSlowness) !== undefined
+        ? (p.state.attackSlowness) : (p && p.attackSlowness);
+      if (Number.isFinite(Number(sl))) wait = Math.max(wait, Number(sl));
+    } catch (e) { /* best-effort */ }
+    return wait;
   }
 
   function buildCombatRules(cfg) {
@@ -208,11 +318,11 @@ function createAgent(opts = {}) {
     }));
   }
 
-  /** Rebuild tree + queue from the current config (applyConfig path). */
+  /** Rebuild tree + queue + modules from the current config (applyConfig path). */
   function rebuild(cfg) {
     state.config = cfg;
     state.armed = cfg.armed === true; // REQ-02: arm/keep-disarmed on every config push
-    state.ctx = { mana: null, maxMana: null, health: null, lastFiredAt: {} };
+    state.ctx = { mana: null, maxMana: null, health: null, lastFiredAt: {}, castsSinceFood: 0, lastEatAt: 0 };
     state.queue = createQueue({
       minInterval: cfg.queue.minIntervalMs,
       jitter: cfg.jitter,
@@ -221,6 +331,111 @@ function createAgent(opts = {}) {
       dispatch: function (fn) { fn(); }, // the ONLY game-handler invocation point
     });
     state.engine = ROTATION_MOD.createEngine({ rules: buildCombatRules(cfg), ctx: state.ctx });
+
+    /* -------- slice-4 modules (REQ-13..17): pure decision + queue-dispatch -------- */
+    const healItems = HEAL_ITEMS_MOD.createHealItems({
+      config: cfg.healItems,
+      findSlot: function () { return HEAL_ITEMS_MOD.defaultFindSlot(state.gameClient, cfg.healItems.slotCids); },
+      gameClient: function () { return state.gameClient; },
+      log,
+    });
+    const healMagic = HEAL_MAGIC_MOD.createHealMagic({
+      config: cfg.healMagic,
+      getSpellCost: function (sid) { return readSpellCost({ sid: sid }); },
+      canCastSpell: canCastSpell,
+      readCooldown: function (sid) { return GC_MOD.readCooldown(sid, { gameClient: state.gameClient }); },
+      now: nowFn,
+      log,
+    });
+    const runes = RUNES_MOD.createRunes({
+      config: cfg.runes,
+      readRuneTimers: readRuneTimers,
+      readGlobalCooldown: function () { return GC_MOD.readCooldown(null, { gameClient: state.gameClient }).globalCooldown; },
+      readAfterFireWait: readRuneAfterFireWait,
+      now: nowFn,
+      log,
+    });
+    const training = TRAINING_MOD.createTraining({
+      config: cfg.training,
+      getSpellCost: function (sid) { return readSpellCost({ sid: sid }); },
+      canCastSpell: canCastSpell,
+      readCooldown: function (sid) { return GC_MOD.readCooldown(sid, { gameClient: state.gameClient }); },
+      now: nowFn,
+      log,
+    });
+    const eat = EAT_MODULE_MOD.createEatModule({
+      config: cfg.eat,
+      gameClient: function () { return state.gameClient; },
+      document: doc,
+      now: nowFn,
+      log,
+    });
+    state.modules = { healItems: healItems, healMagic: healMagic, runes: runes, training: training, eat: eat };
+
+    /* -------- tree nodes: survival > combat > training > eat > loot (REQ-11) -------- */
+
+    // REQ-13: heal with items — survival priority, queue-aware (no re-enqueue
+    // while a heal-item action is pending).
+    const healItemsNode = {
+      type: 'sequence',
+      id: 'heal-items',
+      children: [
+        {
+          type: 'condition',
+          id: 'heal-items-feasible',
+          predicate: function (ctx) {
+            if (!cfg.healItems.on) return false;
+            const d = healItems.decide(ctx);
+            if (!d.fire) return false;
+            return !state.queue.hasPending(function (e) { return e.kind === 'heal-item'; });
+          },
+        },
+        {
+          type: 'action',
+          id: 'heal-items-use',
+          run: function (ctx) {
+            const d = healItems.decide(ctx);
+            if (!d.fire) return false;
+            // NO-BYPASS (REQ-12): the real __useItemOnSelf/mouse.use call
+            // happens ONLY inside the queue-dispatched closure.
+            state.queue.enqueue(function () { healItems.fire(d.item); }, { kind: 'heal-item' });
+            return true;
+          },
+        },
+      ],
+    };
+
+    // REQ-14: heal with magic — hp threshold + mana feasibility +
+    // GLOBAL_COOLDOWN defer (core/cooldown), queue-aware.
+    const healMagicNode = {
+      type: 'sequence',
+      id: 'heal-magic',
+      children: [
+        {
+          type: 'condition',
+          id: 'heal-magic-feasible',
+          predicate: function (ctx) {
+            if (!cfg.healMagic.on) return false;
+            const d = healMagic.decide(ctx);
+            if (!d.fire) return false;
+            return !state.queue.hasPending(function (e) { return e.kind === 'heal-magic'; });
+          },
+        },
+        {
+          type: 'action',
+          id: 'heal-magic-cast',
+          run: function (ctx) {
+            const d = healMagic.decide(ctx);
+            if (!d.fire) return false;
+            state.queue.enqueue(function () {
+              healMagic.fire(d, { gameClient: state.gameClient, document: doc });
+            }, { kind: 'heal-magic' });
+            return true;
+          },
+        },
+      ],
+    };
+
     const survival = {
       type: 'sequence',
       id: 'survival',
@@ -256,6 +471,25 @@ function createAgent(opts = {}) {
         },
       ],
     };
+
+    // REQ-15: runes — defer while a native window is active; fire on expiry.
+    // A single action node: the decision is made inside run() so a deferred
+    // rune falls through to combat in the same tick.
+    const runesNode = {
+      type: 'action',
+      id: 'runes',
+      run: function (ctx) {
+        if (!cfg.runes.on) return false;
+        const d = runes.decide(ctx);
+        if (!d.fire) return false;
+        if (state.queue.hasPending(function (e) { return e.kind === d.kind; })) return false;
+        state.queue.enqueue(function () {
+          runes.fire(d, { gameClient: state.gameClient, document: doc });
+        }, { kind: d.kind });
+        return true;
+      },
+    };
+
     const combat = {
       type: 'action',
       id: 'combat',
@@ -264,6 +498,68 @@ function createAgent(opts = {}) {
         return Boolean(result.fired);
       },
     };
+
+    // REQ-16: training — cast-to-train cadence via the queue; a training cast
+    // advances the every-N-casts food cadence (ctx.castsSinceFood).
+    const trainingNode = {
+      type: 'sequence',
+      id: 'training',
+      children: [
+        {
+          type: 'condition',
+          id: 'training-feasible',
+          predicate: function (ctx) {
+            if (!cfg.training.on) return false;
+            const d = training.decide(ctx);
+            if (!d.fire) return false;
+            return !state.queue.hasPending(function (e) { return e.kind === 'training-cast'; });
+          },
+        },
+        {
+          type: 'action',
+          id: 'training-cast',
+          run: function (ctx) {
+            const d = training.decide(ctx);
+            if (!d.fire) return false;
+            state.queue.enqueue(function () {
+              training.fire(d, { gameClient: state.gameClient, document: doc });
+            }, { kind: 'training-cast' });
+            ctx.castsSinceFood = (ctx.castsSinceFood || 0) + 1; // every-N-casts counts training casts
+            return true;
+          },
+        },
+      ],
+    };
+
+    // REQ-17: eat — proven SATED/timer/everyCasts/fallback-interval decision;
+    // the queue-dispatched closure runs the proven eater attempt.
+    const eatNode = {
+      type: 'sequence',
+      id: 'eat',
+      children: [
+        {
+          type: 'condition',
+          id: 'eat-feasible',
+          predicate: function (ctx) {
+            if (!cfg.eat.on) return false;
+            const d = eat.decide(ctx);
+            if (!d.fire) return false;
+            return !state.queue.hasPending(function (e) { return e.kind === 'eat'; });
+          },
+        },
+        {
+          type: 'action',
+          id: 'eat-use',
+          run: function (ctx) {
+            const d = eat.decide(ctx);
+            if (!d.fire) return false;
+            state.queue.enqueue(function () { eat.fire(ctx, d); }, { kind: 'eat' });
+            return true;
+          },
+        },
+      ],
+    };
+
     const loot = {
       type: 'sequence',
       id: 'loot',
@@ -276,7 +572,9 @@ function createAgent(opts = {}) {
       root: {
         type: 'selector',
         id: 'priority-root',
-        children: [survival, combat, loot], // survival > combat > loot (REQ-11)
+        // heal (items + magic + legacy slot-heal) > runes > combat > training
+        // > eat > loot (REQ-11: survival/heal always beats combat/loot/training).
+        children: [healItemsNode, healMagicNode, survival, runesNode, combat, trainingNode, eatNode, loot],
       },
     });
   }
@@ -394,9 +692,22 @@ function createAgent(opts = {}) {
         }, { kind: 'rpc-fire-slot-' + slot });
         return true;
       },
-      eatFood: function () { return { result: 'unavailable', reason: 'eat module lands in slice 4' }; },
+      eatFood: function () {
+        // REQ-02 gate: app-driven RPC eats are refused before Connect.
+        if (!state.armed) return { ok: false, reason: 'not connected' };
+        const m = state.modules && state.modules.eat;
+        if (!m || !m.isEnabled()) return { result: 'off' };
+        // REQ-12 no-bypass: the real eat attempt runs inside the queue.
+        state.queue.enqueue(function () {
+          m.fire(state.ctx, { fire: true, reason: 'rpc', force: true });
+        }, { kind: 'eat-rpc' });
+        return { result: 'queued' };
+      },
       getChat: function () { return CHAT_MOD.getRecentMessages({ gameClient: state.gameClient, document: doc }); },
-      getRuneState: function () { return null; }, // slice 4
+      getRuneState: function () {
+        const m = state.modules && state.modules.runes;
+        return m ? m.getState() : null; // REQ-15 real module state (slice 4)
+      },
       getWalkState: function () { return null; }, // slice 6
       getPlayerInfo: readPlayerInfo,
       applyConfig: applyConfig,
@@ -424,6 +735,7 @@ function createAgent(opts = {}) {
   }
 
   function getState() {
+    const modules = state.modules || {};
     return {
       ready: state.ready,
       running: state.running,
@@ -433,6 +745,11 @@ function createAgent(opts = {}) {
       mana: state.ctx.mana,
       queue: state.queue ? state.queue.stats() : null,
       lastPath: state.lastPath,
+      castsSinceFood: state.ctx.castsSinceFood || 0,
+      modules: {
+        runes: modules.runes ? modules.runes.getState() : null,
+        eat: modules.eat ? modules.eat.getState() : null,
+      },
       warnings: state.warnings.slice(),
       errors: state.errors.slice(),
     };

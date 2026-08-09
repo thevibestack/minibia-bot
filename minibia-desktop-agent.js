@@ -1219,6 +1219,101 @@ module.exports = { createQueue, DEFAULT_MIN_INTERVAL, DEFAULT_JITTER };
 return module.exports;
 })();
 
+__mbModules['core/items'] = (function () {
+'use strict';
+const module = { exports: {} };
+const exports = module.exports;
+const require = __mbRequire;
+'use strict';
+
+/**
+ * Container slot lookup (REQ-13/17, design "Heal items"/"Eat" module table).
+ *
+ * Pure, node-testable helpers for finding a usable item slot inside the
+ * client's container state. The container SOURCES are live-probed (the
+ * userscript resolves food slots from the same locations — see the eat rule
+ * in tools/build-userscript.js): gameClient.containerPrototype,
+ * gameClient.backpack, gameClient.interface.containerPrototype and
+ * gameClient.player.containers (desktop-agent addition). Each source exposes
+ * a `slots` array; slots carry `cid` (item id), `index` (mouse.use index) and
+ * optionally a DOM `element`/`canvas.canvas` for the contextmenu path.
+ *
+ * Reads are pure: given the containers snapshot + the wanted cids, return the
+ * first matching slot descriptor or null. Unknown container shapes degrade to
+ * null ("no item") — the module then takes NO action (safe degrade, REQ-06
+ * read-only boundary).
+ */
+
+/**
+ * Resolve the list of container objects to scan, in probe order.
+ * @param {object|null} gameClient - page gameClient
+ * @returns {Array<object>} container objects (deduped, non-null)
+ */
+function readContainers(gameClient) {
+  const gc = gameClient;
+  if (!gc || typeof gc !== 'object') return [];
+  const list = [
+    gc.containerPrototype,
+    gc.backpack,
+    (gc.interface && gc.interface.containerPrototype) || null,
+  ];
+  const playerContainers = gc.player && gc.player.containers;
+  if (Array.isArray(playerContainers)) {
+    list.push.apply(list, playerContainers);
+  } else if (playerContainers) {
+    list.push(playerContainers);
+  }
+  const seen = new Set();
+  const out = [];
+  for (const entry of list) {
+    if (!entry || typeof entry !== 'object') continue;
+    if (seen.has(entry)) continue;
+    seen.add(entry);
+    out.push(entry);
+  }
+  return out;
+}
+
+/**
+ * Find the first container slot whose cid is in the wanted list.
+ *
+ * @param {Array<object>} containers - container objects (each with `.slots`)
+ * @param {Array<number|string>} [cids] - item cids to match (numbers/strings)
+ * @returns {{which: number, index: number, element: object|null}|null}
+ *   - `which`: position of the container in the scan order
+ *   - `index`: the slot's own mouse-use index (1-based), or its 1-based
+ *     position in the slots array when the slot carries no index
+ *   - `element`: the slot's DOM element when exposed (contextmenu path)
+ *   Returns null when nothing matches or the shape is unknown.
+ */
+function findSlotByCid(containers, cids) {
+  if (!Array.isArray(containers)) return null;
+  const wanted = new Set((cids || []).map(Number).filter(Number.isFinite));
+  if (wanted.size === 0) return null;
+  for (let c = 0; c < containers.length; c++) {
+    const container = containers[c];
+    const slots = container && container.slots;
+    if (!slots || !Array.isArray(slots)) continue;
+    for (let i = 0; i < slots.length; i++) {
+      const slot = slots[i];
+      if (!slot || typeof slot !== 'object') continue;
+      if (!wanted.has(Number(slot.cid))) continue;
+      const ownIndex = Number(slot.index);
+      return {
+        which: c,
+        index: Number.isFinite(ownIndex) ? ownIndex : i + 1,
+        element: slot.element || (slot.canvas && slot.canvas.canvas) || null,
+      };
+    }
+  }
+  return null;
+}
+
+module.exports = { readContainers, findSlotByCid };
+
+return module.exports;
+})();
+
 __mbModules['adapters/gameClient'] = (function () {
 'use strict';
 const module = { exports: {} };
@@ -1947,6 +2042,815 @@ module.exports = { loadCatalog, normalizeEntries, readStoredCatalog, STORAGE_KEY
 return module.exports;
 })();
 
+__mbModules['agent/modules/heal-items'] = (function () {
+'use strict';
+const module = { exports: {} };
+const exports = module.exports;
+const require = __mbRequire;
+'use strict';
+
+/**
+ * Heal-with-items module (REQ-13, design "Heal items" row).
+ *
+ * Optional, user-activated. Decision: when the player's health is at or below
+ * the configured threshold and a potion whose cid is in `slotCids` is found in
+ * the container state, the module decides a use-on-self action. Module OFF
+ * (default) => the decision is always 'off' and no action can be enqueued
+ * (toggle honored at the tree condition).
+ *
+ * Game action (REQ-06 handler boundary — never a state write):
+ *   1. Primary: `hotbarManager.__useItemOnSelf({which, index})` — live-probed
+ *      action (obs 10320). Signature best-effort; a throw falls through.
+ *   2. Fallback: `gameClient.mouse.use({which: 3, index})` — the proven
+ *      userscript right-click-use path (same shape as adapters/eat).
+ * The fire() function is invoked ONLY inside a queue-dispatched closure
+ * (REQ-12 no-bypass) — the module never touches handlers during a tree tick.
+ *
+ * Reads (container snapshot, health) are injectable so the decision logic is
+ * fully node-testable; the default finder scans the live-probed container
+ * sources (src/core/items.js).
+ */
+
+const { readContainers, findSlotByCid } = require('core/items');
+
+/**
+ * Default item finder: scan the probe-order container sources for the first
+ * slot whose cid is in the configured list.
+ * @param {object|null} gameClient - page gameClient
+ * @param {Array<number>} cids - wanted item cids
+ * @returns {{which: number, index: number, element: object|null}|null}
+ */
+function defaultFindSlot(gameClient, cids) {
+  return findSlotByCid(readContainers(gameClient), cids);
+}
+
+/**
+ * Create the heal-items decision module.
+ *
+ * @param {object} opts
+ * @param {object} opts.config - normalized healItems config
+ *   { on: boolean, threshold: number, slotCids: Array<number> }
+ * @param {() => ({which: number, index: number}|null)} [opts.findSlot] -
+ *   injected item finder (default: container-scan by slotCids)
+ * @param {object|null} [opts.gameClient] - page gameClient (fire path);
+ *   may be a lazy getter-compatible object (bootstrap passes a live object)
+ * @param {() => number} [opts.now=Date.now] - injectable clock
+ * @param {{error?: Function, warn?: Function}} [opts.log] - log sinks
+ * @returns {{
+ *   decide: (ctx: object) => {fire: boolean, reason: string, item?: object},
+ *   fire: (item: object) => boolean,
+ *   isEnabled: () => boolean,
+ * }}
+ */
+function createHealItems(opts = {}) {
+  const { config, findSlot = null, gameClient = null, log = {} } = opts;
+  const error = typeof log.error === 'function' ? log.error : () => {};
+
+  /**
+   * Pure decision (REQ-13): health <= threshold AND item present -> fire.
+   * @param {object} ctx - tick context { health }
+   * @returns {{fire: boolean, reason: string, item?: object}}
+   */
+  function decide(ctx = {}) {
+    if (!config || config.on !== true) return { fire: false, reason: 'off' };
+    const threshold = Number(config.threshold);
+    if (!Number.isFinite(threshold)) return { fire: false, reason: 'no-threshold' };
+    if (ctx.health === null || ctx.health === undefined) return { fire: false, reason: 'no-health' };
+    if (ctx.health > threshold) return { fire: false, reason: 'healthy' };
+    const item = typeof findSlot === 'function' ? findSlot() : null;
+    if (!item) return { fire: false, reason: 'no-item' };
+    return { fire: true, reason: 'low-hp', item };
+  }
+
+  /**
+   * Execute the use-on-self action (QUEUE-DISPATCHED ONLY, REQ-12).
+   * @param {{which: number, index: number}} item - found potion slot
+   * @returns {boolean} true when a game handler executed
+   */
+  function fire(item) {
+    const gc = typeof gameClient === 'function' ? gameClient() : gameClient;
+    const hotbar = gc && ((gc.interface && gc.interface.hotbarManager) || gc.hotbarManager);
+    // Primary: live-probed use-on-self action (obs 10320). Signature unprobed
+    // => best-effort with a throw falling through to the proven mouse.use path.
+    if (hotbar && typeof hotbar.__useItemOnSelf === 'function') {
+      try {
+        const result = hotbar.__useItemOnSelf({ which: item.which ?? 3, index: item.index });
+        if (result !== false) return true;
+      } catch (e) { /* fall through to mouse.use */ }
+    }
+    const mouse = gc && gc.mouse;
+    if (mouse && typeof mouse.use === 'function') {
+      mouse.use({ which: item.which ?? 3, index: item.index });
+      return true;
+    }
+    error('heal-items: no game handler available (__useItemOnSelf / mouse.use)');
+    return false;
+  }
+
+  /** @returns {boolean} whether the module is configured ON */
+  function isEnabled() {
+    return Boolean(config && config.on === true);
+  }
+
+  return { decide, fire, isEnabled };
+}
+
+module.exports = { createHealItems, defaultFindSlot };
+
+return module.exports;
+})();
+
+__mbModules['agent/modules/heal-magic'] = (function () {
+'use strict';
+const module = { exports: {} };
+const exports = module.exports;
+const require = __mbRequire;
+'use strict';
+
+/**
+ * Heal-with-magic module (REQ-14, design "Heal magic" row).
+ *
+ * Optional, user-activated. Decision: when health is at or below the
+ * configured threshold, cast the configured heal spell on the hotbar slot via
+ * the game's own spell path. Gates (in evaluation order):
+ *   1. Vocation gate: live-probed `hotbarManager.__canPlayerCastSpell(sid)`
+ *      (obs 10320 — checks the vocation). Feature-absent (null) => gate
+ *      skipped, never blocks.
+ *   2. Mana feasibility (core/feasibility, REQ-01 semantics): the spell cost
+ *      is resolved from the client — spellbook first, then the live-probed
+ *      `interface.getSpell(sid)` (probed: spellbook is empty for Druid
+ *      Flamamex, obs 10320). Unknown cost => no fire ('no-cost', safe).
+ *   3. Cooldowns: per-spell + GLOBAL_COOLDOWN via core/cooldown (REQ-14:
+ *      GLOBAL_COOLDOWN defers to a later tick).
+ * Echo validation (REQ-24) applies to words-path fires; the direct
+ * __handleClick path produces no echo, so per REQ-24 validation is skipped for
+ * this slice (design degrade "echo skip on direct cast" — echo carry-over
+ * lands with slice 5.6).
+ *
+ * The fire() function runs ONLY inside a queue-dispatched closure (REQ-12
+ * no-bypass) and calls `hotbarManager.__handleClick(slot)` via the proven
+ * adapters/firing path.
+ */
+
+const FEAS_MOD = require('core/feasibility');
+const CD_MOD = require('core/cooldown');
+const FIRING_MOD = require('adapters/firing');
+
+/**
+ * Create the heal-magic decision module.
+ *
+ * @param {object} opts
+ * @param {object} opts.config - normalized healMagic config
+ *   { on: boolean, threshold: number, slot: number|null, sid: number|null }
+ * @param {(sid: number|null) => number|null} [opts.getSpellCost] - cost
+ *   resolver (client spellbook / interface.getSpell); null = unknown
+ * @param {(sid: number|null) => boolean|null} [opts.canCastSpell] - live
+ *   vocation gate; null = feature absent (skipped)
+ * @param {(sid: number|null) => {cooldown: object|null, globalCooldown: object|null}}
+ *   [opts.readCooldown] - client cooldown reader (adapters/gameClient)
+ * @param {() => number} [opts.now=Date.now] - injectable clock
+ * @param {{error?: Function, warn?: Function}} [opts.log] - log sinks
+ * @returns {{
+ *   decide: (ctx: object) => {fire: boolean, reason: string, slot?: number},
+ *   fire: () => boolean,
+ *   isEnabled: () => boolean,
+ * }}
+ */
+function createHealMagic(opts = {}) {
+  const { config, getSpellCost = null, canCastSpell = null, readCooldown = null, now = Date.now, log = {} } = opts;
+  const warn = typeof log.warn === 'function' ? log.warn : () => {};
+  const warned = new Set();
+
+  /**
+   * Pure decision (REQ-14).
+   * @param {object} ctx - tick context { health, mana, maxMana }
+   * @returns {{fire: boolean, reason: string, slot?: number}}
+   */
+  function decide(ctx = {}) {
+    if (!config || config.on !== true) return { fire: false, reason: 'off' };
+    const threshold = Number(config.threshold);
+    if (!Number.isFinite(threshold)) return { fire: false, reason: 'no-threshold' };
+    if (ctx.health === null || ctx.health === undefined) return { fire: false, reason: 'no-health' };
+    if (ctx.health > threshold) return { fire: false, reason: 'healthy' };
+    const slot = Number(config.slot);
+    if (!Number.isInteger(slot) || slot < 1 || slot > 12) return { fire: false, reason: 'no-slot' };
+
+    // Vocation gate (live-probed hotbarManager.__canPlayerCastSpell).
+    if (typeof canCastSpell === 'function') {
+      try {
+        if (canCastSpell(config.sid) === false) return { fire: false, reason: 'vocation-gate' };
+      } catch (e) { /* gate read failure => skip the gate, never block */ }
+    }
+
+    // Mana feasibility (REQ-14: "gated by mana feasibility (REQ-01 semantics)").
+    const cost = typeof getSpellCost === 'function' ? getSpellCost(config.sid) : null;
+    if (cost === null) return { fire: false, reason: 'no-cost' };
+    const feas = FEAS_MOD.canCast({
+      mana: ctx.mana,
+      cost,
+      reserve: 0,
+      maxMana: ctx.maxMana,
+      key: 'heal-magic-' + slot,
+      warned,
+      onWarn: warn,
+    });
+    if (!feas.fire) return { fire: false, reason: feas.reason === 'never' ? 'never' : 'insufficient' };
+
+    // Cooldowns: GLOBAL_COOLDOWN defers to a later tick (REQ-14).
+    if (typeof readCooldown === 'function') {
+      const cd = readCooldown(config.sid) || {};
+      const verdict = CD_MOD.canFire({
+        cooldown: cd.cooldown,
+        globalCooldown: cd.globalCooldown,
+        cooldownMs: 0,
+        lastFiredAt: null,
+        now: now(),
+        onGapLog: null,
+      });
+      if (!verdict.fire) {
+        return { fire: false, reason: verdict.reason === 'global-cooldown' ? 'global-cooldown' : 'cooldown' };
+      }
+    }
+
+    return { fire: true, reason: 'low-hp', slot };
+  }
+
+  /**
+   * Execute the cast (QUEUE-DISPATCHED ONLY, REQ-12).
+   * @param {{slot: number}} decision - the decided slot
+   * @param {object} deps - { gameClient, document } for the firing adapter
+   * @returns {boolean} true when __handleClick executed
+   */
+  function fire(decision, deps = {}) {
+    const slot = Number(decision.slot);
+    if (!Number.isInteger(slot) || slot < 1 || slot > 12) return false;
+    return FIRING_MOD.fireSlot(slot, {
+      mode: 'handleClick',
+      gameClient: deps.gameClient,
+      document: deps.document,
+      log,
+    });
+  }
+
+  /** @returns {boolean} whether the module is configured ON */
+  function isEnabled() {
+    return Boolean(config && config.on === true);
+  }
+
+  return { decide, fire, isEnabled };
+}
+
+module.exports = { createHealMagic };
+
+return module.exports;
+})();
+
+__mbModules['agent/modules/runes'] = (function () {
+'use strict';
+const module = { exports: {} };
+const exports = module.exports;
+const require = __mbRequire;
+'use strict';
+
+/**
+ * Rune module (REQ-15, design D7 "Runes" row).
+ *
+ * Optional, user-activated. Drives rune attack/heal INSIDE the game's own
+ * native windows using the LIVE-PROBED timer fields
+ * `hotbarManager.__runeAttackUntil` / `hotbarManager.__runeHealUntil`
+ * (epoch-ms "window active until" timestamps; obs 10320).
+ *
+ * Semantics:
+ *  - Native window ACTIVE (now < until) => the module DEFERS and never
+ *    double-fires alongside the game's own rune automation.
+ *  - Window EXPIRED (or never armed) + cooldown clear => a rune action is
+ *    enqueued via `__handleClick(runeSlot)` (adapters/firing) to re-arm the
+ *    native window.
+ *  - FEATURE-DETECT: when the native rune timers are absent (fields
+ *    undefined), the module records "no native rune data" and NEVER fires —
+ *    the design's degrade path (D7), NOT an invented fallback loop.
+ *  - Respects the global cooldown (spellbook GLOBAL_COOLDOWN) and, when
+ *    exposed, `__getRuneEffectiveCooldown` and `player.attackSlowness` as a
+ *    post-fire wait (feature-detected; absent => 0).
+ *
+ * Rune heal additionally requires `healThreshold` (design-extension setting):
+ * the heal rune fires only while health <= healThreshold; when only
+ * `attackSlot` is configured, the attack rune cycles on expiry.
+ *
+ * fire() runs ONLY inside a queue-dispatched closure (REQ-12 no-bypass).
+ */
+
+const FIRING_MOD = require('adapters/firing');
+
+/** Coerce a timer value to epoch ms (number | Date | numeric string). */
+function toMs(value) {
+  if (value === null || value === undefined) return null;
+  if (typeof value === 'object' && typeof value.getTime === 'function') return value.getTime();
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * Create the rune decision module.
+ *
+ * @param {object} opts
+ * @param {object} opts.config - normalized runes config
+ *   { on: boolean, attackSlot: number|null, healSlot: number|null,
+ *     healThreshold: number|null }
+ * @param {() => {attackUntil: number|null, healUntil: number|null}|null}
+ *   [opts.readRuneTimers] - native rune window reader; null = feature absent
+ * @param {() => {active: boolean, seconds?: number}|null} [opts.readGlobalCooldown]
+ * @param {() => number} [opts.readAfterFireWait] - post-fire wait ms
+ *   (effective rune cooldown / attackSlowness); feature-detected, default 0
+ * @param {() => number} [opts.now=Date.now] - injectable clock
+ * @param {{error?: Function, warn?: Function}} [opts.log] - log sinks
+ * @returns {{
+ *   decide: (ctx: object) => {fire: boolean, reason: string, slot?: number, kind?: string},
+ *   fire: (decision: object, deps: object) => boolean,
+ *   getState: () => object,
+ *   isEnabled: () => boolean,
+ * }}
+ */
+function createRunes(opts = {}) {
+  const { config, readRuneTimers = null, readGlobalCooldown = null, readAfterFireWait = null, now = Date.now, log = {} } = opts;
+  const error = typeof log.error === 'function' ? log.error : () => {};
+
+  const state = { lastFireAt: 0, available: true, reason: 'ok' };
+
+  /**
+   * Pure decision (REQ-15).
+   * @param {object} ctx - tick context { health }
+   * @returns {{fire: boolean, reason: string, slot?: number, kind?: string}}
+   */
+  function decide(ctx = {}) {
+    if (!config || config.on !== true) return { fire: false, reason: 'off' };
+    const attackSlot = Number(config.attackSlot) || null;
+    const healSlot = Number(config.healSlot) || null;
+    if (!attackSlot && !healSlot) return { fire: false, reason: 'no-slot' };
+
+    const timers = typeof readRuneTimers === 'function' ? readRuneTimers() : null;
+    if (timers === null) {
+      // Design D7 degrade: no native rune data => never fire, no fallback loop.
+      state.available = false;
+      state.reason = 'no native rune data';
+      return { fire: false, reason: 'no-native-rune-data' };
+    }
+    state.available = true;
+    state.reason = 'ok';
+
+    const t = now();
+    const healUntil = toMs(timers.healUntil);
+    const attackUntil = toMs(timers.attackUntil);
+    const healActive = healUntil !== null && t < healUntil;
+    const attackActive = attackUntil !== null && t < attackUntil;
+
+    // Coexistence: never fire while a native window is active (REQ-15).
+    if (healActive || attackActive) return { fire: false, reason: 'native-window-active' };
+
+    // Post-fire wait (effective rune cooldown / attackSlowness).
+    if (typeof readAfterFireWait === 'function') {
+      const wait = readAfterFireWait();
+      if (Number.isFinite(wait) && wait > 0 && t - state.lastFireAt < wait) {
+        return { fire: false, reason: 'after-fire-wait' };
+      }
+    }
+
+    // Global cooldown (REQ-15: respect global cooldown).
+    if (typeof readGlobalCooldown === 'function') {
+      const g = readGlobalCooldown();
+      if (g && g.active) return { fire: false, reason: 'global-cooldown' };
+    }
+
+    // Rune heal: only while health <= healThreshold (design extension setting).
+    const healThreshold = Number(config.healThreshold);
+    const wantHeal = Boolean(healSlot)
+      && Number.isFinite(healThreshold)
+      && ctx.health !== null
+      && ctx.health !== undefined
+      && ctx.health <= healThreshold;
+    if (wantHeal) return { fire: true, reason: 'heal-window-expired', slot: healSlot, kind: 'rune-heal' };
+
+    if (attackSlot) return { fire: true, reason: 'attack-window-expired', slot: attackSlot, kind: 'rune-attack' };
+
+    return { fire: false, reason: 'no-candidate' };
+  }
+
+  /**
+   * Execute the rune slot click (QUEUE-DISPATCHED ONLY, REQ-12).
+   * @param {{slot: number, kind: string}} decision - decided rune action
+   * @param {object} deps - { gameClient, document } for the firing adapter
+   * @returns {boolean} true when __handleClick executed
+   */
+  function fire(decision, deps = {}) {
+    const slot = Number(decision.slot);
+    if (!Number.isInteger(slot) || slot < 1 || slot > 12) return false;
+    state.lastFireAt = now();
+    const ok = FIRING_MOD.fireSlot(slot, {
+      mode: 'handleClick',
+      gameClient: deps.gameClient,
+      document: deps.document,
+      log,
+    });
+    if (!ok) error('runes: __handleClick failed for rune slot ' + slot);
+    return ok;
+  }
+
+  /** @returns {object} module state (surface getRuneState, REQ-04/15) */
+  function getState() {
+    return {
+      on: Boolean(config && config.on === true),
+      available: config && config.on === true ? state.available : false,
+      reason: config && config.on === true ? state.reason : 'off',
+      lastFireAt: state.lastFireAt,
+    };
+  }
+
+  /** @returns {boolean} whether the module is configured ON */
+  function isEnabled() {
+    return Boolean(config && config.on === true);
+  }
+
+  return { decide, fire, getState, isEnabled };
+}
+
+module.exports = { createRunes, toMs };
+
+return module.exports;
+})();
+
+__mbModules['agent/modules/training'] = (function () {
+'use strict';
+const module = { exports: {} };
+const exports = module.exports;
+const require = __mbRequire;
+'use strict';
+
+/**
+ * Magic training module (REQ-16, design "Training" row).
+ *
+ * Optional, user-activated. Repeats casts of the configured training spell at
+ * the safe cadence imposed by the Action Queue + jitter (REQ-12/16 — one cast
+ * per queue slot, never faster). Gates (in evaluation order):
+ *   1. Vocation gate: live-probed `hotbarManager.__canPlayerCastSpell(sid)`
+ *      (obs 10320). Feature-absent (null) => gate skipped, never blocks.
+ *   2. Mana feasibility: cost resolved from the client (spellbook first, then
+ *      the live-probed `interface.getSpell(sid)` — obs 10320: spellbook is
+ *      empty). Unknown cost => pause ('no-cost', safe). Below cost+reserve =>
+ *      pause until mana recovers (REQ-16).
+ *   3. Cooldowns: per-spell + GLOBAL_COOLDOWN via core/cooldown.
+ * Echo validation is deliberately NOT applied to training casts (REQ-16: echo
+ * "MAY be disabled for training" — disabled here; the __handleClick path
+ * produces no echo anyway).
+ *
+ * fire() runs ONLY inside a queue-dispatched closure (REQ-12 no-bypass).
+ * Training casts advance the every-N-casts food cadence (ctx.castsSinceFood)
+ * so the eat module counts them like combat casts.
+ */
+
+const FEAS_MOD = require('core/feasibility');
+const CD_MOD = require('core/cooldown');
+const FIRING_MOD = require('adapters/firing');
+
+/**
+ * Create the training decision module.
+ *
+ * @param {object} opts
+ * @param {object} opts.config - normalized training config
+ *   { on: boolean, slot: number|null, sid: number|null, reserve: number }
+ * @param {(sid: number|null) => number|null} [opts.getSpellCost] - cost
+ *   resolver; null = unknown (pause)
+ * @param {(sid: number|null) => boolean|null} [opts.canCastSpell] - live
+ *   vocation gate; null = feature absent (skipped)
+ * @param {(sid: number|null) => {cooldown: object|null, globalCooldown: object|null}}
+ *   [opts.readCooldown] - client cooldown reader
+ * @param {() => number} [opts.now=Date.now] - injectable clock
+ * @param {{error?: Function, warn?: Function}} [opts.log] - log sinks
+ * @returns {{
+ *   decide: (ctx: object) => {fire: boolean, reason: string, slot?: number},
+ *   fire: (decision: object, deps: object) => boolean,
+ *   getState: () => object,
+ *   isEnabled: () => boolean,
+ * }}
+ */
+function createTraining(opts = {}) {
+  const { config, getSpellCost = null, canCastSpell = null, readCooldown = null, now = Date.now, log = {} } = opts;
+  const warn = typeof log.warn === 'function' ? log.warn : () => {};
+  const warned = new Set();
+
+  const state = { lastFiredAt: 0, lastReason: null };
+
+  /**
+   * Pure decision (REQ-16): cast while the vocation gate passes and mana
+   * feasibility holds; pause below cost+reserve.
+   * @param {object} ctx - tick context { mana, maxMana }
+   * @returns {{fire: boolean, reason: string, slot?: number}}
+   */
+  function decide(ctx = {}) {
+    state.lastReason = null;
+    if (!config || config.on !== true) return { fire: false, reason: 'off' };
+    const slot = Number(config.slot);
+    if (!Number.isInteger(slot) || slot < 1 || slot > 12) return { fire: false, reason: 'no-slot' };
+
+    // Vocation gate (live-probed hotbarManager.__canPlayerCastSpell).
+    if (typeof canCastSpell === 'function') {
+      try {
+        if (canCastSpell(config.sid) === false) return { fire: false, reason: 'vocation-gate' };
+      } catch (e) { /* gate read failure => skip the gate, never block */ }
+    }
+
+    // Mana feasibility: pause below cost+reserve (REQ-16).
+    const cost = typeof getSpellCost === 'function' ? getSpellCost(config.sid) : null;
+    if (cost === null) return { fire: false, reason: 'no-cost' };
+    const feas = FEAS_MOD.canCast({
+      mana: ctx.mana,
+      cost,
+      reserve: Number(config.reserve) || 0,
+      maxMana: ctx.maxMana,
+      key: 'training-' + slot,
+      warned,
+      onWarn: warn,
+    });
+    if (!feas.fire) {
+      return { fire: false, reason: feas.reason === 'reserve' ? 'reserve' : 'insufficient' };
+    }
+
+    if (typeof readCooldown === 'function') {
+      const cd = readCooldown(config.sid) || {};
+      const verdict = CD_MOD.canFire({
+        cooldown: cd.cooldown,
+        globalCooldown: cd.globalCooldown,
+        cooldownMs: 0,
+        lastFiredAt: null,
+        now: now(),
+        onGapLog: null,
+      });
+      if (!verdict.fire) {
+        return { fire: false, reason: verdict.reason === 'global-cooldown' ? 'global-cooldown' : 'cooldown' };
+      }
+    }
+
+    state.lastReason = 'train';
+    return { fire: true, reason: 'train', slot };
+  }
+
+  /**
+   * Execute the training cast (QUEUE-DISPATCHED ONLY, REQ-12).
+   * @param {{slot: number}} decision - decided slot
+   * @param {object} deps - { gameClient, document } for the firing adapter
+   * @returns {boolean} true when __handleClick executed
+   */
+  function fire(decision, deps = {}) {
+    const slot = Number(decision.slot);
+    if (!Number.isInteger(slot) || slot < 1 || slot > 12) return false;
+    state.lastFiredAt = now();
+    return FIRING_MOD.fireSlot(slot, {
+      mode: 'handleClick',
+      gameClient: deps.gameClient,
+      document: deps.document,
+      log,
+    });
+  }
+
+  /** @returns {object} module state (surface/getState visibility) */
+  function getState() {
+    return {
+      on: Boolean(config && config.on === true),
+      lastFiredAt: state.lastFiredAt,
+      lastReason: state.lastReason,
+    };
+  }
+
+  /** @returns {boolean} whether the module is configured ON */
+  function isEnabled() {
+    return Boolean(config && config.on === true);
+  }
+
+  return { decide, fire, getState, isEnabled };
+}
+
+module.exports = { createTraining };
+
+return module.exports;
+})();
+
+__mbModules['agent/modules/eat'] = (function () {
+'use strict';
+const module = { exports: {} };
+const exports = module.exports;
+const require = __mbRequire;
+'use strict';
+
+/**
+ * Eat module (REQ-17, design "Eat" row).
+ *
+ * Optional, user-activated. Food management adapted from the PROVEN userscript
+ * logic (readFoodState / resolveFoodItem / every-N-casts rule in
+ * tools/build-userscript.js) to the desktop agent context:
+ *
+ *  - SATED detection: `player.conditions.has('SATED')` primary, then the
+ *    `#skill-window div[skill="food"] .skill` timer (core/sated) as fallback.
+ *  - Decision (mirrors the userscript eat rule):
+ *      1. everyCasts > 0 => forced cadence: eat when N confirmed casts have
+ *         landed since the last forced eat; SATED/timer pre-checks BYPASSED
+ *         (force mode), the counter resets after the attempt.
+ *      2. else: eat when SATED is false ('flag'), when the timer is expired
+ *         or <= warningWindowSec, or (SATED + timer both unavailable) when the
+ *         configurable fallback interval (default 10s) has elapsed.
+ *  - Attempt: the proven adapters/eat eater — contextmenu -> "Use" on the
+ *    food slot element, with `mouse.use` fallback; 3 consecutive failures
+ *    pause eating + surface a panel-facing alert through the module state and
+ *    the agent log (REQ-17).
+ *  - Food source: `config.slot` (userscript-style backpack index) or
+ *    `config.cids` (cid search over the probe-order container sources,
+ *    core/items). Both absent => 'no-food-source', no action.
+ *
+ * fire() runs ONLY inside a queue-dispatched closure (REQ-12 no-bypass).
+ */
+
+const SATED_MOD = require('core/sated');
+const EAT_MOD = require('adapters/eat');
+const { readContainers, findSlotByCid } = require('core/items');
+
+/**
+ * Create the eat module.
+ *
+ * @param {object} opts
+ * @param {object} opts.config - normalized eat config
+ *   { on: boolean, everyCasts: number, warningWindowSec: number,
+ *     fallbackIntervalSec: number, slot: number|null, cids: Array<number> }
+ * @param {() => object|null} [opts.gameClient] - live gameClient accessor
+ *   (the eater's mouse.use fallback is lazy through this getter)
+ * @param {Document|null} [opts.document] - page DOM (timer + contextmenu)
+ * @param {() => number} [opts.now=Date.now] - injectable clock
+ * @param {{error?: Function, warn?: Function}} [opts.log] - log sinks
+ * @returns {{
+ *   decide: (ctx: object) => {fire: boolean, reason: string, force?: boolean},
+ *   fire: (ctx: object, decision: object) => boolean,
+ *   getState: () => object,
+ *   isEnabled: () => boolean,
+ * }}
+ */
+function createEatModule(opts = {}) {
+  const { config, gameClient = null, document: doc = null, now = Date.now, log = {} } = opts;
+  const warn = typeof log.warn === 'function' ? log.warn : () => {};
+
+  /** Live gameClient (lazy accessor or plain object). */
+  function gcNow() {
+    return typeof gameClient === 'function' ? gameClient() : gameClient;
+  }
+
+  /**
+   * Proven userscript readFoodState (adapted): SATED flag primary,
+   * #skill-window food timer fallback, {eat:null} when both unavailable.
+   * @returns {{eat: boolean|null, source: string, sated: boolean|null, timerSec: number|null}}
+   */
+  function readFoodState() {
+    let sated = null;
+    try {
+      const conditions = gcNow() && gcNow().player && gcNow().player.conditions;
+      if (conditions && typeof conditions.has === 'function') {
+        sated = conditions.has('SATED') === true;
+      }
+    } catch (e) { sated = null; }
+    let timerEl = null;
+    try { timerEl = doc && doc.querySelector('#skill-window div[skill="food"] .skill'); } catch (e) { timerEl = null; }
+    let timerSec = null;
+    if (timerEl) timerSec = SATED_MOD.parseFoodTimer(timerEl.textContent); // null = expired/unparseable
+    if (sated === true) return { eat: false, source: 'sated', sated, timerSec };
+    if (sated === false) return { eat: true, source: 'flag', sated, timerSec };
+    if (timerEl) {
+      return {
+        eat: timerSec === null || timerSec <= (config.warningWindowSec || 60),
+        source: timerSec === null ? 'expired' : 'timer',
+        sated: null,
+        timerSec,
+      };
+    }
+    return { eat: null, source: 'none', sated: null, timerSec: null }; // fallback interval
+  }
+
+  /**
+   * Proven userscript resolveFoodItem (adapted): food slot element by
+   * config.slot index, plus the cid-search path over the probe-order
+   * container sources. @returns {{element: object|null, index: number|null, cid: number|null}}
+   */
+  function resolveFoodItem() {
+    const gc = gcNow();
+    const cids = (config.cids || []).map(Number).filter(Number.isFinite);
+    if (cids.length > 0) {
+      const hit = findSlotByCid(readContainers(gc), cids);
+      if (hit) return { element: hit.element, index: hit.index, cid: cids[0] };
+    }
+    const slotIndex = Number(config.slot);
+    if (Number.isInteger(slotIndex) && slotIndex >= 1) {
+      let element = null;
+      try {
+        const containers = readContainers(gc);
+        for (let c = 0; c < containers.length; c++) {
+          const slots = containers[c] && containers[c].slots;
+          if (slots && Array.isArray(slots)) {
+            const slot = slots[slotIndex - 1];
+            if (slot) {
+              element = slot.element || (slot.canvas && slot.canvas.canvas) || null;
+              if (element) break;
+            }
+          }
+        }
+      } catch (e) { element = null; }
+      if (!element) {
+        try {
+          const root = doc && doc.querySelector('#container-prototype');
+          if (root) {
+            const nodes = root.querySelectorAll('.slot, [data-slot], [class*="slot"]');
+            element = nodes[slotIndex - 1] || nodes[slotIndex] || null;
+          }
+        } catch (e) { element = null; }
+      }
+      return { element, index: slotIndex, cid: null };
+    }
+    return { element: null, index: null, cid: null };
+  }
+
+  // The proven eater does the attempt + failure accounting + pause.
+  // gameClient is LAZY (getter object) so the mouse.use fallback sees the
+  // live client even though the eater is constructed before readiness.
+  const eaterGameClient = {
+    get mouse() { const gc = gcNow(); return gc ? gc.mouse : undefined; },
+  };
+  const state = { paused: false, alert: null, lastEatAt: 0 };
+  const eater = EAT_MOD.createEater({
+    gameClient: eaterGameClient,
+    document: doc,
+    isSated: () => readFoodState().sated,
+    maxFailures: 3,
+    setPaused: (p) => { state.paused = p; },
+    hudAlert: (m) => { state.alert = m; warn(m); },
+    log,
+  });
+
+  /**
+   * Pure decision (REQ-17).
+   * @param {object} ctx - tick context { castsSinceFood, lastEatAt }
+   * @returns {{fire: boolean, reason: string, force?: boolean}}
+   */
+  function decide(ctx = {}) {
+    if (!config || config.on !== true) return { fire: false, reason: 'off' };
+    if (eater.isPaused()) return { fire: false, reason: 'paused' };
+    const everyCasts = Number(config.everyCasts) || 0;
+    if (everyCasts > 0) {
+      // Forced cadence: SATED/timer pre-checks bypassed (REQ-17 scenario 3).
+      if ((ctx.castsSinceFood || 0) >= everyCasts) return { fire: true, reason: 'every-casts', force: true };
+      return { fire: false, reason: 'waiting-casts' };
+    }
+    const fs = readFoodState();
+    if (fs.eat === true) return { fire: true, reason: fs.source, force: false };
+    if (fs.eat === false) return { fire: false, reason: 'sated' };
+    // SATED + timer both unavailable => fallback interval (default 10s).
+    const elapsed = now() - (ctx.lastEatAt || 0);
+    if (elapsed >= (config.fallbackIntervalSec || 10) * 1000) {
+      return { fire: true, reason: 'fallback-interval', force: false };
+    }
+    return { fire: false, reason: 'fallback-wait' };
+  }
+
+  /**
+   * Execute the eat attempt (QUEUE-DISPATCHED ONLY, REQ-12).
+   * @param {object} ctx - tick context (mutated: castsSinceFood / lastEatAt)
+   * @param {{force?: boolean}} decision - decided attempt (force = cadence mode)
+   * @returns {boolean} true when the attempt executed
+   */
+  function fire(ctx = {}, decision = {}) {
+    const item = resolveFoodItem();
+    const res = eater.eatFood(item, { force: decision.force === true });
+    if (decision.force === true) ctx.castsSinceFood = 0; // forced cadence resets after the attempt (userscript semantics)
+    if (res.result === 'ate') ctx.lastEatAt = now();
+    return res.result === 'ate';
+  }
+
+  /** @returns {object} module state (pause/alert surfacing, REQ-17) */
+  function getState() {
+    return {
+      on: Boolean(config && config.on === true),
+      paused: eater.isPaused(),
+      failures: eater.getFailures(),
+      alert: state.alert,
+      lastEatAt: state.lastEatAt,
+    };
+  }
+
+  /** @returns {boolean} whether the module is configured ON */
+  function isEnabled() {
+    return Boolean(config && config.on === true);
+  }
+
+  return { decide, fire, getState, isEnabled };
+}
+
+module.exports = { createEatModule };
+
+return module.exports;
+})();
+
 __mbModules['agent/bootstrap'] = (function () {
 'use strict';
 const module = { exports: {} };
@@ -1958,28 +2862,27 @@ const require = __mbRequire;
  * In-page agent bootstrap for the CDP-injected desktop app (REQ-04/10/11/12,
  * design D2/D3/D4).
  *
- * SLICE 2 SKELETON — this slice proves the engine SHAPE end to end:
+ * The engine SHAPE proven end to end:
  *
  *   gameClient + hotbarManager ready
- *        -> tree (Selector[survival, combat, loot]) ticks in-page at jittered
- *           cadence, reads stats into the shared ctx
+ *        -> tree ticks in-page at jittered cadence, reads stats into ctx
  *        -> the tree executes AT MOST ONE action per tick (REQ-10)
  *        -> every action dispatches through the ONE global Action Queue
  *           (REQ-12, no bypass: game handlers are invoked ONLY inside
  *           queue-dispatched closures)
  *
- * The survival branch is a SAMPLE leaf (config.survival: hp <= threshold ->
- * fireSlot on the configured hotbar slot). The combat branch wraps the
- * EXISTING rotation engine (src/core/rotation.js) unchanged as the COMBAT
- * node (design D4): its rule actions enqueue through the same queue. The
- * loot branch is a stub that always fails (loot module lands in slice 5).
- * Real module wiring (heal-items, eat, runes, trade, ...) lands with the
- * module slices (4/5/6) — this slice only proves the wiring contract.
+ * Tree priority (REQ-11): heal items (REQ-13) > heal magic (REQ-14) >
+ * legacy survival slot-heal (slices 2/3 sample leaf, retained for config
+ * backward compatibility) > runes (REQ-15) > combat (rotation leaf, design
+ * D4) > training (REQ-16) > eat (REQ-17) > loot (slice-5 stub).
+ *
+ * Slice-4 modules live in src/agent/modules/*.js — pure decision factories
+ * (node-testable) wired here as tree nodes; each action enqueues a closure
+ * that runs the module's game-handler call (REQ-12 no-bypass).
  *
  * Exposes window.__mbAgent with the REQ-04 surface:
  *   { readStats, readCooldown, fireSlot, eatFood, getChat,
  *     getRuneState, getWalkState, getPlayerInfo, applyConfig }
- * Modules that land later return null / "unavailable" until wired.
  *
  * In-page tick cadence: self-scheduling jittered setTimeout (50-400ms via
  * core/jitter), the SAME pattern the userscript uses (no Worker — the
@@ -1995,13 +2898,27 @@ const CD_MOD = require('core/cooldown');
 const GC_MOD = require('adapters/gameClient');
 const FIRING_MOD = require('adapters/firing');
 const CHAT_MOD = require('adapters/chat');
+// Slice-4 modules (REQ-13..17) — pure decision modules, tree-wired below.
+const HEAL_ITEMS_MOD = require('agent/modules/heal-items');
+const HEAL_MAGIC_MOD = require('agent/modules/heal-magic');
+const RUNES_MOD = require('agent/modules/runes');
+const TRAINING_MOD = require('agent/modules/training');
+const EAT_MODULE_MOD = require('agent/modules/eat');
 
 /** Minimal slice-2 config shape (per-character store lands in slice 3). */
 const DEFAULT_CONFIG = {
   queue: { minIntervalMs: 150 },
   jitter: { min: 50, max: 400 },
-  survival: { on: true, threshold: 50, slot: null }, // sample leaf — slice 4 real module
+  survival: { on: true, threshold: 50, slot: null }, // legacy generic slot-heal leaf (slices 2/3 shape)
   rotation: { spells: [] },                          // combat leaf rules (userscript shape)
+  // Slice-4 modules — ALL OFF by default (spec: "Optional, user-activated").
+  // Shapes match app/store/characters.ts defaultConfig (slice 3) + additive
+  // settings: runes.healThreshold, eat.slot, eat.cids (design extensions).
+  healItems: { on: false, threshold: 50, slotCids: [] },
+  healMagic: { on: false, threshold: 150, slot: null, sid: null },
+  runes: { on: false, attackSlot: null, healSlot: null, healThreshold: null },
+  training: { on: false, slot: null, sid: null, reserve: 0 },
+  eat: { on: false, everyCasts: 0, warningWindowSec: 60, fallbackIntervalSec: 10, slot: null, cids: [] },
   armed: false,                                      // interconnection gate (REQ-02, slice 3)
 };
 
@@ -2017,6 +2934,11 @@ function normalizeConfig(raw) {
     jitter: { min: 50, max: 400 },
     survival: { on: true, threshold: 50, slot: null },
     rotation: { spells: [] },
+    healItems: { on: false, threshold: 50, slotCids: [] },
+    healMagic: { on: false, threshold: 150, slot: null, sid: null },
+    runes: { on: false, attackSlot: null, healSlot: null, healThreshold: null },
+    training: { on: false, slot: null, sid: null, reserve: 0 },
+    eat: { on: false, everyCasts: 0, warningWindowSec: 60, fallbackIntervalSec: 10, slot: null, cids: [] },
     armed: false,
   };
   if (Number.isFinite(src.queue && src.queue.minIntervalMs) && src.queue.minIntervalMs >= 0) {
@@ -2035,6 +2957,33 @@ function normalizeConfig(raw) {
   if (src.rotation && Array.isArray(src.rotation.spells)) {
     cfg.rotation.spells = src.rotation.spells.filter((s) => s && typeof s === 'object');
   }
+  // --- Slice-4 module normalization (unknown keys dropped, invalid values default) ---
+  const hi = src.healItems && typeof src.healItems === 'object' ? src.healItems : {};
+  if (typeof hi.on === 'boolean') cfg.healItems.on = hi.on;
+  if (Number.isFinite(hi.threshold)) cfg.healItems.threshold = hi.threshold;
+  if (Array.isArray(hi.slotCids)) cfg.healItems.slotCids = hi.slotCids.map(Number).filter(Number.isInteger).filter((n) => n >= 0);
+  const hm = src.healMagic && typeof src.healMagic === 'object' ? src.healMagic : {};
+  if (typeof hm.on === 'boolean') cfg.healMagic.on = hm.on;
+  if (Number.isFinite(hm.threshold)) cfg.healMagic.threshold = hm.threshold;
+  if (Number.isInteger(hm.slot)) cfg.healMagic.slot = hm.slot;
+  if (Number.isInteger(hm.sid)) cfg.healMagic.sid = hm.sid;
+  const rn = src.runes && typeof src.runes === 'object' ? src.runes : {};
+  if (typeof rn.on === 'boolean') cfg.runes.on = rn.on;
+  if (Number.isInteger(rn.attackSlot)) cfg.runes.attackSlot = rn.attackSlot;
+  if (Number.isInteger(rn.healSlot)) cfg.runes.healSlot = rn.healSlot;
+  if (Number.isFinite(rn.healThreshold)) cfg.runes.healThreshold = rn.healThreshold;
+  const tr = src.training && typeof src.training === 'object' ? src.training : {};
+  if (typeof tr.on === 'boolean') cfg.training.on = tr.on;
+  if (Number.isInteger(tr.slot)) cfg.training.slot = tr.slot;
+  if (Number.isInteger(tr.sid)) cfg.training.sid = tr.sid;
+  if (Number.isFinite(tr.reserve) && tr.reserve >= 0) cfg.training.reserve = tr.reserve;
+  const ea = src.eat && typeof src.eat === 'object' ? src.eat : {};
+  if (typeof ea.on === 'boolean') cfg.eat.on = ea.on;
+  if (Number.isFinite(ea.everyCasts) && ea.everyCasts >= 0) cfg.eat.everyCasts = Math.floor(ea.everyCasts);
+  if (Number.isFinite(ea.warningWindowSec) && ea.warningWindowSec > 0) cfg.eat.warningWindowSec = ea.warningWindowSec;
+  if (Number.isFinite(ea.fallbackIntervalSec) && ea.fallbackIntervalSec > 0) cfg.eat.fallbackIntervalSec = ea.fallbackIntervalSec;
+  if (Number.isInteger(ea.slot)) cfg.eat.slot = ea.slot;
+  if (Array.isArray(ea.cids)) cfg.eat.cids = ea.cids.map(Number).filter(Number.isInteger).filter((n) => n >= 0);
   cfg.armed = src.armed === true; // REQ-02: only an explicit true arms
   return cfg;
 }
@@ -2081,6 +3030,7 @@ function createAgent(opts = {}) {
     tree: null,
     queue: null,
     engine: null,
+    modules: null, // slice-4 module handles (built in rebuild)
     ctx: {},
     ticker: null,
     pollTimer: null,
@@ -2105,9 +3055,73 @@ function createAgent(opts = {}) {
           || (sb.spells && sb.spells[spell.sid]) || null;
         if (entry && entry.cost !== undefined) cost = Number(entry.cost);
       }
+      // Slice-4 (probed, obs 10320): spellbook is EMPTY — spells resolve via
+      // interface.getSpell(sid). Adds the probed location as a fallback.
+      if ((cost === null || !Number.isFinite(cost)) && state.gameClient && state.gameClient.interface) {
+        const intf = state.gameClient.interface;
+        if (typeof intf.getSpell === 'function') {
+          const entry = intf.getSpell(spell.sid);
+          if (entry && entry.cost !== undefined) cost = Number(entry.cost);
+        }
+      }
     } catch (e) { cost = null; }
     if ((cost === null || !Number.isFinite(cost)) && Number.isFinite(Number(spell.cost))) cost = Number(spell.cost);
     return cost !== null && Number.isFinite(cost) ? cost : null;
+  }
+
+  /** Live-probed hotbar manager accessor (obs 10320 location). */
+  function readHotbar() {
+    const gc = state.gameClient;
+    return gc && ((gc.interface && gc.interface.hotbarManager) || gc.hotbarManager) || null;
+  }
+
+  /** Live-probed vocation gate hotbarManager.__canPlayerCastSpell(sid)
+   *  (obs 10320). Returns true/false when the gate exists; null when the
+   *  feature is absent (callers skip the gate, never block). */
+  function canCastSpell(sid) {
+    try {
+      const hb = readHotbar();
+      if (hb && typeof hb.__canPlayerCastSpell === 'function') {
+        return hb.__canPlayerCastSpell(sid) === true;
+      }
+    } catch (e) { /* gate read failure => unknown */ }
+    return null;
+  }
+
+  /** Live-probed native rune windows: hotbarManager.__runeAttackUntil /
+   *  __runeHealUntil (epoch-ms "active until"). Returns null when the fields
+   *  are ABSENT (feature not present => the rune module degrades, design D7 —
+   *  no invented fallback loop). */
+  function readRuneTimers() {
+    try {
+      const hb = readHotbar();
+      if (!hb) return null;
+      const attackUntil = hb.__runeAttackUntil;
+      const healUntil = hb.__runeHealUntil;
+      if (attackUntil === undefined && healUntil === undefined) return null;
+      return { attackUntil: attackUntil === undefined ? null : attackUntil, healUntil: healUntil === undefined ? null : healUntil };
+    } catch (e) { return null; }
+  }
+
+  /** Post-rune-fire wait in ms: __getRuneEffectiveCooldown() when present,
+   *  plus player attackSlowness when exposed (REQ-15 "respect global cooldown
+   *  and player.attackSlowness"). Feature-detected; 0 when absent. */
+  function readRuneAfterFireWait() {
+    let wait = 0;
+    try {
+      const hb = readHotbar();
+      if (hb && typeof hb.__getRuneEffectiveCooldown === 'function') {
+        const v = hb.__getRuneEffectiveCooldown();
+        if (Number.isFinite(Number(v))) wait = Math.max(wait, Number(v));
+      }
+    } catch (e) { /* best-effort */ }
+    try {
+      const p = state.gameClient && state.gameClient.player;
+      const sl = (p && p.state && p.state.attackSlowness) !== undefined
+        ? (p.state.attackSlowness) : (p && p.attackSlowness);
+      if (Number.isFinite(Number(sl))) wait = Math.max(wait, Number(sl));
+    } catch (e) { /* best-effort */ }
+    return wait;
   }
 
   function buildCombatRules(cfg) {
@@ -2162,11 +3176,11 @@ function createAgent(opts = {}) {
     }));
   }
 
-  /** Rebuild tree + queue from the current config (applyConfig path). */
+  /** Rebuild tree + queue + modules from the current config (applyConfig path). */
   function rebuild(cfg) {
     state.config = cfg;
     state.armed = cfg.armed === true; // REQ-02: arm/keep-disarmed on every config push
-    state.ctx = { mana: null, maxMana: null, health: null, lastFiredAt: {} };
+    state.ctx = { mana: null, maxMana: null, health: null, lastFiredAt: {}, castsSinceFood: 0, lastEatAt: 0 };
     state.queue = createQueue({
       minInterval: cfg.queue.minIntervalMs,
       jitter: cfg.jitter,
@@ -2175,6 +3189,111 @@ function createAgent(opts = {}) {
       dispatch: function (fn) { fn(); }, // the ONLY game-handler invocation point
     });
     state.engine = ROTATION_MOD.createEngine({ rules: buildCombatRules(cfg), ctx: state.ctx });
+
+    /* -------- slice-4 modules (REQ-13..17): pure decision + queue-dispatch -------- */
+    const healItems = HEAL_ITEMS_MOD.createHealItems({
+      config: cfg.healItems,
+      findSlot: function () { return HEAL_ITEMS_MOD.defaultFindSlot(state.gameClient, cfg.healItems.slotCids); },
+      gameClient: function () { return state.gameClient; },
+      log,
+    });
+    const healMagic = HEAL_MAGIC_MOD.createHealMagic({
+      config: cfg.healMagic,
+      getSpellCost: function (sid) { return readSpellCost({ sid: sid }); },
+      canCastSpell: canCastSpell,
+      readCooldown: function (sid) { return GC_MOD.readCooldown(sid, { gameClient: state.gameClient }); },
+      now: nowFn,
+      log,
+    });
+    const runes = RUNES_MOD.createRunes({
+      config: cfg.runes,
+      readRuneTimers: readRuneTimers,
+      readGlobalCooldown: function () { return GC_MOD.readCooldown(null, { gameClient: state.gameClient }).globalCooldown; },
+      readAfterFireWait: readRuneAfterFireWait,
+      now: nowFn,
+      log,
+    });
+    const training = TRAINING_MOD.createTraining({
+      config: cfg.training,
+      getSpellCost: function (sid) { return readSpellCost({ sid: sid }); },
+      canCastSpell: canCastSpell,
+      readCooldown: function (sid) { return GC_MOD.readCooldown(sid, { gameClient: state.gameClient }); },
+      now: nowFn,
+      log,
+    });
+    const eat = EAT_MODULE_MOD.createEatModule({
+      config: cfg.eat,
+      gameClient: function () { return state.gameClient; },
+      document: doc,
+      now: nowFn,
+      log,
+    });
+    state.modules = { healItems: healItems, healMagic: healMagic, runes: runes, training: training, eat: eat };
+
+    /* -------- tree nodes: survival > combat > training > eat > loot (REQ-11) -------- */
+
+    // REQ-13: heal with items — survival priority, queue-aware (no re-enqueue
+    // while a heal-item action is pending).
+    const healItemsNode = {
+      type: 'sequence',
+      id: 'heal-items',
+      children: [
+        {
+          type: 'condition',
+          id: 'heal-items-feasible',
+          predicate: function (ctx) {
+            if (!cfg.healItems.on) return false;
+            const d = healItems.decide(ctx);
+            if (!d.fire) return false;
+            return !state.queue.hasPending(function (e) { return e.kind === 'heal-item'; });
+          },
+        },
+        {
+          type: 'action',
+          id: 'heal-items-use',
+          run: function (ctx) {
+            const d = healItems.decide(ctx);
+            if (!d.fire) return false;
+            // NO-BYPASS (REQ-12): the real __useItemOnSelf/mouse.use call
+            // happens ONLY inside the queue-dispatched closure.
+            state.queue.enqueue(function () { healItems.fire(d.item); }, { kind: 'heal-item' });
+            return true;
+          },
+        },
+      ],
+    };
+
+    // REQ-14: heal with magic — hp threshold + mana feasibility +
+    // GLOBAL_COOLDOWN defer (core/cooldown), queue-aware.
+    const healMagicNode = {
+      type: 'sequence',
+      id: 'heal-magic',
+      children: [
+        {
+          type: 'condition',
+          id: 'heal-magic-feasible',
+          predicate: function (ctx) {
+            if (!cfg.healMagic.on) return false;
+            const d = healMagic.decide(ctx);
+            if (!d.fire) return false;
+            return !state.queue.hasPending(function (e) { return e.kind === 'heal-magic'; });
+          },
+        },
+        {
+          type: 'action',
+          id: 'heal-magic-cast',
+          run: function (ctx) {
+            const d = healMagic.decide(ctx);
+            if (!d.fire) return false;
+            state.queue.enqueue(function () {
+              healMagic.fire(d, { gameClient: state.gameClient, document: doc });
+            }, { kind: 'heal-magic' });
+            return true;
+          },
+        },
+      ],
+    };
+
     const survival = {
       type: 'sequence',
       id: 'survival',
@@ -2210,6 +3329,25 @@ function createAgent(opts = {}) {
         },
       ],
     };
+
+    // REQ-15: runes — defer while a native window is active; fire on expiry.
+    // A single action node: the decision is made inside run() so a deferred
+    // rune falls through to combat in the same tick.
+    const runesNode = {
+      type: 'action',
+      id: 'runes',
+      run: function (ctx) {
+        if (!cfg.runes.on) return false;
+        const d = runes.decide(ctx);
+        if (!d.fire) return false;
+        if (state.queue.hasPending(function (e) { return e.kind === d.kind; })) return false;
+        state.queue.enqueue(function () {
+          runes.fire(d, { gameClient: state.gameClient, document: doc });
+        }, { kind: d.kind });
+        return true;
+      },
+    };
+
     const combat = {
       type: 'action',
       id: 'combat',
@@ -2218,6 +3356,68 @@ function createAgent(opts = {}) {
         return Boolean(result.fired);
       },
     };
+
+    // REQ-16: training — cast-to-train cadence via the queue; a training cast
+    // advances the every-N-casts food cadence (ctx.castsSinceFood).
+    const trainingNode = {
+      type: 'sequence',
+      id: 'training',
+      children: [
+        {
+          type: 'condition',
+          id: 'training-feasible',
+          predicate: function (ctx) {
+            if (!cfg.training.on) return false;
+            const d = training.decide(ctx);
+            if (!d.fire) return false;
+            return !state.queue.hasPending(function (e) { return e.kind === 'training-cast'; });
+          },
+        },
+        {
+          type: 'action',
+          id: 'training-cast',
+          run: function (ctx) {
+            const d = training.decide(ctx);
+            if (!d.fire) return false;
+            state.queue.enqueue(function () {
+              training.fire(d, { gameClient: state.gameClient, document: doc });
+            }, { kind: 'training-cast' });
+            ctx.castsSinceFood = (ctx.castsSinceFood || 0) + 1; // every-N-casts counts training casts
+            return true;
+          },
+        },
+      ],
+    };
+
+    // REQ-17: eat — proven SATED/timer/everyCasts/fallback-interval decision;
+    // the queue-dispatched closure runs the proven eater attempt.
+    const eatNode = {
+      type: 'sequence',
+      id: 'eat',
+      children: [
+        {
+          type: 'condition',
+          id: 'eat-feasible',
+          predicate: function (ctx) {
+            if (!cfg.eat.on) return false;
+            const d = eat.decide(ctx);
+            if (!d.fire) return false;
+            return !state.queue.hasPending(function (e) { return e.kind === 'eat'; });
+          },
+        },
+        {
+          type: 'action',
+          id: 'eat-use',
+          run: function (ctx) {
+            const d = eat.decide(ctx);
+            if (!d.fire) return false;
+            state.queue.enqueue(function () { eat.fire(ctx, d); }, { kind: 'eat' });
+            return true;
+          },
+        },
+      ],
+    };
+
     const loot = {
       type: 'sequence',
       id: 'loot',
@@ -2230,7 +3430,9 @@ function createAgent(opts = {}) {
       root: {
         type: 'selector',
         id: 'priority-root',
-        children: [survival, combat, loot], // survival > combat > loot (REQ-11)
+        // heal (items + magic + legacy slot-heal) > runes > combat > training
+        // > eat > loot (REQ-11: survival/heal always beats combat/loot/training).
+        children: [healItemsNode, healMagicNode, survival, runesNode, combat, trainingNode, eatNode, loot],
       },
     });
   }
@@ -2348,9 +3550,22 @@ function createAgent(opts = {}) {
         }, { kind: 'rpc-fire-slot-' + slot });
         return true;
       },
-      eatFood: function () { return { result: 'unavailable', reason: 'eat module lands in slice 4' }; },
+      eatFood: function () {
+        // REQ-02 gate: app-driven RPC eats are refused before Connect.
+        if (!state.armed) return { ok: false, reason: 'not connected' };
+        const m = state.modules && state.modules.eat;
+        if (!m || !m.isEnabled()) return { result: 'off' };
+        // REQ-12 no-bypass: the real eat attempt runs inside the queue.
+        state.queue.enqueue(function () {
+          m.fire(state.ctx, { fire: true, reason: 'rpc', force: true });
+        }, { kind: 'eat-rpc' });
+        return { result: 'queued' };
+      },
       getChat: function () { return CHAT_MOD.getRecentMessages({ gameClient: state.gameClient, document: doc }); },
-      getRuneState: function () { return null; }, // slice 4
+      getRuneState: function () {
+        const m = state.modules && state.modules.runes;
+        return m ? m.getState() : null; // REQ-15 real module state (slice 4)
+      },
       getWalkState: function () { return null; }, // slice 6
       getPlayerInfo: readPlayerInfo,
       applyConfig: applyConfig,
@@ -2378,6 +3593,7 @@ function createAgent(opts = {}) {
   }
 
   function getState() {
+    const modules = state.modules || {};
     return {
       ready: state.ready,
       running: state.running,
@@ -2387,6 +3603,11 @@ function createAgent(opts = {}) {
       mana: state.ctx.mana,
       queue: state.queue ? state.queue.stats() : null,
       lastPath: state.lastPath,
+      castsSinceFood: state.ctx.castsSinceFood || 0,
+      modules: {
+        runes: modules.runes ? modules.runes.getState() : null,
+        eat: modules.eat ? modules.eat.getState() : null,
+      },
       warnings: state.warnings.slice(),
       errors: state.errors.slice(),
     };
