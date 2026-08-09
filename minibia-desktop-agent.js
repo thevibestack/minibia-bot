@@ -5555,6 +5555,7 @@ return module.exports;
 (function () {
   'use strict';
   if (typeof window === 'undefined' || typeof window.document === 'undefined') return;
+  if (window.__mbAgent) return; // guard: never double-boot in one document
   try {
     var AGENT = __mbRequire('agent/bootstrap');
     if (typeof AGENT.createAgent !== 'function') return;

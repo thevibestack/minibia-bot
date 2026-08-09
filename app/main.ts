@@ -187,6 +187,16 @@ async function runMain(opts) {
     await bridge.enablePageDomains(session);
     if (injectionSource) {
       await bridge.injectOnNewDocument(session, injectionSource);
+      // REQ-04: addScriptToEvaluateOnNewDocument only runs on FUTURE
+      // navigations. If the target page already finished loading (e.g.
+      // Cloudflare challenge or the login screen), evaluate the bundle
+      // immediately in the current document so the agent is alive NOW.
+      // Errors are non-fatal: the registered script covers later reloads.
+      try {
+        await bridge.evaluate(session, injectionSource);
+      } catch (e) {
+        emit({ phase: 'inject-current-doc-failed', error: (e && e.message) || String(e) });
+      }
       emit({ phase: 'injected' });
       if (probeExpression) {
         await bridge.waitForSurface(session, probeExpression);
