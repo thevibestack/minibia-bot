@@ -8,3 +8,4 @@ catalog.json
 # runtime side-load, these ARE committed — they are required build assets.
 !/app/assets/catalog.json
 !/app/assets/npcTrades.json
+dist/

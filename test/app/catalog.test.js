@@ -84,3 +84,34 @@ test('REQ-07: loadCatalog filters malformed entries; buildIndex tolerates duplic
   assert.equal(index.byCid.get(1).name, 'ok', 'first entry wins on duplicate cid');
   assert.equal(index.byRuneWord.get('adori').length, 1);
 });
+
+test('REQ-07 (slice 6): readEmbeddedAsset resolves the compiled-binary embedded copies first', () => {
+  const prev = globalThis.__MB_BUNDLED_ASSETS;
+  try {
+    // Simulate app/entry-compiled.js: parsed JSON exposed on the global.
+    globalThis.__MB_BUNDLED_ASSETS = {
+      'catalog.json': [{ cid: 777, name: 'embedded-only' }],
+      'npcTrades.json': [{ npc: 'embedded' }],
+    };
+    const embedded = catalog.readEmbeddedAsset('catalog.json');
+    assert.deepEqual(embedded, [{ cid: 777, name: 'embedded-only' }]);
+    assert.equal(catalog.loadCatalog().length, 1, 'embedded copy wins over fs (offline binary, REQ-07)');
+    assert.deepEqual(catalog.loadNpcTrades(), [{ npc: 'embedded' }]);
+    assert.equal(catalog.readEmbeddedAsset('missing.json'), null, 'unknown asset -> null');
+  } finally {
+    if (prev === undefined) delete globalThis.__MB_BUNDLED_ASSETS;
+    else globalThis.__MB_BUNDLED_ASSETS = prev;
+  }
+});
+
+test('REQ-07 (slice 6): readEmbeddedAsset falls back to fs when no bundle is exposed', () => {
+  const prev = globalThis.__MB_BUNDLED_ASSETS;
+  try {
+    delete globalThis.__MB_BUNDLED_ASSETS;
+    assert.equal(catalog.readEmbeddedAsset('catalog.json'), null);
+    const loaded = catalog.loadCatalog();
+    assert.ok(Array.isArray(loaded) && loaded.length >= 12355, 'fs fallback intact (dev/tests)');
+  } finally {
+    if (prev !== undefined) globalThis.__MB_BUNDLED_ASSETS = prev;
+  }
+});

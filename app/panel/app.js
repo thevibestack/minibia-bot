@@ -26,6 +26,7 @@
 
   var state = P.createInitialState();
   var pollTimer = null;
+  var prefilledFor = null; // last character whose saved config was pre-fetched
 
   /* ------------------------------- render ------------------------------- */
 
@@ -100,6 +101,16 @@
         postJson('/api/config', { character: state.identity ? state.identity.name : null, config: cfg });
         break;
       }
+      case 'walk-to': {
+        // REQ-23 (slice 6): the server RPCs the in-page agent, which issues
+        // the NATIVE autowalk walk-to through the Action Queue.
+        postJson('/api/walk-to', {
+          character: state.identity ? state.identity.name : null,
+          x: effect.x,
+          y: effect.y,
+        });
+        break;
+      }
       case 'offer-confirm':
       case 'offer-decline': {
         // REQ-25: user decision on a learning offer. Confirm -> the server
@@ -133,6 +144,22 @@
   function poll() {
     jsonRequest('/api/identity').then(function (res) {
       if (res) dispatch({ type: 'PROBE_RESULT', identity: res.identity });
+      // REQ-09 per-character pre-fill on CHARACTER SELECT (slice 6 polish):
+      // as soon as a confirmed identity is known, fetch its saved config so
+      // the toggles show the saved state BEFORE Connect. Re-fetches when a
+      // DIFFERENT character appears; a completed Connect pre-fill stays
+      // authoritative (the guard below skips when the gate left confirmed).
+      if (state.gate === P.GATE_CONFIRMED && state.identity && prefilledFor !== state.identity.name) {
+        prefilledFor = state.identity.name;
+        jsonRequest('/api/character-config?name=' + encodeURIComponent(state.identity.name))
+          .then(function (prefillRes) {
+            if (prefillRes && prefillRes.config && state.gate === P.GATE_CONFIRMED) {
+              dispatch({ type: 'PREFILL_CONFIG', config: prefillRes.config });
+            }
+          });
+      } else if (state.gate === P.GATE_DISCONNECTED) {
+        prefilledFor = null;
+      }
     });
     jsonRequest('/api/snapshot').then(function (res) {
       if (res) dispatch({ type: 'SNAPSHOT', data: res });
@@ -162,12 +189,30 @@
     }
   });
 
+  // Routes v1 (REQ-23, slice 6): keep the walk-to coordinate inputs in
+  // panel state so re-renders never wipe the typed values.
+  document.addEventListener('input', function (e) {
+    var target = e.target;
+    if (target && target.matches && (target.matches('#route-x') || target.matches('#route-y'))) {
+      dispatch({
+        type: 'UPDATE_WALK_INPUT',
+        key: target.matches('#route-x') ? 'x' : 'y',
+        value: target.value,
+      });
+    }
+  });
+
   document.addEventListener('click', function (e) {
     var target = e.target;
     if (!target || !target.matches) return;
     if (target.matches('#connect-btn')) dispatch({ type: 'CONNECT' });
     else if (target.matches('#cancel-btn')) dispatch({ type: 'CANCEL' });
     else if (target.matches('#disconnect-btn')) dispatch({ type: 'DISCONNECT' });
+    else if (target.matches('#route-walk-btn')) {
+      // REQ-23: walk-to via the native autowalk primitive (server RPC).
+      var wt = state.walkTo || { x: '', y: '' };
+      dispatch({ type: 'WALK_TO', x: wt.x, y: wt.y });
+    }
     else if (target.matches('.offer-btn')) {
       // REQ-25: Confirm/Decline on a registration offer.
       var word = target.getAttribute('data-word') || '';

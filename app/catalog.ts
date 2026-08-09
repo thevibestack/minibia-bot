@@ -60,12 +60,30 @@ function readJsonAsset(file) {
 }
 
 /**
+ * Embedded-asset bridge (REQ-07, slice 6): the compiled-binary entry
+ * (app/entry-compiled.js) imports the JSON assets and exposes them as
+ * parsed values on globalThis.__MB_BUNDLED_ASSETS, so offline lookups in
+ * the binary resolve from the embedded copy (Bun also embeds the project
+ * tree as a virtual FS — the fs path below covers both dev and the binary).
+ * @param {string} name - asset file name ('catalog.json' | 'npcTrades.json')
+ * @returns {unknown|null}
+ */
+function readEmbeddedAsset(name) {
+  try {
+    const bundle = typeof globalThis !== 'undefined' ? globalThis.__MB_BUNDLED_ASSETS : null;
+    if (bundle && Object.prototype.hasOwnProperty.call(bundle, name)) return bundle[name];
+  } catch (e) { /* fall through to fs */ }
+  return null;
+}
+
+/**
  * Load the item catalog asset.
  * @param {{dir?: string}} [opts]
  * @returns {Array<{cid: number, name: string, runeSpellName: string|null, npcTrades: object[]}>|null}
  */
 function loadCatalog(opts = {}) {
-  const entries = readJsonAsset(assetPath(opts.dir, CATALOG_FILENAME));
+  const embedded = readEmbeddedAsset(CATALOG_FILENAME);
+  const entries = embedded !== null ? embedded : readJsonAsset(assetPath(opts.dir, CATALOG_FILENAME));
   if (!Array.isArray(entries)) return null;
   return entries.filter((e) => e && typeof e === 'object' && Number.isInteger(e.cid) && typeof e.name === 'string');
 }
@@ -77,7 +95,8 @@ function loadCatalog(opts = {}) {
  * @returns {Array<{npc: string, price: number, buy: boolean, sell: boolean}>|null}
  */
 function loadNpcTrades(opts = {}) {
-  const rows = readJsonAsset(assetPath(opts.dir, NPC_TRADES_FILENAME));
+  const embedded = readEmbeddedAsset(NPC_TRADES_FILENAME);
+  const rows = embedded !== null ? embedded : readJsonAsset(assetPath(opts.dir, NPC_TRADES_FILENAME));
   if (!Array.isArray(rows)) return null;
   return rows;
 }
@@ -147,6 +166,7 @@ module.exports = {
   assetsDir,
   assetPath,
   readJsonAsset,
+  readEmbeddedAsset,
   loadCatalog,
   loadNpcTrades,
   buildIndex,

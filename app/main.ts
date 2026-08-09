@@ -213,6 +213,12 @@ async function runMain(opts) {
         session,
         'window.__mbAgent && window.__mbAgent.respondOffer(' + JSON.stringify(action) + ',' + JSON.stringify(word) + ')',
       ),
+      // REQ-23 (slice 6): panel walk-to -> in-page walkTo RPC -> Action Queue
+      // -> the game's native autowalk primitive (never synthetic input).
+      walkTo: (x, y) => bridge.evaluate(
+        session,
+        'window.__mbAgent && window.__mbAgent.walkTo(' + JSON.stringify(x) + ',' + JSON.stringify(y) + ')',
+      ),
       snapshot: () => bridge.evaluate(session, SNAPSHOT_EXPRESSION),
       store,
     });

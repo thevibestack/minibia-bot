@@ -105,3 +105,31 @@ body {
 }
 
 .live-empty { color: var(--muted); }
+
+/* ------------------------- slice 6: routes form ------------------------- */
+.routes-form {
+  margin-top: 12px;
+  padding: 12px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.routes-form h3 { margin: 0 0 8px; }
+.route-coord { margin-right: 10px; }
+.route-coord input { width: 90px; }
+#route-walk-btn { margin-top: 8px; }
+.routes-future {
+  margin-top: 8px;
+  color: var(--muted);
+  font-style: italic;
+}
+
+/* ---------------------- slice 6: module alert states -------------------- */
+.module-alert {
+  margin: 8px 0;
+  padding: 8px 10px;
+  border-radius: 6px;
+  font-weight: 600;
+}
+.alert-eat { background: #fdecea; border: 1px solid #f5b5ae; color: #8a2a22; }
+.routes-state { margin: 6px 0; color: var(--muted); }

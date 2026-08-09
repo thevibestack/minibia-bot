@@ -95,7 +95,16 @@ test('2.5: bundle boots and exposes the REQ-04 __mbAgent surface', async () => {
       'eatFood RPC refused pre-arm (REQ-02 gate)');
     assert.equal(JSON.stringify(s.getRuneState()), JSON.stringify({ on: false, available: false, reason: 'off', lastFireAt: 0 }),
       'getRuneState reports the real rune module (REQ-15)');
-    assert.equal(s.getWalkState(), null, 'walk state lands in slice 6');
+    // Slice-6 forward contract: getWalkState now reports the real routes-v1
+    // module — the mock has no world.pathfinder, so the honest degrade is
+    // "no pathfinder data"; route recording stays FUTURE (REQ-23).
+    const walkState = s.getWalkState();
+    assert.equal(walkState.available, false, 'no pathfinder in the mock -> honest degrade (REQ-23)');
+    assert.equal(walkState.reason, 'no pathfinder data');
+    assert.equal(walkState.recording, 'future', 'route recording is FUTURE in v1 (REQ-23)');
+    // walkTo RPC is gated by the REQ-02 gate (disarmed here -> refused).
+    assert.equal(JSON.stringify(s.walkTo(100, 200)), JSON.stringify({ ok: false, reason: 'not connected' }),
+      'walkTo RPC refused pre-arm (REQ-02 gate)');
   } finally {
     teardown(dom);
   }

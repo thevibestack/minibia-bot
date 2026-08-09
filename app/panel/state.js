@@ -71,6 +71,7 @@
       snapshot: null,          // live state view payload (SNAPSHOT)
       alerts: [],              // {kind, message, at} — eat pause, premium...
       offers: [],              // {word, ts} — learning offers (slice 5)
+      walkTo: { x: '', y: '' }, // routes v1 form values (slice 6, REQ-23)
       refusal: null,           // last refused action {action, module, reason, at}
       lastError: null,
     };
@@ -187,6 +188,31 @@
       case 'UPDATE_SETTING':
         if (state.gate !== GATE_ARMED) return { state: refuse(state, action), effects: [] };
         return { state, effects: [{ type: 'push-config' }] };
+
+      case 'UPDATE_WALK_INPUT': {
+        // Pure UI state (no gate): preserves the routes walk-to form values
+        // across re-renders (the config form re-renders on every dispatch).
+        const prev = state.walkTo || { x: '', y: '' };
+        const next = Object.assign({}, prev);
+        if (action.key === 'x' || action.key === 'y') {
+          next[action.key] = String(action.value === null || action.value === undefined ? '' : action.value);
+        }
+        return { state: Object.assign({}, state, { walkTo: next }), effects: [] };
+      }
+
+      case 'WALK_TO': {
+        // REQ-23 (slice 6): walk-to via the native autowalk primitive. The
+        // action is armed-gated like every other action; the effect executor
+        // posts /api/walk-to (server -> in-page walkTo RPC -> queue ->
+        // pathfinder.pathTo). Empty/non-numeric inputs are ignored.
+        if (state.gate !== GATE_ARMED) return { state: refuse(state, action), effects: [] };
+        const rawX = String(action.x === null || action.x === undefined ? '' : action.x).trim();
+        const rawY = String(action.y === null || action.y === undefined ? '' : action.y).trim();
+        if (rawX === '' || rawY === '' || !Number.isFinite(Number(rawX)) || !Number.isFinite(Number(rawY))) {
+          return { state, effects: [] };
+        }
+        return { state, effects: [{ type: 'walk-to', x: Number(rawX), y: Number(rawY) }] };
+      }
 
       case 'CONFIRM_OFFER': {
         if (state.gate !== GATE_ARMED) return { state: refuse(state, action), effects: [] };
@@ -357,12 +383,26 @@
     return '<div class="module-list">' + rows.join('') + '</div>';
   }
 
-  /** Config form SHELL — real per-module settings forms land with slices 4-6. */
+  /** Config form: module settings shell + the Routes v1 walk-to form
+   *  (REQ-23, slice 6). Route RECORDING is explicitly marked FUTURE — out of
+   *  v1 scope per the spec; v1 issues walk-to through the native autowalk
+   *  primitive only (values survive re-renders via state.walkTo). */
   function renderConfigForm(state) {
     const head = '<h2>Configuration</h2>';
-    const body = state.gate === GATE_ARMED
-      ? '<div class="config-shell">Select a module to configure — settings forms arrive with the module slices.</div>'
-      : '<div class="config-shell">Configuration unlocks after Connect.</div>';
+    let body;
+    if (state.gate === GATE_ARMED) {
+      const wt = state.walkTo || { x: '', y: '' };
+      body = '<div class="config-shell">Module settings forms land with their slices; Routes (v1) offers walk-to below.</div>'
+        + '<div class="routes-form">'
+        + '<h3>Routes (v1)</h3>'
+        + '<label class="route-coord">X <input type="number" id="route-x" value="' + escapeHtml(wt.x) + '" step="any"></label>'
+        + '<label class="route-coord">Y <input type="number" id="route-y" value="' + escapeHtml(wt.y) + '" step="any"></label>'
+        + '<button type="button" id="route-walk-btn">Walk to</button>'
+        + '<p class="routes-future">Route recording — FUTURE (out of scope in v1).</p>'
+        + '</div>';
+    } else {
+      body = '<div class="config-shell">Configuration unlocks after Connect.</div>';
+    }
     return '<section class="config-form">' + head + body + '</section>';
   }
 
@@ -387,6 +427,29 @@
           + '<h3>Registration offers</h3>'
           + offers.map(renderOffer).join('')
           + '</div>');
+      }
+      // Slice-6 polish (REQ-17/23): module alert states wired into the live
+      // view — the eat 3-fail pause alert and the routes autowalk read.
+      const modules = state.snapshot.agent && state.snapshot.agent.modules
+        ? state.snapshot.agent.modules : null;
+      if (modules && modules.eat && modules.eat.paused === true) {
+        parts.push('<div class="module-alert alert-eat">Eating paused — 3 consecutive failed attempts.</div>');
+      }
+      if (modules && modules.routes) {
+        const r = modules.routes;
+        let line;
+        if (r.available !== true) {
+          line = 'Routes: ' + (r.reason || 'no pathfinder data');
+        } else if (r.isAutoWalking === true) {
+          line = 'Auto-walking: '
+            + (Number.isInteger(r.stepsRemaining) ? r.stepsRemaining + ' steps remaining' : 'in progress');
+          if (r.destination && Number.isFinite(r.destination.x) && Number.isFinite(r.destination.y)) {
+            line += ' to (' + r.destination.x + ', ' + r.destination.y + ')';
+          }
+        } else {
+          line = 'Routes: not auto-walking';
+        }
+        parts.push('<div class="routes-state">' + escapeHtml(line) + '</div>');
       }
       parts.push('<pre class="live-payload">' + escapeHtml(JSON.stringify(state.snapshot, null, 2)) + '</pre>');
       body = parts.join('');

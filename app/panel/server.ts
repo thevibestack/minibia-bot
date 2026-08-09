@@ -80,6 +80,8 @@ function readBody(req) {
  * @param {(action: 'confirm'|'decline', word: string) => Promise<unknown>} [opts.respondOffer] -
  *   REQ-25 agent RPC for offer decisions (decline = session-silent)
  * @param {() => Promise<unknown>} [opts.snapshot] - live state payload
+ * @param {(x: number, y: number) => Promise<unknown>} [opts.walkTo] -
+ *   REQ-23 in-page walkTo RPC (native autowalk, queue-dispatched)
  * @param {object} opts.store - {loadCharacter, saveCharacter} (app/store/characters.ts)
  * @param {string} [opts.host='127.0.0.1'] - REQ-05: local only
  * @param {number} [opts.port=0] - ephemeral by default
@@ -91,6 +93,7 @@ function createPanelServer(opts) {
   const applyConfigFn = opts.applyConfig;
   const respondOfferFn = typeof opts.respondOffer === 'function' ? opts.respondOffer : async () => null;
   const snapshotFn = typeof opts.snapshot === 'function' ? opts.snapshot : async () => null;
+  const walkToFn = typeof opts.walkTo === 'function' ? opts.walkTo : async () => ({ ok: true });
   const store = opts.store;
   const host = opts.host || '127.0.0.1';
 
@@ -107,6 +110,48 @@ function createPanelServer(opts) {
       if (req.method === 'GET' && url === '/api/snapshot') {
         const payload = await snapshotFn();
         sendJson(res, 200, payload === null || payload === undefined ? { } : payload);
+        return;
+      }
+      if (req.method === 'GET' && url === '/api/character-config') {
+        // REQ-09 per-character pre-fill (slice 6 polish): read-only load of
+        // the saved config for the CONFIRMED character — the panel shows the
+        // saved toggles before Connect. No push, no persist, no side effect;
+        // gated on the identity match like /api/connect.
+        let name = '';
+        try {
+          name = new URL(req.url, 'http://127.0.0.1').searchParams.get('name') || '';
+        } catch (e) { name = ''; }
+        const identity = await identityFn();
+        if (!identity || !identity.name) {
+          sendJson(res, 409, { ok: false, reason: 'not connected' });
+          return;
+        }
+        if (name !== identity.name) {
+          sendJson(res, 409, { ok: false, reason: 'character mismatch' });
+          return;
+        }
+        const loaded = store.loadCharacter({ name });
+        sendJson(res, 200, { ok: true, config: loaded.config, warning: loaded.warning });
+        return;
+      }
+      if (req.method === 'POST' && url === '/api/walk-to') {
+        // REQ-23 (slice 6): walk-to via the NATIVE autowalk primitive — the
+        // server RPCs the in-page agent (queue-dispatched pathTo). 409 while
+        // no character is connected; 400 on non-numeric coordinates.
+        const body = await readBody(req);
+        const name = typeof body.character === 'string' && body.character ? body.character : lastCharacter;
+        if (!name) {
+          sendJson(res, 409, { ok: false, reason: 'not connected' });
+          return;
+        }
+        const x = body.x;
+        const y = body.y;
+        if (typeof x !== 'number' || !Number.isFinite(x) || typeof y !== 'number' || !Number.isFinite(y)) {
+          sendJson(res, 400, { ok: false, reason: 'invalid coordinates' });
+          return;
+        }
+        const result = await walkToFn(x, y);
+        sendJson(res, 200, { ok: true, x, y, result });
         return;
       }
       if (req.method === 'POST' && url === '/api/connect') {

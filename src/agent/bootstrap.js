@@ -55,6 +55,8 @@ const SPAWNS_MOD = require('./modules/spawns');
 const HUNT_STATS_MOD = require('./modules/huntStats');
 const ECHO_MOD = require('./modules/echo');
 const LEARNING_MOD = require('./modules/learning');
+// Slice-6 module (REQ-23): native autowalk state read + walk-to (routes v1).
+const ROUTES_MOD = require('./modules/routes');
 
 /** Minimal slice-2 config shape (per-character store lands in slice 3). */
 const DEFAULT_CONFIG = {
@@ -78,6 +80,7 @@ const DEFAULT_CONFIG = {
   spawns: { on: false },
   huntStats: { on: false },
   learning: { knownWords: [] },       // REQ-25: observation always runs while armed
+  routes: { on: false },               // REQ-23 (slice 6): native autowalk read + walk-to; recording = FUTURE
   armed: false,                                      // interconnection gate (REQ-02, slice 3)
 };
 
@@ -103,6 +106,7 @@ function normalizeConfig(raw) {
     spawns: { on: false },
     huntStats: { on: false },
     learning: { knownWords: [] },
+    routes: { on: false },
     armed: false,
   };
   if (Number.isFinite(src.queue && src.queue.minIntervalMs) && src.queue.minIntervalMs >= 0) {
@@ -176,6 +180,8 @@ function normalizeConfig(raw) {
       .filter((w) => typeof w === 'string' && w.trim())
       .map((w) => w.trim());
   }
+  const rt = src.routes && typeof src.routes === 'object' ? src.routes : {};
+  if (typeof rt.on === 'boolean') cfg.routes.on = rt.on;
   cfg.armed = src.armed === true; // REQ-02: only an explicit true arms
   return cfg;
 }
@@ -429,6 +435,18 @@ function createAgent(opts = {}) {
     } catch (e) { return null; }
   }
 
+  /** Native pathfinder reader (REQ-23, live-probed location obs 10320:
+   *  world.pathfinder holds the autowalk state + walk-to methods). Returns
+   *  null when absent ("no pathfinder data" degrade). */
+  function readPathfinder() {
+    try {
+      const gc = state.gameClient;
+      const world = gc && gc.world;
+      const pf = (world && world.pathfinder) || (gc && gc.pathfinder) || null;
+      return pf && typeof pf === 'object' ? pf : null;
+    } catch (e) { return null; }
+  }
+
   /** Configured words for the learning observer (REQ-25): rotation spell
    *  words + healMagic/training words + previously registered words. */
   function configuredWords() {
@@ -621,9 +639,20 @@ function createAgent(opts = {}) {
       now: nowFn,
       log,
     });
+    // REQ-23 (slice 6): routes v1 — native autowalk state read + walk-to
+    // via the game's own pathfinder primitive (never synthetic per-step
+    // input). Not a tree node: the read is passive (eager getState) and
+    // walk-to is an app-driven RPC (queue-dispatched).
+    const routes = ROUTES_MOD.createRoutesModule({
+      config: cfg.routes,
+      readPathfinder: readPathfinder,
+      now: nowFn,
+      log,
+    });
     state.modules = {
       healItems: healItems, healMagic: healMagic, runes: runes, training: training, eat: eat,
       trade: trade, loot: loot, spawns: spawns, huntStats: huntStats, echo: echo, learning: learning,
+      routes: routes,
     };
 
     /* -------- tree nodes: survival > combat > training > eat > loot (REQ-11) -------- */
@@ -1061,7 +1090,31 @@ function createAgent(opts = {}) {
         }
         return { ok: false, reason: 'unknown action' };
       },
-      getWalkState: function () { return null; }, // slice 6
+      getWalkState: function () {
+        // REQ-23: real routes-v1 module state (slice 6) — autowalk read
+        // (+ destination) or the honest "no pathfinder data" degrade.
+        const m = state.modules && state.modules.routes;
+        return m ? m.getState() : null;
+      },
+      walkTo: function (x, y) {
+        // REQ-23 (slice 6): walk-to via the NATIVE autowalk primitive only
+        // (world.pathfinder.pathTo — live-probed, obs 10320); never
+        // synthetic per-step input. REQ-02 gate + REQ-12 no-bypass: the
+        // native call happens ONLY inside a queue-dispatched closure.
+        if (!state.armed) return { ok: false, reason: 'not connected' };
+        const m = state.modules && state.modules.routes;
+        if (!m) return { ok: false, reason: 'not ready' };
+        const d = m.decideWalkTo(x, y);
+        if (!d.fire) return { ok: false, reason: d.reason };
+        state.queue.enqueue(function () { m.fireWalk(d); }, { kind: 'walk-to' });
+        return {
+          ok: true,
+          method: d.method && d.method.name ? d.method.name : 'native-autowalk',
+          x: d.x,
+          y: d.y,
+          queued: true,
+        };
+      },
       getPlayerInfo: readPlayerInfo,
       applyConfig: applyConfig,
     };
@@ -1108,6 +1161,7 @@ function createAgent(opts = {}) {
         huntStats: modules.huntStats ? modules.huntStats.getState() : null,
         echo: modules.echo ? modules.echo.getState() : null,
         learning: modules.learning ? modules.learning.getState() : null,
+        routes: modules.routes ? modules.routes.getState() : null,
       },
       warnings: state.warnings.slice(),
       errors: state.errors.slice(),
