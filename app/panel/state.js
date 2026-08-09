@@ -37,20 +37,180 @@
   const GATE_ARMED = 'armed';
   const GATE_STATES = [GATE_DISCONNECTED, GATE_PROBING, GATE_CONFIRMED, GATE_ARMED];
 
-  /** The 10 modules (design config "modules" map). */
+  const LANGS = ['en', 'es'];
+  const LANG_EN = 'en';
+  const LANG_ES = 'es';
+
+  /* ------------------------------ slice 1a (REQ-26) ----------------------------- */
+
+  /**
+   * Product tabs (design D7, REQ-26): HEAL/ATTACK/TRAINER/CAVEBOT/OTHERS.
+   * Each tab owns the module toggles that land there. ATTACK + CAVEBOT are
+   * skeleton tabs (their modules arrive with later slices — the shell
+   * reserves their space and discloses "skeleton — limited").
+   */
+  const TABS = [
+    { id: 'heal', modules: ['healItems', 'healMagic'] },
+    { id: 'attack', modules: [] },   // skeleton (slice 6: attack.js) — reserved
+    { id: 'trainer', modules: ['runes', 'training'] },
+    { id: 'cavebot', modules: [] },  // skeleton (slice 6: cavebot.js) — reserved
+    { id: 'others', modules: ['eat', 'trade', 'loot', 'spawns', 'huntStats', 'routes'] },
+  ];
+  const TAB_IDS = TABS.map((t) => t.id);
+
+  /** The 10 modules (design config "modules" map), regrouped per tab (REQ-26). */
   const MODULE_DEFS = [
-    { id: 'healItems', label: 'Heal with items' },
-    { id: 'healMagic', label: 'Heal with magic' },
-    { id: 'runes', label: 'Runes' },
-    { id: 'training', label: 'Magic training' },
-    { id: 'eat', label: 'Eat' },
-    { id: 'trade', label: 'Auto trade broadcast' },
-    { id: 'loot', label: 'Auto-loot' },
-    { id: 'spawns', label: 'Spawn maps' },
-    { id: 'huntStats', label: 'Hunt stats' },
-    { id: 'routes', label: 'Routes' },
+    { id: 'healItems', label: 'Heal with items', tab: 'heal' },
+    { id: 'healMagic', label: 'Heal with magic', tab: 'heal' },
+    { id: 'runes', label: 'Runes', tab: 'trainer' },
+    { id: 'training', label: 'Magic training', tab: 'trainer' },
+    { id: 'eat', label: 'Eat', tab: 'others' },
+    { id: 'trade', label: 'Auto trade broadcast', tab: 'others' },
+    { id: 'loot', label: 'Auto-loot', tab: 'others' },
+    { id: 'spawns', label: 'Spawn maps', tab: 'others' },
+    { id: 'huntStats', label: 'Hunt stats', tab: 'others' },
+    { id: 'routes', label: 'Routes', tab: 'others' },
   ];
   const MODULE_IDS = MODULE_DEFS.map((m) => m.id);
+  const MODULE_BY_TAB = (function () {
+    const out = {};
+    for (const tab of TABS) out[tab.id] = [];
+    for (const def of MODULE_DEFS) out[def.tab].push(def);
+    return out;
+  }());
+
+  /* ------------------------------ i18n (REQ-26) ------------------------------ */
+  /* Default EN; ES is a full translation. `t(state, key)` resolves the key
+   * for state.lang and falls back to EN when a key is missing. */
+
+  const I18N = {
+    en: {
+      'gate.disconnected': 'Disconnected',
+      'gate.probing': 'Waiting for game…',
+      'gate.confirmed': 'Confirming connection',
+      'gate.armed': 'Connected',
+      'connect': 'Connect',
+      'cancel': 'Cancel',
+      'disconnect': 'Disconnect',
+      'refused': 'refused: %reason%',
+      'language': 'Language',
+      'tab.heal': 'HEAL',
+      'tab.attack': 'ATTACK',
+      'tab.trainer': 'TRAINER',
+      'tab.cavebot': 'CAVEBOT',
+      'tab.others': 'OTHERS',
+      'configuration': 'Configuration',
+      'configLocked': 'Configuration unlocks after Connect.',
+      'liveState': 'Live state',
+      'activityLog': 'Activity log',
+      'noSnapshot': 'No snapshot yet — connecting…',
+      'log.empty': 'No activity yet.',
+      'stats.health': 'Health',
+      'stats.mana': 'Mana',
+      'skeleton.note': 'Skeleton — limited functionality arrives in a later update.',
+      'module.healItems': 'Heal with items',
+      'module.healMagic': 'Heal with magic',
+      'module.runes': 'Runes',
+      'module.training': 'Magic training',
+      'module.eat': 'Eat',
+      'module.trade': 'Auto trade broadcast',
+      'module.loot': 'Auto-loot',
+      'module.spawns': 'Spawn maps',
+      'module.huntStats': 'Hunt stats',
+      'module.routes': 'Routes',
+      'tutorial.title': 'Welcome to the bot panel',
+      'tutorial.body': 'This panel controls your bot, one tab per activity. This tour shows each tab — you can dismiss it at any time.',
+      'tutorial.tab.heal': 'HEAL — set up healing: health threshold, potions or magic spells.',
+      'tutorial.tab.attack': 'ATTACK — combat targeting (lowest HP / nearest) arrives in a later update.',
+      'tutorial.tab.trainer': 'TRAINER — rune-making with a strict cap, mana reserve and fallback spell.',
+      'tutorial.tab.cavebot': 'CAVEBOT — route recording and autowalk are planned for a later update.',
+      'tutorial.tab.others': 'OTHERS — food, auto-loot, trade broadcasts and anti-bot alerts.',
+      'tutorial.next': 'Next',
+      'tutorial.finish': 'Finish',
+      'tutorial.dismiss': 'Skip tutorial',
+    },
+    es: {
+      'gate.disconnected': 'Desconectado',
+      'gate.probing': 'Esperando al juego…',
+      'gate.confirmed': 'Confirmando conexión',
+      'gate.armed': 'Conectado',
+      'connect': 'Conectar',
+      'cancel': 'Cancelar',
+      'disconnect': 'Desconectar',
+      'refused': 'rechazado: %reason%',
+      'language': 'Idioma',
+      'tab.heal': 'CURAR',
+      'tab.attack': 'ATAQUE',
+      'tab.trainer': 'ENTRENAR',
+      'tab.cavebot': 'CAVEBOT',
+      'tab.others': 'OTROS',
+      'configuration': 'Configuración',
+      'configLocked': 'La configuración se desbloquea al conectar.',
+      'liveState': 'Estado en vivo',
+      'activityLog': 'Registro de actividad',
+      'noSnapshot': 'Aún sin datos — conectando…',
+      'log.empty': 'Sin actividad todavía.',
+      'stats.health': 'Vida',
+      'stats.mana': 'Maná',
+      'skeleton.note': 'Esqueleto — funcionalidad limitada en una próxima actualización.',
+      'module.healItems': 'Curar con objetos',
+      'module.healMagic': 'Curar con magia',
+      'module.runes': 'Runas',
+      'module.training': 'Entrenar magia',
+      'module.eat': 'Comer',
+      'module.trade': 'Difusión de comercio',
+      'module.loot': 'Auto-loot',
+      'module.spawns': 'Mapas de spawns',
+      'module.huntStats': 'Estadísticas de caza',
+      'module.routes': 'Rutas',
+      'tutorial.title': 'Bienvenido al panel del bot',
+      'tutorial.body': 'Este panel controla tu bot, una pestaña por actividad. Este recorrido muestra cada pestaña — podés omitirlo en cualquier momento.',
+      'tutorial.tab.heal': 'CURAR — configurá la curación: umbral de vida, pociones o magia.',
+      'tutorial.tab.attack': 'ATAQUE — el targeting (menor vida / más cercano) llega en una próxima actualización.',
+      'tutorial.tab.trainer': 'ENTRENAR — runas con tope estricto, reserva de maná y hechizo alternativo.',
+      'tutorial.tab.cavebot': 'CAVEBOT — grabado de rutas y autowalk planificados para una próxima actualización.',
+      'tutorial.tab.others': 'OTROS — comida, auto-loot, difusión de comercio y alertas anti-bot.',
+      'tutorial.next': 'Siguiente',
+      'tutorial.finish': 'Terminar',
+      'tutorial.dismiss': 'Omitir tutorial',
+    },
+  };
+
+  /** Resolve an i18n key for a state.lang (falls back to EN). */
+  function t(state, key) {
+    const lang = state && state.lang === LANG_ES ? LANG_ES : LANG_EN;
+    const dict = I18N[lang] || I18N[LANG_EN];
+    return dict[key] !== undefined ? dict[key] : (I18N[LANG_EN][key] !== undefined ? I18N[LANG_EN][key] : key);
+  }
+
+  /** Resolve with %var% substitution ({reason} style template). */
+  function tVar(state, key, vars) {
+    let out = t(state, key);
+    if (vars && typeof vars === 'object') {
+      for (const k of Object.keys(vars)) out = out.split('%' + k + '%').join(String(vars[k]));
+    }
+    return out;
+  }
+
+  /** Readable module label for the current language (module.* key). */
+  function moduleLabel(state, def) {
+    return t(state, 'module.' + def.id);
+  }
+
+  /**
+   * Tutorial stepper (design D7, REQ-26): one step per tab + intro. The step
+   * carries the tab it highlights; TUTORIAL_NEXT switches the active tab so
+   * the walk physically visits every tab. localStorage 'tutorialSeen' lives
+   * in app.js (dismiss/finish effect); the reducer owns only the step state.
+   */
+  const TUTORIAL_STEPS = [
+    { tab: null, key: 'tutorial.title', body: 'tutorial.body' },
+    { tab: 'heal', key: 'tutorial.tab.heal' },
+    { tab: 'attack', key: 'tutorial.tab.attack' },
+    { tab: 'trainer', key: 'tutorial.tab.trainer' },
+    { tab: 'cavebot', key: 'tutorial.tab.cavebot' },
+    { tab: 'others', key: 'tutorial.tab.others' },
+  ];
 
   function emptyModules() {
     const out = {};
@@ -74,6 +234,10 @@
       walkTo: { x: '', y: '' }, // routes v1 form values (slice 6, REQ-23)
       refusal: null,           // last refused action {action, module, reason, at}
       lastError: null,
+      // Slice 1a (REQ-26): product shell state.
+      tab: 'heal',             // active tab id (TABS)
+      lang: LANG_EN,           // 'en' | 'es' — default EN (REQ-26)
+      tutorial: null,          // null | {step: number} — first-run stepper
     };
   }
 
@@ -268,6 +432,57 @@
       case 'ERROR':
         return { state: Object.assign({}, state, { lastError: action.message || String(action.error || 'error') }), effects: [] };
 
+      /* ------------------------- slice 1a (REQ-26) actions ------------------------- */
+
+      case 'SET_TAB': {
+        // Product-shell tab navigation (REQ-26): pure UI, no gate — tabs are
+        // navigable before Connect. Unknown tab ids are ignored.
+        const tab = String(action.tab || '');
+        if (TAB_IDS.indexOf(tab) === -1) return { state, effects: [] };
+        return { state: Object.assign({}, state, { tab }), effects: [] };
+      }
+
+      case 'SET_LANG': {
+        // i18n ES/EN (REQ-26): 'es' or anything else -> 'en' (default EN).
+        const lang = action.lang === LANG_ES ? LANG_ES : LANG_EN;
+        return { state: Object.assign({}, state, { lang }), effects: [] };
+      }
+
+      case 'TUTORIAL_START':
+        // First-run stepper (REQ-26): show from step 0 (intro). Ignored when
+        // already running (the app gate is localStorage 'tutorialSeen').
+        if (state.tutorial !== null) return { state, effects: [] };
+        return { state: Object.assign({}, state, { tutorial: { step: 0 } }), effects: [] };
+
+      case 'TUTORIAL_NEXT': {
+        // Advance one step and walk the tour to the step's tab. Past the last
+        // step the tutorial ends with the 'tutorial-seen' effect (app.js
+        // persists localStorage so it never shows again).
+        if (state.tutorial === null) return { state, effects: [] };
+        const nextStep = state.tutorial.step + 1;
+        if (nextStep >= TUTORIAL_STEPS.length) {
+          return {
+            state: Object.assign({}, state, { tutorial: null }),
+            effects: [{ type: 'tutorial-seen' }],
+          };
+        }
+        const stepTab = TUTORIAL_STEPS[nextStep].tab;
+        return {
+          state: Object.assign({}, state, {
+            tutorial: { step: nextStep },
+            tab: stepTab !== null ? stepTab : state.tab,
+          }),
+          effects: [],
+        };
+      }
+
+      case 'TUTORIAL_DISMISS':
+        if (state.tutorial === null) return { state, effects: [] };
+        return {
+          state: Object.assign({}, state, { tutorial: null }),
+          effects: [{ type: 'tutorial-seen' }],
+        };
+
       case 'RESET':
         return { state: reset(), effects: [] };
 
@@ -348,39 +563,73 @@
 
   /* ------------------------------ render ------------------------------ */
 
-  /** Status bar: gate state, confirmed player, refusal/error, controls. */
+  /** Status bar: gate state, confirmed player, refusal/error, i18n switcher,
+   *  controls (REQ-26: labels follow state.lang; default EN). */
   function renderStatusBar(state) {
     const parts = [];
-    parts.push('<span class="gate gate-' + state.gate + '">' + escapeHtml(gateLabel(state)) + '</span>');
+    parts.push('<span class="gate gate-' + state.gate + '">' + escapeHtml(t(state, 'gate.' + state.gate)) + '</span>');
     if (state.identity) {
       parts.push('<span class="player">' + escapeHtml(state.identity.name)
         + ' <em>(' + escapeHtml(state.identity.vocationLabel || '?') + ')</em></span>');
     }
     if (state.gate === GATE_CONFIRMED) {
-      parts.push('<button type="button" id="connect-btn">Connect</button>');
-      parts.push('<button type="button" id="cancel-btn">Cancel</button>');
+      parts.push('<button type="button" id="connect-btn">' + escapeHtml(t(state, 'connect')) + '</button>');
+      parts.push('<button type="button" id="cancel-btn">' + escapeHtml(t(state, 'cancel')) + '</button>');
     }
     if (state.gate === GATE_ARMED) {
-      parts.push('<button type="button" id="disconnect-btn">Disconnect</button>');
+      parts.push('<button type="button" id="disconnect-btn">' + escapeHtml(t(state, 'disconnect')) + '</button>');
     }
     if (state.refusal) {
-      parts.push('<span class="refusal">refused: ' + escapeHtml(state.refusal.reason) + '</span>');
+      parts.push('<span class="refusal">' + escapeHtml(tVar(state, 'refused', { reason: state.refusal.reason })) + '</span>');
     }
     if (state.lastError) {
       parts.push('<span class="error">' + escapeHtml(state.lastError) + '</span>');
     }
+    // REQ-26 i18n switcher (ES/EN).
+    parts.push('<span class="lang-switch" role="group" aria-label="' + escapeHtml(t(state, 'language')) + '">'
+      + '<button type="button" class="lang-btn' + (state.lang === LANG_EN ? ' active' : '') + '" data-lang="en">EN</button>'
+      + '<button type="button" class="lang-btn' + (state.lang === LANG_ES ? ' active' : '') + '" data-lang="es">ES</button>'
+      + '</span>');
     return '<div class="status-bar">' + parts.join(' ') + '</div>';
   }
 
-  /** Module toggle list — all 10 modules; disabled (refused) pre-arm. */
+  /**
+   * Tabbed module list (REQ-26, design D7): 5 tab buttons (HEAL/ATTACK/
+   * TRAINER/CAVEBOT/OTHERS) + one panel per tab holding that tab's module
+   * toggles. ALL panels render in the DOM (the active one is visible via the
+   * `hidden` attribute) — the reducer keeps every toggle state live, and
+   * tab switching is pure CSS/attribute work. Skeleton tabs (ATTACK/CAVEBOT)
+   * reserve their space and disclose "skeleton — limited".
+   */
   function renderModuleList(state) {
-    const rows = MODULE_DEFS.map((def) => {
-      const checked = state.modules[def.id] === true;
-      const disabled = state.gate !== GATE_ARMED ? ' disabled' : '';
-      return '<label class="module-toggle"><input type="checkbox" data-module="' + def.id + '"'
-        + (checked ? ' checked' : '') + disabled + '> ' + escapeHtml(def.label) + '</label>';
-    });
-    return '<div class="module-list">' + rows.join('') + '</div>';
+    const nav = '<div class="tab-nav" role="tablist">'
+      + TABS.map((tab) => {
+        const active = state.tab === tab.id ? ' active' : '';
+        return '<button type="button" class="tab-btn' + active + '" role="tab" data-tab="' + tab.id + '"'
+          + ' aria-selected="' + (state.tab === tab.id ? 'true' : 'false') + '">'
+          + escapeHtml(t(state, 'tab.' + tab.id)) + '</button>';
+      }).join('')
+      + '</div>';
+
+    const panels = TABS.map((tab) => {
+      const hidden = state.tab === tab.id ? '' : ' hidden';
+      const defs = MODULE_BY_TAB[tab.id] || [];
+      let body;
+      if (defs.length === 0) {
+        body = '<div class="tab-empty">' + escapeHtml(t(state, 'skeleton.note')) + '</div>';
+      } else {
+        body = defs.map((def) => {
+          const checked = state.modules[def.id] === true;
+          const disabled = state.gate !== GATE_ARMED ? ' disabled' : '';
+          return '<label class="module-toggle"><input type="checkbox" data-module="' + def.id + '"'
+            + (checked ? ' checked' : '') + disabled + '> ' + escapeHtml(moduleLabel(state, def)) + '</label>';
+        }).join('');
+      }
+      return '<section class="tab-panel" data-tab-panel="' + tab.id + '" role="tabpanel"' + hidden + '>'
+        + body + '</section>';
+    }).join('');
+
+    return '<div class="module-list">' + nav + panels + '</div>';
   }
 
   /** Config form: module settings shell + the Routes v1 walk-to form
@@ -388,7 +637,7 @@
    *  v1 scope per the spec; v1 issues walk-to through the native autowalk
    *  primitive only (values survive re-renders via state.walkTo). */
   function renderConfigForm(state) {
-    const head = '<h2>Configuration</h2>';
+    const head = '<h2>' + escapeHtml(t(state, 'configuration')) + '</h2>';
     let body;
     if (state.gate === GATE_ARMED) {
       const wt = state.walkTo || { x: '', y: '' };
@@ -401,20 +650,58 @@
         + '<p class="routes-future">Route recording — FUTURE (out of scope in v1).</p>'
         + '</div>';
     } else {
-      body = '<div class="config-shell">Configuration unlocks after Connect.</div>';
+      body = '<div class="config-shell">' + escapeHtml(t(state, 'configLocked')) + '</div>';
     }
     return '<section class="config-form">' + head + body + '</section>';
   }
 
-  /** Live state view: snapshot payload + REQ-22 premium notice + REQ-25
-   *  learning offers (word + time + Confirm/Decline). */
+  /**
+   * Readable player stats from a snapshot payload: the app shape
+   * ({stats: readStats()}), the agent shape ({agent.health/mana}) and the
+   * legacy flat shape ({health, mana}) are all honored. Pure.
+   * @param {object|null} snapshot
+   * @returns {{health: number|null, mana: number|null, maxHealth: number|null, maxMana: number|null}}
+   */
+  function snapshotStats(snapshot) {
+    if (!snapshot || typeof snapshot !== 'object') {
+      return { health: null, mana: null, maxHealth: null, maxMana: null };
+    }
+    const st = snapshot.stats && typeof snapshot.stats === 'object' ? snapshot.stats : null;
+    const ag = snapshot.agent && typeof snapshot.agent === 'object' ? snapshot.agent : null;
+    const num = (v) => (v === null || v === undefined || v === '' ? null
+      : (Number.isFinite(Number(v)) ? Number(v) : null));
+    return {
+      health: num((st && st.health) || (ag && ag.health) || snapshot.health),
+      mana: num((st && st.mana) || (ag && ag.mana) || snapshot.mana),
+      maxHealth: num((st && st.maxHealth) || (ag && ag.maxHealth)),
+      maxMana: num((st && st.maxMana) || (ag && ag.maxMana)),
+    };
+  }
+
+  /** Live state view: stats summary + REQ-22 premium notice + REQ-25
+   *  learning offers + module alert states. NEVER raw JSON (REQ-26 — the
+   *  old <pre class="live-payload"> JSON dump is gone; the readable activity
+   *  log renders in renderLog from the snapshot's logBuffer). */
   function renderLiveState(state) {
-    const head = '<h2>Live state</h2>';
+    const head = '<h2>' + escapeHtml(t(state, 'liveState')) + '</h2>';
     let body;
     if (state.snapshot === null) {
-      body = '<div class="live-empty">No snapshot yet — connecting…</div>';
+      body = '<div class="live-empty">' + escapeHtml(t(state, 'noSnapshot')) + '</div>';
     } else {
       const parts = [];
+      const stats = snapshotStats(state.snapshot);
+      if (stats.health !== null || stats.mana !== null) {
+        const bits = [];
+        if (stats.health !== null) {
+          bits.push(escapeHtml(t(state, 'stats.health')) + ' '
+            + stats.health + (stats.maxHealth !== null ? ' / ' + stats.maxHealth : ''));
+        }
+        if (stats.mana !== null) {
+          bits.push(escapeHtml(t(state, 'stats.mana')) + ' '
+            + stats.mana + (stats.maxMana !== null ? ' / ' + stats.maxMana : ''));
+        }
+        parts.push('<div class="stats-line">' + bits.join(' · ') + '</div>');
+      }
       const blocked = premiumBlockedModules(state.snapshot);
       if (blocked.length > 0) {
         parts.push('<div class="premium-required">Premium required — '
@@ -451,19 +738,113 @@
         }
         parts.push('<div class="routes-state">' + escapeHtml(line) + '</div>');
       }
-      parts.push('<pre class="live-payload">' + escapeHtml(JSON.stringify(state.snapshot, null, 2)) + '</pre>');
       body = parts.join('');
     }
     return '<section class="live-state">' + head + body + '</section>';
   }
 
-  /** Full panel body render (status bar + modules + config + live state). */
+  /**
+   * Format a log `result` value as readable text — NEVER raw JSON (REQ-26).
+   * Primitives stringify; small objects render their scalar fields joined by
+   * commas (no braces, no quotes, no JSON syntax).
+   * @param {*} result
+   * @returns {string}
+   */
+  function formatLogResult(result) {
+    if (result === null || result === undefined) return '';
+    if (typeof result !== 'object') return String(result);
+    const fields = [];
+    for (const k of Object.keys(result)) {
+      const v = result[k];
+      if (v === null || v === undefined) continue;
+      if (typeof v === 'object') continue; // nested objects stay hidden — no JSON
+      fields.push(k + ' ' + String(v));
+    }
+    return fields.join(', ');
+  }
+
+  /**
+   * Activity log (design D8, REQ-26): renders snapshot logBuffer rows as
+   * readable text — timestamp + module label + action + result. The raw JSON
+   * dump (old <pre class="live-payload">) is GONE: the user never sees JSON
+   * here. Rows come from the agent ring (cap 200, snapshot-carried); module
+   * ids map to readable labels, unknown ids fall back to the id itself.
+   * @param {object} state
+   * @returns {string}
+   */
+  function renderLog(state) {
+    const head = '<h2>' + escapeHtml(t(state, 'activityLog')) + '</h2>';
+    const snapshot = state.snapshot;
+    const buffer = snapshot && Array.isArray(snapshot.logBuffer)
+      ? snapshot.logBuffer
+      : (snapshot && snapshot.agent && Array.isArray(snapshot.agent.logBuffer) ? snapshot.agent.logBuffer : []);
+    let body;
+    if (buffer.length === 0) {
+      body = '<div class="log-empty">' + escapeHtml(t(state, 'log.empty')) + '</div>';
+    } else {
+      const rows = buffer.slice(-100).map((entry) => {
+        const when = Number.isFinite(Number(entry.ts)) ? new Date(Number(entry.ts)).toLocaleTimeString() : '--:--:--';
+        const moduleId = String(entry.module || 'agent');
+        const label = t(state, 'module.' + moduleId);
+        const labelText = label === 'module.' + moduleId ? moduleId : label;
+        const action = String(entry.action || 'event');
+        const result = formatLogResult(entry.result);
+        return '<div class="log-row"><span class="log-time">' + escapeHtml(when) + '</span>'
+          + '<span class="log-module">' + escapeHtml(labelText) + '</span>'
+          + '<span class="log-action">' + escapeHtml(action) + '</span>'
+          + (result !== '' ? '<span class="log-result">' + escapeHtml(result) + '</span>' : '')
+          + '</div>';
+      }).join('');
+      body = '<div class="log-rows">' + rows + '</div>';
+    }
+    return '<section class="activity-log">' + head + body + '</section>';
+  }
+
+  /**
+   * Tutorial overlay (design D7, REQ-26): ~100-line custom stepper, no
+   * external library. Steps walk every tab (TUTORIAL_STEPS); the active step
+   * renders title + body + progress + Next/Finish + Skip. localStorage
+   * 'tutorialSeen' is persisted by the app effect ('tutorial-seen') — the
+   * reducer never touches storage.
+   * @param {object} state
+   * @returns {string} empty when the tutorial is not running
+   */
+  function renderTutorial(state) {
+    if (!state.tutorial || !Number.isInteger(state.tutorial.step)) return '';
+    const steps = TUTORIAL_STEPS;
+    const step = Math.max(0, Math.min(state.tutorial.step, steps.length - 1));
+    const cur = steps[step];
+    const title = cur.key.indexOf('tutorial.tab.') === 0
+      ? escapeHtml(t(state, 'tab.' + cur.tab))
+      : escapeHtml(t(state, cur.key));
+    const body = escapeHtml(t(state, cur.body || cur.key));
+    const isLast = step >= steps.length - 1;
+    const cta = isLast
+      ? '<button type="button" class="tutorial-btn primary" data-tutorial-action="next">' + escapeHtml(t(state, 'tutorial.finish')) + '</button>'
+      : '<button type="button" class="tutorial-btn primary" data-tutorial-action="next">' + escapeHtml(t(state, 'tutorial.next')) + '</button>';
+    return '<div class="tutorial-overlay" data-tutorial role="dialog" aria-label="' + title + '">'
+      + '<div class="tutorial-card">'
+      + '<h3>' + title + '</h3>'
+      + '<p>' + body + '</p>'
+      + '<div class="tutorial-progress">' + (step + 1) + ' / ' + steps.length + '</div>'
+      + '<div class="tutorial-actions">'
+      + '<button type="button" class="tutorial-btn" data-tutorial-action="dismiss">' + escapeHtml(t(state, 'tutorial.dismiss')) + '</button>'
+      + cta
+      + '</div>'
+      + '</div>'
+      + '</div>';
+  }
+
+  /** Full panel body render (status bar + tabs + config + live state + log
+   *  + tutorial overlay). */
   function renderPanel(state) {
     return '<main id="panel-root">'
       + renderStatusBar(state)
       + renderModuleList(state)
       + renderConfigForm(state)
       + renderLiveState(state)
+      + renderLog(state)
+      + renderTutorial(state)
       + '</main>';
   }
 
@@ -473,20 +854,35 @@
     GATE_PROBING,
     GATE_CONFIRMED,
     GATE_ARMED,
+    LANGS,
+    LANG_EN,
+    LANG_ES,
+    TABS,
+    TAB_IDS,
     MODULE_DEFS,
     MODULE_IDS,
+    MODULE_BY_TAB,
+    I18N,
+    TUTORIAL_STEPS,
     createInitialState,
     panelReducer,
     dispatch,
     gateLabel,
+    t,
+    tVar,
+    moduleLabel,
     escapeHtml,
     premiumBlockedModules,
     snapshotOffers,
+    snapshotStats,
+    formatLogResult,
     renderOffer,
     renderStatusBar,
     renderModuleList,
     renderConfigForm,
     renderLiveState,
+    renderLog,
+    renderTutorial,
     renderPanel,
   };
 });

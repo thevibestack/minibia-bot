@@ -253,11 +253,14 @@ test('REQ-08: render escapes player-controlled strings (XSS-safe)', () => {
   assert.match(html, /&lt;img/);
 });
 
-test('REQ-08: snapshot payload renders escaped in the live state view', () => {
+test('REQ-08/26: live view renders readable stats — payload fields never leak raw', () => {
   const r = run([{ type: 'SNAPSHOT', data: { health: 42, weird: '<script>' } }]);
   const html = P.renderLiveState(r.state);
-  assert.match(html, /health/);
-  assert.doesNotMatch(html, /<script>/, 'snapshot JSON escaped');
+  // REQ-26 (slice 1a): the live view renders the readable stats line, never
+  // the raw JSON payload (old <pre class="live-payload"> removed). Payload
+  // fields that are not part of the stats surface never reach the DOM.
+  assert.match(html, /Health 42/);
+  assert.doesNotMatch(html, /<script>/, 'payload never rendered raw');
 });
 
 test('REQ-08: alerts and offers are capped at 20 entries', () => {

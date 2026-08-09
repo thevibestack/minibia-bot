@@ -197,8 +197,11 @@ test('REQ-08: snapshot polling renders the live state view', async () => {
   try {
     await new Promise((r) => setTimeout(r, 60));
     const text = dom.window.document.getElementById('live-state').textContent;
-    assert.match(text, /health/);
-    assert.match(text, /42/);
+    // REQ-26 (slice 1a): the live view renders READABLE stats — never the raw
+    // JSON payload (the old <pre class="live-payload"> is gone).
+    assert.match(text, /Health 42/);
+    assert.match(text, /Mana 80/);
+    assert.ok(!text.includes('{'), 'no raw JSON in the live view');
   } finally {
     teardown(dom);
   }
