@@ -34,13 +34,26 @@ test('REQ-09: missing file -> defaults (first run), no warning', (t) => {
   assert.deepEqual(config.routes, []);
   // All modules present and OFF (opt-in per spec); learning (REQ-25, slice 5)
   // follows the same shape — its `on` is inert (observation always runs while
-  // armed), the persisted part is knownWords.
+  // armed), the persisted part is knownWords. antibot (D9, slice 1b) is
+  // shape-only forward-compat until the OTHERS slice wires it.
   const ids = Object.keys(config.modules);
   assert.deepEqual(ids, [
     'healItems', 'healMagic', 'runes', 'training', 'eat',
-    'trade', 'loot', 'spawns', 'huntStats', 'routes', 'learning',
+    'trade', 'loot', 'spawns', 'huntStats', 'routes', 'learning', 'antibot',
   ]);
   for (const id of ids) assert.equal(config.modules[id].on, false, id + ' defaults off');
+  // Slice-1b forward-compat defaults (D2/D3/D4/D9): reserves, strict CAP,
+  // fallback spell, eat-with-magic, anti-bot replies — shapes land now,
+  // behavior lands with the TRAINER/OTHERS slices.
+  assert.equal(config.modules.healMagic.reserve, 0, 'heal magic reserve default');
+  assert.equal(config.modules.runes.capMode, 'strict', 'strict CAP default');
+  assert.equal(config.modules.runes.capFullThreshold, 1.0);
+  assert.equal(config.modules.runes.fallbackSlot, null);
+  assert.equal(config.modules.runes.fallbackSid, null);
+  assert.equal(config.modules.runes.fallbackManaPct, 0.5);
+  assert.equal(config.modules.runes.reserve, 0, 'runes reserve default');
+  assert.deepEqual(config.modules.training.eatWithMagic, { enabled: false, slot: null, sid: null });
+  assert.deepEqual(config.modules.antibot, { on: false, replies: [] });
 });
 
 test('REQ-09: save -> load round-trip preserves the full config', (t) => {

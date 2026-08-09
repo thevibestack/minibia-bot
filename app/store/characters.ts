@@ -42,9 +42,16 @@ function defaultConfig(characterName) {
     jitter: { min: 50, max: 400 },
     modules: {
       healItems: { on: false, threshold: 50, slotCids: [] },
-      healMagic: { on: false, threshold: 150, slot: null, word: null, sid: null },
-      runes: { on: false, attackSlot: null, healSlot: null },
-      training: { on: false, slot: null, word: null, sid: null, reserve: 0 },
+      // reserve (D2, slice 1b): per-module mana reserve — the cast must not
+      // fire below cost + reserve (REQ-31 lands with the TRAINER slice).
+      healMagic: { on: false, threshold: 150, slot: null, word: null, sid: null, reserve: 0 },
+      // Slice-1b forward-compat (D2/D3/D4, tasks PR2/PR4): strict rune CAP
+      // with a configurable fallback spell, per-module reserves, and
+      // eat-with-magic defaults — the TRAINER slice wires the behavior.
+      runes: { on: false, attackSlot: null, healSlot: null, reserve: 0,
+        capMode: 'strict', capFullThreshold: 1.0, fallbackSlot: null, fallbackSid: null, fallbackManaPct: 0.5 },
+      training: { on: false, slot: null, word: null, sid: null, reserve: 0,
+        eatWithMagic: { enabled: false, slot: null, sid: null } },
       eat: { on: false, everyCasts: null, warningWindowSec: 60, fallbackIntervalSec: 10 },
       trade: { on: false, message: '', intervalMs: 180000 },
       loot: { on: false, defaultDest: null, perMonster: {} },
@@ -56,6 +63,9 @@ function defaultConfig(characterName) {
       // observation as always-active while armed (REQ-25 MUST observe) and
       // only reads knownWords.
       learning: { on: false, knownWords: [] },
+      // Slice-1b forward-compat (D9): anti-bot watcher + confirm-once chat
+      // replies — shape only, the OTHERS slice wires the behavior.
+      antibot: { on: false, replies: [] },
     },
     routes: [],
     session: { startedAt: null },
