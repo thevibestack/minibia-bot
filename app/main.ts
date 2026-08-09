@@ -229,6 +229,12 @@ async function runMain(opts) {
         session,
         'window.__mbAgent && window.__mbAgent.walkTo(' + JSON.stringify(x) + ',' + JSON.stringify(y) + ')',
       ),
+      // REQ-28 (slice 1b): client spell catalog RPC — the server filters the
+      // raw list by the current character's vocation + level (design D5).
+      spellCatalog: () => bridge.evaluate(
+        session,
+        'window.__mbAgent && typeof window.__mbAgent.getSpellCatalog === "function" ? window.__mbAgent.getSpellCatalog() : null',
+      ),
       snapshot: () => bridge.evaluate(session, SNAPSHOT_EXPRESSION),
       store,
     });

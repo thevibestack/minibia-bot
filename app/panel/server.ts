@@ -17,8 +17,16 @@
  *                           is not readable or the name does not match.
  *   POST /api/disconnect -> pushes applyConfig({armed:false}) and marks the
  *                           character disconnected (gate reset).
- *   POST /api/config     -> persists + pushes the given config (armed).
+ *   POST /api/config     -> persists + pushes the given config (armed);
+ *                           spell sids re-checked against the live catalog
+ *                           + mana (REQ-28, slice 1b) -> 409 on rejection.
  *   GET  /api/snapshot   -> live snapshot payload (readStats + identity).
+ *   GET  /api/spell-catalog -> client spell catalog filtered to what the
+ *                           CURRENT character can cast (REQ-28, D5).
+ *   GET  /api/profiles   -> names of every character with a saved config
+ *                           (REQ-27 cross-load offer).
+ *   POST /api/load-profile -> cross-load another character's config with
+ *                           per-sid vocation/level rejection (REQ-27, D6).
  *
  * Static file serving is an exact-name whitelist (never a user path join),
  * so no traversal is possible. Body parsing is length-capped.
@@ -31,6 +39,10 @@
 const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
+
+// Slice 1b (REQ-28, design D5): pure spell-catalog helpers (enumeration is
+// in-page; filtering + per-sid rejection are shared here).
+const GC = require('../../src/adapters/gameClient');
 
 const STATIC_FILES = ['index.html', 'state.js', 'app.js', 'style.css'];
 const MAX_BODY_BYTES = 1024 * 1024; // 1 MiB config payload cap
@@ -82,7 +94,11 @@ function readBody(req) {
  * @param {() => Promise<unknown>} [opts.snapshot] - live state payload
  * @param {(x: number, y: number) => Promise<unknown>} [opts.walkTo] -
  *   REQ-23 in-page walkTo RPC (native autowalk, queue-dispatched)
- * @param {object} opts.store - {loadCharacter, saveCharacter} (app/store/characters.ts)
+ * @param {() => Promise<{spells: Array<object>, playerLevel: number|null,
+ *   vocationLabel: string|null}|null>} [opts.spellCatalog] -
+ *   REQ-28 in-page getSpellCatalog RPC (raw list + player context)
+ * @param {object} opts.store - {loadCharacter, saveCharacter} (app/store/characters.ts);
+ *   {listCharacters} optional — names for /api/profiles (REQ-27)
  * @param {string} [opts.host='127.0.0.1'] - REQ-05: local only
  * @param {number} [opts.port=0] - ephemeral by default
  * @returns {{url: string, port: number, close(): Promise<void>}}
@@ -94,6 +110,7 @@ function createPanelServer(opts) {
   const respondOfferFn = typeof opts.respondOffer === 'function' ? opts.respondOffer : async () => null;
   const snapshotFn = typeof opts.snapshot === 'function' ? opts.snapshot : async () => null;
   const walkToFn = typeof opts.walkTo === 'function' ? opts.walkTo : async () => ({ ok: true });
+  const spellCatalogFn = typeof opts.spellCatalog === 'function' ? opts.spellCatalog : async () => null;
   const store = opts.store;
   const host = opts.host || '127.0.0.1';
 
@@ -110,6 +127,44 @@ function createPanelServer(opts) {
       if (req.method === 'GET' && url === '/api/snapshot') {
         const payload = await snapshotFn();
         sendJson(res, 200, payload === null || payload === undefined ? { } : payload);
+        return;
+      }
+      if (req.method === 'GET' && url === '/api/spell-catalog') {
+        // REQ-28 (slice 1b, design D5): proxy the in-page getSpellCatalog RPC
+        // and filter the RAW list to what the CURRENT character can cast
+        // (vocation label + player level) — the picker never sees another
+        // vocation's spells. Catalog unavailable -> honest degrade.
+        const raw = await spellCatalogFn();
+        if (!raw || !Array.isArray(raw.spells)) {
+          sendJson(res, 200, { ok: false, reason: 'spell catalog unavailable', catalog: [], total: 0 });
+          return;
+        }
+        const identity = await identityFn();
+        const label = (identity && identity.vocationLabel) || raw.vocationLabel || '';
+        const catalog = GC.filterCatalogByVocation(raw.spells, {
+          vocationLabel: label,
+          playerLevel: raw.playerLevel,
+        });
+        sendJson(res, 200, {
+          ok: true,
+          catalog,
+          total: catalog.length,
+          playerLevel: raw.playerLevel,
+          vocationLabel: label,
+        });
+        return;
+      }
+      if (req.method === 'GET' && url === '/api/profiles') {
+        // REQ-27 (slice 1b): names of every character with a saved config —
+        // the panel offers the cross-load ("load Gobernador's config").
+        // Minimal store handles ({loadCharacter, saveCharacter}) without
+        // listCharacters simply yield an empty list (no crash).
+        const identity = await identityFn();
+        let names = [];
+        if (typeof store.listCharacters === 'function') {
+          try { names = store.listCharacters(); } catch (e) { names = []; }
+        }
+        sendJson(res, 200, { ok: true, profiles: names, current: (identity && identity.name) || null });
         return;
       }
       if (req.method === 'GET' && url === '/api/character-config') {

@@ -54,10 +54,12 @@ function resolveAgentBundle() {
 
 // Per-character store adapter: the panel server calls loadCharacter({name})
 // / saveCharacter({name, config}); app/store/characters.ts needs baseDir.
+// listCharacters() powers the REQ-27 cross-load profiles list (slice 1b).
 const baseDir = characters.storeBaseDir();
 const store = {
   loadCharacter: ({ name }) => characters.loadCharacter({ baseDir, name }),
   saveCharacter: ({ name, config }) => characters.saveCharacter({ baseDir, name, config }),
+  listCharacters: () => characters.listCharacters(baseDir),
 };
 
 // Surface re-establish probe: truthy once the injected agent bundle is
