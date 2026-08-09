@@ -238,3 +238,76 @@ body {
 }
 .tutorial-btn.primary { background: var(--accent); border-color: var(--accent); color: #0b1016; font-weight: 600; }
 .tutorial-btn:hover { filter: brightness(1.1); }
+
+/* --------------------- slice 1b: profiles + spell picker --------------------- */
+.profile-loader, .spell-picker {
+  margin: 14px 0;
+  padding: 12px 14px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.profile-loader h3, .spell-picker h3 { margin: 0 0 10px; font-size: 13px; color: var(--accent); }
+.profile-select-wrap { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+#profile-select, #spell-search {
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 8px;
+}
+#profile-load-btn {
+  padding: 5px 14px;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  background: var(--accent);
+  color: #0b1016;
+  font-weight: 600;
+  cursor: pointer;
+}
+.profile-none, .picker-empty, .picker-none { color: var(--muted); margin: 6px 0; }
+.profile-result { margin: 8px 0 2px; color: var(--text); }
+.profile-result.ok { color: var(--ok); }
+.profile-result.error { color: var(--err); }
+.profile-rejected {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  color: var(--err);
+}
+.profile-rejected code { color: var(--warn); }
+.picker-modules { display: flex; gap: 6px; margin-bottom: 10px; }
+.picker-module-btn {
+  padding: 4px 12px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--muted);
+  cursor: pointer;
+}
+.picker-module-btn.active { background: var(--accent); border-color: var(--accent); color: #0b1016; font-weight: 600; }
+.picker-search { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; color: var(--muted); }
+.picker-search input { flex: 1; max-width: 320px; }
+.picker-list { list-style: none; margin: 0; padding: 0; max-height: 240px; overflow-y: auto; }
+.picker-row {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+}
+.picker-row.current { background: rgba(79, 156, 247, 0.12); }
+.picker-name { font-weight: 600; min-width: 160px; }
+.picker-meta { color: var(--muted); white-space: nowrap; }
+.picker-words { color: var(--muted); font-style: italic; flex: 1; }
+.picker-pick {
+  padding: 3px 12px;
+  border: 1px solid var(--ok);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ok);
+  cursor: pointer;
+  font-weight: 600;
+}
+.picker-pick:hover { background: var(--ok); color: #0b1016; }
+.picker-current { color: var(--accent); font-size: 12px; }

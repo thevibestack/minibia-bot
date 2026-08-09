@@ -80,6 +80,28 @@
     return cfg;
   }
 
+  /**
+   * Slice 1b (REQ-27/28): after Connect the panel fetches the castable spell
+   * catalog (filtered server-side) and the profile list for the cross-load
+   * offer. Refetches on every connect (new character = new catalog).
+   */
+  function refreshSpellData() {
+    if (!fetchImpl) return;
+    jsonRequest('/api/spell-catalog').then(function (res) {
+      if (!res) return;
+      dispatch({
+        type: 'SPELL_CATALOG',
+        spells: res.catalog || [],
+        playerLevel: res.playerLevel,
+        vocationLabel: res.vocationLabel,
+        reason: res.ok === false ? res.reason : null,
+      });
+    });
+    jsonRequest('/api/profiles').then(function (res) {
+      if (res && Array.isArray(res.profiles)) dispatch({ type: 'PROFILES_LOADED', names: res.profiles });
+    });
+  }
+
   /* ---------------------------- effect executor ------------------------- */
 
   function executeEffect(effect) {
@@ -98,6 +120,7 @@
         postJson('/api/connect', { character: name }).then(function (res) {
           if (res && res.ok) {
             dispatch({ type: 'PREFILL_CONFIG', config: res.config });
+            refreshSpellData(); // REQ-27/28: catalog + profiles after Connect
           } else {
             dispatch({ type: 'CONNECT_FAILED', message: (res && res.reason) || 'connect refused' });
           }
@@ -110,7 +133,39 @@
         break;
       case 'push-config': {
         var cfg = buildPushConfig();
-        postJson('/api/config', { character: state.identity ? state.identity.name : null, config: cfg });
+        postJson('/api/config', { character: state.identity ? state.identity.name : null, config: cfg })
+          .then(function (res) {
+            // REQ-28 (slice 1b): a refused save (spell no longer castable /
+            // mana dropped since the pick) surfaces the server reason in the
+            // status bar — never silent.
+            if (res && res.ok === false && res.reason) {
+              dispatch({ type: 'ERROR', message: 'config refused: ' + res.reason });
+            }
+          });
+        break;
+      }
+      case 'load-profile': {
+        // REQ-27 (slice 1b): cross-load another character's config — the
+        // server validates every sid and returns {accepted, rejected}. The
+        // accepted config replaces the panel state; the rejection list
+        // renders visibly (PROFILE_LOAD_RESULT).
+        var from = effect.from;
+        postJson('/api/load-profile', {
+          character: state.identity ? state.identity.name : null,
+          from: from,
+        }).then(function (res) {
+          if (res && res.ok) {
+            dispatch({ type: 'PREFILL_CONFIG', config: res.config });
+            dispatch({ type: 'PROFILE_LOAD_RESULT', ok: true, from: res.from, rejected: res.rejected || [] });
+          } else {
+            dispatch({
+              type: 'PROFILE_LOAD_RESULT',
+              ok: false,
+              from: from,
+              reason: (res && res.reason) || 'load failed',
+            });
+          }
+        });
         break;
       }
       case 'walk-to': {
@@ -215,6 +270,9 @@
         key: target.matches('#route-x') ? 'x' : 'y',
         value: target.value,
       });
+    } else if (target && target.matches && target.matches('#spell-search')) {
+      // REQ-28 (slice 1b): spell picker search — pure UI state.
+      dispatch({ type: 'PICKER_SEARCH', query: target.value });
     }
   });
 
@@ -251,6 +309,26 @@
       var tAction = target.getAttribute('data-tutorial-action');
       if (tAction === 'next') dispatch({ type: 'TUTORIAL_NEXT' });
       else if (tAction === 'dismiss') dispatch({ type: 'TUTORIAL_DISMISS' });
+    }
+    else if (target.matches('#profile-load-btn')) {
+      // REQ-27 (slice 1b): explicit cross-load of the selected profile.
+      var profileSelect = document.getElementById('profile-select');
+      if (profileSelect && profileSelect.value) {
+        dispatch({ type: 'LOAD_PROFILE', from: profileSelect.value });
+      }
+    }
+    else if (target.matches('[data-pick-spell]')) {
+      // REQ-28 (slice 1b): pick a spell for the active picker module — the
+      // reducer validates vocation (list membership) + current mana.
+      dispatch({
+        type: 'PICK_SPELL',
+        module: target.getAttribute('data-picker-module') || 'healMagic',
+        sid: Number(target.getAttribute('data-pick-spell')),
+      });
+    }
+    else if (target.matches('.picker-module-btn')) {
+      // REQ-28 (slice 1b): switch the picker target (heal spell / training).
+      dispatch({ type: 'PICKER_SET_MODULE', module: target.getAttribute('data-picker-module-btn') });
     }
   });
 
