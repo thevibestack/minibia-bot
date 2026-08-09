@@ -79,6 +79,10 @@
     return out;
   }());
 
+  /* ----------------------- slice 1b (REQ-28, D5) ----------------------- */
+  /** Modules whose spell sid the picker can choose (heal + training). */
+  const PICKER_MODULES = ['healMagic', 'training'];
+
   /* ------------------------------ i18n (REQ-26) ------------------------------ */
   /* Default EN; ES is a full translation. `t(state, key)` resolves the key
    * for state.lang and falls back to EN when a key is missing. */
@@ -128,6 +132,23 @@
       'tutorial.next': 'Next',
       'tutorial.finish': 'Finish',
       'tutorial.dismiss': 'Skip tutorial',
+      // Slice 1b (REQ-27/28): profile cross-load + spell picker.
+      'profile.title': 'Profiles',
+      'profile.none': 'No saved configs for other characters yet — they appear here once a Connect saves them.',
+      'profile.loadFrom': 'Load config from',
+      'profile.loadBtn': 'Load config',
+      'profile.loadedAll': "Loaded %from%'s config — everything applies.",
+      'profile.loadedRejected': "Loaded %from%'s config — incompatible entries rejected:",
+      'profile.failed': "Could not load %from%'s config: %reason%",
+      'picker.title': 'Spell picker',
+      'picker.empty': 'No spell catalog yet — connect a character to load it.',
+      'picker.module.healMagic': 'Heal spell',
+      'picker.module.training': 'Training spell',
+      'picker.search': 'Search spells…',
+      'picker.none': 'No spells match.',
+      'picker.meta': 'mana %mana%, level %level%',
+      'picker.pick': 'Pick',
+      'picker.current': 'current',
     },
     es: {
       'gate.disconnected': 'Desconectado',
@@ -173,6 +194,23 @@
       'tutorial.next': 'Siguiente',
       'tutorial.finish': 'Terminar',
       'tutorial.dismiss': 'Omitir tutorial',
+      // Slice 1b (REQ-27/28): profile cross-load + spell picker.
+      'profile.title': 'Perfiles',
+      'profile.none': 'Todavía no hay configs de otros personajes — aparecen acá cuando un Connect las guarda.',
+      'profile.loadFrom': 'Cargar config de',
+      'profile.loadBtn': 'Cargar config',
+      'profile.loadedAll': 'Config de %from% cargada — todo aplica.',
+      'profile.loadedRejected': 'Config de %from% cargada — entradas incompatibles rechazadas:',
+      'profile.failed': 'No se pudo cargar la config de %from%: %reason%',
+      'picker.title': 'Selector de magias',
+      'picker.empty': 'Todavía no hay catálogo de magias — conectá un personaje para cargarlo.',
+      'picker.module.healMagic': 'Hechizo de curación',
+      'picker.module.training': 'Hechizo de entrenamiento',
+      'picker.search': 'Buscar magias…',
+      'picker.none': 'No hay magias que coincidan.',
+      'picker.meta': 'maná %mana%, nivel %level%',
+      'picker.pick': 'Elegir',
+      'picker.current': 'actual',
     },
   };
 
@@ -238,6 +276,11 @@
       tab: 'heal',             // active tab id (TABS)
       lang: LANG_EN,           // 'en' | 'es' — default EN (REQ-26)
       tutorial: null,          // null | {step: number} — first-run stepper
+      // Slice 1b (REQ-27/28): profile cross-load + spell picker state.
+      profiles: [],            // character names with saved configs (REQ-27)
+      catalog: { spells: [], loaded: false, reason: null }, // filtered client catalog (REQ-28)
+      picker: { module: 'healMagic', query: '' }, // picker module + search (REQ-28)
+      profileLoad: null,       // {ok, from, rejected[], reason, at} — last cross-load (REQ-27)
     };
   }
 
@@ -483,6 +526,131 @@
           effects: [{ type: 'tutorial-seen' }],
         };
 
+      /* --------------------- slice 1b (REQ-27/28) actions --------------------- */
+
+      case 'PROFILES_LOADED':
+        // REQ-27: character names with saved configs (from /api/profiles).
+        // Sorted so the select is stable across re-renders.
+        return {
+          state: Object.assign({}, state, {
+            profiles: Array.isArray(action.names) ? action.names.slice().sort() : [],
+          }),
+          effects: [],
+        };
+
+      case 'SPELL_CATALOG':
+        // REQ-28: catalog filtered by the CURRENT character's vocation +
+        // level (server-side). `reason` carries the honest degrade when the
+        // in-page RPC was unavailable.
+        return {
+          state: Object.assign({}, state, {
+            catalog: {
+              spells: Array.isArray(action.spells) ? action.spells : [],
+              loaded: true,
+              reason: typeof action.reason === 'string' ? action.reason : null,
+            },
+          }),
+          effects: [],
+        };
+
+      case 'PICKER_SET_MODULE': {
+        // REQ-28: switch the picker target (heal spell / training spell).
+        const module = String(action.module || '');
+        if (PICKER_MODULES.indexOf(module) === -1) return { state, effects: [] };
+        return {
+          state: Object.assign({}, state, {
+            picker: Object.assign({}, state.picker || {}, { module }),
+          }),
+          effects: [],
+        };
+      }
+
+      case 'PICKER_SEARCH': {
+        // REQ-28: pure UI search text — survives re-renders like walkTo.
+        const query = String(action.query || '').slice(0, 80);
+        return {
+          state: Object.assign({}, state, {
+            picker: Object.assign({}, state.picker || {}, { query }),
+          }),
+          effects: [],
+        };
+      }
+
+      case 'PICK_SPELL': {
+        // REQ-28: pick a spell for a module. The list is ALREADY filtered to
+        // what the current vocation can cast — a sid outside it is rejected
+        // with a vocation reason; a spell whose cost exceeds CURRENT mana is
+        // rejected with a mana message. Success writes the sid into the
+        // config and pushes it (the server re-checks on save).
+        if (state.gate !== GATE_ARMED) return { state: refuse(state, action), effects: [] };
+        const module = String(action.module || '');
+        if (PICKER_MODULES.indexOf(module) === -1) return { state, effects: [] };
+        const sid = Number(action.sid);
+        if (!Number.isInteger(sid)) return { state, effects: [] };
+        const spells = (state.catalog && state.catalog.spells) || [];
+        const spell = spells.filter((s) => Number(s.sid) === sid)[0] || null;
+        const at = Date.now();
+        if (!spell) {
+          const label = (state.identity && state.identity.vocationLabel) || 'current vocation';
+          return {
+            state: Object.assign({}, state, {
+              refusal: { action: 'PICK_SPELL', module, reason: 'spell not available for ' + label, at },
+            }),
+            effects: [],
+          };
+        }
+        const stats = snapshotStats(state.snapshot);
+        if (stats.mana !== null && Number.isFinite(Number(spell.mana)) && Number(spell.mana) > stats.mana) {
+          return {
+            state: Object.assign({}, state, {
+              refusal: {
+                action: 'PICK_SPELL',
+                module,
+                reason: 'not enough mana — costs ' + spell.mana + ', you have ' + Math.floor(stats.mana),
+                at,
+              },
+            }),
+            effects: [],
+          };
+        }
+        const config = JSON.parse(JSON.stringify(state.config || {}));
+        if (!config.modules || typeof config.modules !== 'object') config.modules = {};
+        if (!config.modules[module] || typeof config.modules[module] !== 'object') {
+          config.modules[module] = {};
+        }
+        config.modules[module].sid = sid;
+        return {
+          state: Object.assign({}, state, { config, refusal: null }),
+          effects: [{ type: 'push-config' }],
+        };
+      }
+
+      case 'LOAD_PROFILE': {
+        // REQ-27: explicit cross-load of another character's config. The
+        // effect executor posts /api/load-profile; the server validates every
+        // sid and returns {accepted, rejected:[{key,reason}]}.
+        if (state.gate !== GATE_ARMED) return { state: refuse(state, action), effects: [] };
+        const from = String(action.from || '').trim();
+        if (!from) return { state, effects: [] };
+        return { state, effects: [{ type: 'load-profile', from }] };
+      }
+
+      case 'PROFILE_LOAD_RESULT':
+        // REQ-27: cross-load outcome — the visible rejection list renders in
+        // the config form (never silent).
+        return {
+          state: Object.assign({}, state, {
+            profileLoad: {
+              ok: action.ok === true,
+              from: String(action.from || ''),
+              rejected: Array.isArray(action.rejected) ? action.rejected : [],
+              reason: typeof action.reason === 'string' ? action.reason : null,
+              at: Date.now(),
+            },
+          }),
+          effects: [],
+        };
+
       case 'RESET':
         return { state: reset(), effects: [] };
 
@@ -632,16 +800,118 @@
     return '<div class="module-list">' + nav + panels + '</div>';
   }
 
+  /**
+   * Profile cross-loader (design D6, REQ-27): select of every OTHER
+   * character with a saved config + "Load config" button. The last load
+   * result renders its rejection list — incompatible entries are NEVER
+   * silent (the user sees exactly which sid was refused and why).
+   * @param {object} state
+   * @returns {string}
+   */
+  function renderProfileLoader(state) {
+    const parts = ['<div class="profile-loader">', '<h3>' + escapeHtml(t(state, 'profile.title')) + '</h3>'];
+    const current = state.identity && state.identity.name ? state.identity.name : null;
+    const others = (state.profiles || []).filter((n) => n !== current);
+    if (others.length === 0) {
+      parts.push('<p class="profile-none">' + escapeHtml(t(state, 'profile.none')) + '</p>');
+    } else {
+      const opts = others
+        .map((n) => '<option value="' + escapeHtml(n) + '">' + escapeHtml(n) + '</option>')
+        .join('');
+      parts.push('<label class="profile-select-wrap">' + escapeHtml(t(state, 'profile.loadFrom'))
+        + ' <select id="profile-select">' + opts + '</select>'
+        + ' <button type="button" id="profile-load-btn">' + escapeHtml(t(state, 'profile.loadBtn')) + '</button>'
+        + '</label>');
+    }
+    const pl = state.profileLoad;
+    if (pl) {
+      if (pl.ok && pl.rejected.length === 0) {
+        parts.push('<p class="profile-result ok">' + escapeHtml(tVar(state, 'profile.loadedAll', { from: pl.from })) + '</p>');
+      } else if (pl.ok) {
+        parts.push('<p class="profile-result">' + escapeHtml(tVar(state, 'profile.loadedRejected', { from: pl.from })) + '</p>');
+        parts.push('<ul class="profile-rejected">'
+          + pl.rejected.map((r) => '<li><code>' + escapeHtml(String(r.key || '')) + '</code> — '
+            + escapeHtml(String(r.reason || '')) + '</li>').join('')
+          + '</ul>');
+      } else {
+        parts.push('<p class="profile-result error">'
+          + escapeHtml(tVar(state, 'profile.failed', { from: pl.from, reason: pl.reason || '' })) + '</p>');
+      }
+    }
+    parts.push('</div>');
+    return parts.join('');
+  }
+
+  /**
+   * Spell picker (design D5, REQ-28): lists ONLY spells the current
+   * character can cast (the server filtered the catalog by vocation label +
+   * level) with a search box and a Pick action per row. Picking validates
+   * mana client-side (reducer PICK_SPELL); the server re-checks on save.
+   * @param {object} state
+   * @returns {string}
+   */
+  function renderSpellPicker(state) {
+    const p = state.picker || { module: 'healMagic', query: '' };
+    const catalog = state.catalog || { spells: [], loaded: false };
+    const parts = ['<div class="spell-picker">', '<h3>' + escapeHtml(t(state, 'picker.title')) + '</h3>'];
+    if (!catalog.loaded) {
+      parts.push('<p class="picker-empty">' + escapeHtml(t(state, 'picker.empty')) + '</p>');
+      parts.push('</div>');
+      return parts.join('');
+    }
+    if (catalog.reason) {
+      parts.push('<p class="picker-empty">' + escapeHtml(catalog.reason) + '</p>');
+      parts.push('</div>');
+      return parts.join('');
+    }
+    parts.push('<div class="picker-modules" role="group">'
+      + PICKER_MODULES.map((m) => '<button type="button" class="picker-module-btn'
+        + (p.module === m ? ' active' : '') + '" data-picker-module-btn="' + m + '">'
+        + escapeHtml(t(state, 'picker.module.' + m)) + '</button>').join('')
+      + '</div>');
+    parts.push('<label class="picker-search">' + escapeHtml(t(state, 'picker.search'))
+      + ' <input type="search" id="spell-search" value="' + escapeHtml(p.query || '') + '"></label>');
+    const q = String(p.query || '').toLowerCase();
+    const spells = (catalog.spells || []).filter((s) => !q
+      || String(s.name || '').toLowerCase().indexOf(q) !== -1
+      || String(s.words || '').toLowerCase().indexOf(q) !== -1);
+    const currentSid = state.config && state.config.modules && state.config.modules[p.module]
+      ? state.config.modules[p.module].sid
+      : null;
+    if (spells.length === 0) {
+      parts.push('<p class="picker-none">' + escapeHtml(t(state, 'picker.none')) + '</p>');
+    } else {
+      parts.push('<ul class="picker-list">'
+        + spells.slice(0, 60).map((s) => {
+          const isCurrent = Number(currentSid) === Number(s.sid);
+          return '<li class="picker-row' + (isCurrent ? ' current' : '') + '">'
+            + '<span class="picker-name">' + escapeHtml(String(s.name || '')) + '</span>'
+            + '<span class="picker-meta">' + escapeHtml(tVar(state, 'picker.meta', { mana: s.mana, level: s.level })) + '</span>'
+            + (s.words ? '<span class="picker-words">' + escapeHtml(s.words) + '</span>' : '')
+            + '<button type="button" class="picker-pick" data-pick-spell="' + Number(s.sid)
+            + '" data-picker-module="' + p.module + '">' + escapeHtml(t(state, 'picker.pick')) + '</button>'
+            + (isCurrent ? '<span class="picker-current">' + escapeHtml(t(state, 'picker.current')) + '</span>' : '')
+            + '</li>';
+        }).join('')
+        + '</ul>');
+    }
+    parts.push('</div>');
+    return parts.join('');
+  }
+
   /** Config form: module settings shell + the Routes v1 walk-to form
-   *  (REQ-23, slice 6). Route RECORDING is explicitly marked FUTURE — out of
-   *  v1 scope per the spec; v1 issues walk-to through the native autowalk
-   *  primitive only (values survive re-renders via state.walkTo). */
+   *  (REQ-23, slice 6) + the slice-1b profile loader and spell picker.
+   *  Route RECORDING is explicitly marked FUTURE — out of v1 scope per the
+   *  spec; v1 issues walk-to through the native autowalk primitive only
+   *  (values survive re-renders via state.walkTo). */
   function renderConfigForm(state) {
     const head = '<h2>' + escapeHtml(t(state, 'configuration')) + '</h2>';
     let body;
     if (state.gate === GATE_ARMED) {
       const wt = state.walkTo || { x: '', y: '' };
-      body = '<div class="config-shell">Module settings forms land with their slices; Routes (v1) offers walk-to below.</div>'
+      body = '<div class="config-shell">Module settings forms land with their slices; the profile loader and spell picker below are live.</div>'
+        + renderProfileLoader(state)
+        + renderSpellPicker(state)
         + '<div class="routes-form">'
         + '<h3>Routes (v1)</h3>'
         + '<label class="route-coord">X <input type="number" id="route-x" value="' + escapeHtml(wt.x) + '" step="any"></label>'
@@ -862,6 +1132,7 @@
     MODULE_DEFS,
     MODULE_IDS,
     MODULE_BY_TAB,
+    PICKER_MODULES,
     I18N,
     TUTORIAL_STEPS,
     createInitialState,
@@ -879,6 +1150,8 @@
     renderOffer,
     renderStatusBar,
     renderModuleList,
+    renderProfileLoader,
+    renderSpellPicker,
     renderConfigForm,
     renderLiveState,
     renderLog,
