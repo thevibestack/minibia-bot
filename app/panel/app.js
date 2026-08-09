@@ -36,10 +36,14 @@
     var moduleList = el('module-list');
     var configForm = el('config-form');
     var liveState = el('live-state');
+    var activityLog = el('activity-log');
+    var tutorialRoot = el('tutorial-root');
     if (statusBar) statusBar.innerHTML = P.renderStatusBar(state);
     if (moduleList) moduleList.innerHTML = P.renderModuleList(state);
     if (configForm) configForm.innerHTML = P.renderConfigForm(state);
     if (liveState) liveState.innerHTML = P.renderLiveState(state);
+    if (activityLog) activityLog.innerHTML = P.renderLog(state);
+    if (tutorialRoot) tutorialRoot.innerHTML = P.renderTutorial(state);
   }
 
   /* ----------------------------- API calls ------------------------------ */
@@ -79,6 +83,14 @@
   /* ---------------------------- effect executor ------------------------- */
 
   function executeEffect(effect) {
+    // REQ-26 (slice 1a): tutorial persistence — localStorage is feature-
+    // detected and independent from the API layer.
+    if (effect.type === 'tutorial-seen') {
+      try {
+        window.localStorage.setItem('tutorialSeen', '1');
+      } catch (e) { /* private mode / disabled storage: best-effort */ }
+      return;
+    }
     if (!fetchImpl) return; // tests without network: state machine only
     switch (effect.type) {
       case 'connect': {
@@ -136,6 +148,10 @@
     state = result.state;
     render();
     for (var i = 0; i < result.effects.length; i += 1) executeEffect(result.effects[i]);
+    // REQ-26 (slice 1a): panel-level alerts ring the audio stub (feature-
+    // detected; TRAINER/OTHERS slices route their module alerts through the
+    // same ALERT action — the hook is live now, the sound arrives with them).
+    if (action && action.type === 'ALERT') beep();
     return state;
   }
 
@@ -220,9 +236,65 @@
       if (action === 'confirm') dispatch({ type: 'CONFIRM_OFFER', word: word });
       else if (action === 'decline') dispatch({ type: 'DECLINE_OFFER', word: word });
     }
+    else if (target.matches('.tab-btn')) {
+      // REQ-26: product-shell tab navigation (pure UI, no gate).
+      dispatch({ type: 'SET_TAB', tab: target.getAttribute('data-tab') });
+    }
+    else if (target.matches('.lang-btn')) {
+      // REQ-26: i18n ES/EN switcher.
+      dispatch({ type: 'SET_LANG', lang: target.getAttribute('data-lang') });
+    }
+    else if (target.matches('[data-tutorial-action]')) {
+      // REQ-26: first-run tutorial — Next/Finish advance the stepper (the
+      // reducer walks the active tab), Dismiss skips. Finish/dismiss persist
+      // 'tutorialSeen' via the tutorial-seen effect.
+      var tAction = target.getAttribute('data-tutorial-action');
+      if (tAction === 'next') dispatch({ type: 'TUTORIAL_NEXT' });
+      else if (tAction === 'dismiss') dispatch({ type: 'TUTORIAL_DISMISS' });
+    }
   });
 
+  /* --------------------------- audio stub (REQ-26) ------------------------ */
+
+  /**
+   * Web Audio beep for alerts (design D3 alert path — TRAINER/OTHERS slices
+   * reuse this hook). Feature-detected: without AudioContext (or on user-
+   * gesture restrictions) it degrades to a silent no-op, never throws.
+   * @returns {boolean} true when a beep was actually scheduled
+   */
+  function beep() {
+    var Ctor = window.AudioContext || window.webkitAudioContext;
+    if (typeof Ctor !== 'function') return false;
+    try {
+      var ctx = new Ctor();
+      var osc = ctx.createOscillator();
+      var gain = ctx.createGain();
+      osc.type = 'square';
+      osc.frequency.value = 880;
+      gain.gain.value = 0.04;
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start();
+      osc.stop(ctx.currentTime + 0.18);
+      // Best-effort cleanup — some browsers reject sync teardown after stop.
+      osc.onended = function () {
+        try { ctx.close(); } catch (e) { /* no-op */ }
+      };
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
   /* -------------------------------- boot -------------------------------- */
+
+  // REQ-26: first-run tutorial — show once, persist 'tutorialSeen' on
+  // dismiss/finish (reducer effect). The tutorial walks every tab.
+  var tutorialSeen = false;
+  try {
+    tutorialSeen = window.localStorage && window.localStorage.getItem('tutorialSeen') === '1';
+  } catch (e) { tutorialSeen = false; }
+  if (!tutorialSeen) dispatch({ type: 'TUTORIAL_START' });
 
   render();
   startPolling();
@@ -231,5 +303,6 @@
     dispatch: dispatch,
     getState: function () { return state; },
     stop: stopPolling,
+    beep: beep, // audio stub hook (REQ-26) — exposed for tests + later slices
   };
 })();
