@@ -149,6 +149,14 @@
       'picker.meta': 'mana %mana%, level %level%',
       'picker.pick': 'Pick',
       'picker.current': 'current',
+      // Slice 2 (PR3, REQ-29): HEAL settings form + live state line.
+      'heal.formTitle': 'Heal settings',
+      'heal.threshold': 'Health threshold %',
+      'heal.slot': 'Hotbar slot',
+      'heal.reserve': 'Mana reserve',
+      'heal.save': 'Save heal settings',
+      'heal.liveOn': 'Heal magic on — hp %pct%% of %max%, fires at %t%% (slot %slot%)',
+      'heal.liveOff': 'Heal magic off — no heal actions',
     },
     es: {
       'gate.disconnected': 'Desconectado',
@@ -211,6 +219,14 @@
       'picker.meta': 'maná %mana%, nivel %level%',
       'picker.pick': 'Elegir',
       'picker.current': 'actual',
+      // Slice 2 (PR3, REQ-29): formulario de ajustes de CURAR + línea de estado.
+      'heal.formTitle': 'Ajustes de curación',
+      'heal.threshold': 'Umbral de vida %',
+      'heal.slot': 'Slot del hotbar',
+      'heal.reserve': 'Reserva de maná',
+      'heal.save': 'Guardar curación',
+      'heal.liveOn': 'Magia de curación activa — vida %pct%% de %max%, dispara al %t%% (slot %slot%)',
+      'heal.liveOff': 'Magia de curación apagada — sin acciones de curación',
     },
   };
 
@@ -281,6 +297,10 @@
       catalog: { spells: [], loaded: false, reason: null }, // filtered client catalog (REQ-28)
       picker: { module: 'healMagic', query: '' }, // picker module + search (REQ-28)
       profileLoad: null,       // {ok, from, rejected[], reason, at} — last cross-load (REQ-27)
+      // Slice 2 (PR3, REQ-29): HEAL settings form raw values — pure UI
+      // strings that survive re-renders (walkTo precedent); SAVE_HEAL_SETTINGS
+      // converts + commits them into config.modules.healMagic.
+      healForm: { threshold: '', slot: '', reserve: '' },
     };
   }
 
@@ -292,6 +312,25 @@
       .replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;')
       .replace(/'/g, '&#39;');
+  }
+
+  /**
+   * Slice 2 (PR3, REQ-29): derive the HEAL form values from the saved config.
+   * The agent stores the threshold as ABSOLUTE hp (v1 semantics, unchanged);
+   * the FORM speaks percent — the conversion needs the snapshot maxHealth.
+   * When maxHealth is unknown the raw absolute value shows (honest degrade).
+   * @param {object} state
+   * @returns {{threshold: string, slot: string, reserve: string}}
+   */
+  function healFormFromConfig(state) {
+    const hm = state.config && state.config.modules && state.config.modules.healMagic;
+    const maxHp = snapshotStats(state.snapshot).maxHealth;
+    const threshold = hm && Number.isFinite(Number(hm.threshold)) ? Number(hm.threshold) : null;
+    const pct = threshold === null ? ''
+      : (maxHp !== null && maxHp > 0 ? String(Math.round(threshold / maxHp * 100)) : String(threshold));
+    const slot = hm && hm.slot !== null && hm.slot !== undefined ? String(hm.slot) : '';
+    const reserve = hm && Number.isFinite(Number(hm.reserve)) ? String(hm.reserve) : '';
+    return { threshold: pct, slot, reserve };
   }
 
   /** Refusal factory — the shared "not connected" gate reason. */
@@ -449,6 +488,10 @@
             if (m && typeof m === 'object') modules[id] = m.on === true;
           }
         }
+        // Slice 2 (PR3): the HEAL form keeps ONLY user-typed values (walkTo
+        // precedent); untouched fields fall back to the config-derived
+        // percent view at render time (healFormFromConfig). The loaded
+        // config therefore shows without overwriting typed input.
         return {
           state: Object.assign({}, state, { modules, config: config || null, refusal: null }),
           effects: [],
@@ -633,6 +676,79 @@
         const from = String(action.from || '').trim();
         if (!from) return { state, effects: [] };
         return { state, effects: [{ type: 'load-profile', from }] };
+      }
+
+      /* ------------------- slice 2 (PR3, REQ-29): HEAL form ------------------- */
+
+      case 'UPDATE_HEAL_INPUT': {
+        // REQ-29: pure UI state — the HEAL form values survive re-renders
+        // (walkTo precedent). No gate: typing pre-Connect is harmless.
+        const key = String(action.key || '');
+        if (key !== 'threshold' && key !== 'slot' && key !== 'reserve') return { state, effects: [] };
+        const healForm = Object.assign({}, state.healForm || { threshold: '', slot: '', reserve: '' });
+        healForm[key] = String(action.value === null || action.value === undefined ? '' : action.value);
+        return { state: Object.assign({}, state, { healForm }), effects: [] };
+      }
+
+      case 'SAVE_HEAL_SETTINGS': {
+        // REQ-29 (PR3): commit the HEAL form into config.modules.healMagic.
+        // The threshold is entered as a PERCENT of max health and converted
+        // to the ABSOLUTE hp the v1 agent compares (needs the snapshot
+        // maxHealth). Slot must be a hotbar slot 1-12; reserve a non-negative
+        // mana amount. Invalid values are refused with a visible reason —
+        // never silently dropped. The push-config effect carries the change
+        // to the agent (REQ-08 applyConfig).
+        if (state.gate !== GATE_ARMED) return { state: refuse(state, action), effects: [] };
+        const form = state.healForm || { threshold: '', slot: '', reserve: '' };
+        const at = Date.now();
+        const rawThreshold = String(form.threshold || '').trim();
+        const rawSlot = String(form.slot || '').trim();
+        const rawReserve = String(form.reserve || '').trim();
+        if (rawThreshold === '' || rawSlot === '' || rawReserve === '') {
+          return {
+            state: Object.assign({}, state, {
+              refusal: { action: 'SAVE_HEAL_SETTINGS', module: 'healMagic', reason: 'invalid heal settings — threshold, slot and reserve are required', at },
+            }),
+            effects: [],
+          };
+        }
+        const pct = Number(rawThreshold);
+        const slot = Number(rawSlot);
+        const reserve = Number(rawReserve);
+        if (!Number.isFinite(pct) || pct < 0 || pct > 100
+          || !Number.isInteger(slot) || slot < 1 || slot > 12
+          || !Number.isFinite(reserve) || reserve < 0) {
+          return {
+            state: Object.assign({}, state, {
+              refusal: { action: 'SAVE_HEAL_SETTINGS', module: 'healMagic', reason: 'invalid heal settings — threshold 0-100%, slot 1-12, reserve >= 0', at },
+            }),
+            effects: [],
+          };
+        }
+        const maxHp = snapshotStats(state.snapshot).maxHealth;
+        if (maxHp === null || !Number.isFinite(maxHp)) {
+          return {
+            state: Object.assign({}, state, {
+              refusal: { action: 'SAVE_HEAL_SETTINGS', module: 'healMagic', reason: 'unknown max health — cannot convert the % threshold; wait for a snapshot', at },
+            }),
+            effects: [],
+          };
+        }
+        const thresholdAbs = Math.max(0, Math.round(maxHp * pct / 100));
+        const config = JSON.parse(JSON.stringify(state.config || {}));
+        if (!config.modules || typeof config.modules !== 'object') config.modules = {};
+        if (!config.modules.healMagic || typeof config.modules.healMagic !== 'object') config.modules.healMagic = {};
+        config.modules.healMagic.threshold = thresholdAbs;
+        config.modules.healMagic.slot = slot;
+        config.modules.healMagic.reserve = reserve;
+        return {
+          state: Object.assign({}, state, {
+            config,
+            healForm: { threshold: String(pct), slot: String(slot), reserve: String(reserve) },
+            refusal: null,
+          }),
+          effects: [{ type: 'push-config' }],
+        };
       }
 
       case 'PROFILE_LOAD_RESULT':
@@ -899,6 +1015,33 @@
     return parts.join('');
   }
 
+  /**
+   * HEAL settings form (PR3, REQ-29): threshold %, hotbar slot and mana
+   * reserve + a Save button. Values come from the pure-UI healForm state
+   * (survive re-renders) falling back to the saved config (percent view of
+   * the absolute threshold via snapshot maxHealth). The spell itself is
+   * chosen with the spell picker below (REQ-28); the module toggle lives in
+   * the HEAL tab module list. The agent compares health against the SAVED
+   * absolute threshold — the form converts percent <-> absolute here.
+   * @param {object} state
+   * @returns {string}
+   */
+  function renderHealForm(state) {
+    const form = state.healForm || { threshold: '', slot: '', reserve: '' };
+    const derived = healFormFromConfig(state);
+    const val = (key) => (form[key] !== '' ? form[key] : derived[key]);
+    return '<div class="heal-form">'
+      + '<h3>' + escapeHtml(t(state, 'heal.formTitle')) + '</h3>'
+      + '<label class="heal-field">' + escapeHtml(t(state, 'heal.threshold'))
+      + ' <input type="number" id="heal-threshold" min="0" max="100" step="1" value="' + escapeHtml(val('threshold')) + '"></label>'
+      + '<label class="heal-field">' + escapeHtml(t(state, 'heal.slot'))
+      + ' <input type="number" id="heal-slot" min="1" max="12" step="1" value="' + escapeHtml(val('slot')) + '"></label>'
+      + '<label class="heal-field">' + escapeHtml(t(state, 'heal.reserve'))
+      + ' <input type="number" id="heal-reserve" min="0" step="1" value="' + escapeHtml(val('reserve')) + '"></label>'
+      + '<button type="button" id="heal-save-btn">' + escapeHtml(t(state, 'heal.save')) + '</button>'
+      + '</div>';
+  }
+
   /** Config form: module settings shell + the Routes v1 walk-to form
    *  (REQ-23, slice 6) + the slice-1b profile loader and spell picker.
    *  Route RECORDING is explicitly marked FUTURE — out of v1 scope per the
@@ -909,8 +1052,7 @@
     let body;
     if (state.gate === GATE_ARMED) {
       const wt = state.walkTo || { x: '', y: '' };
-      body = '<div class="config-shell">Module settings forms land with their slices; the profile loader and spell picker below are live.</div>'
-        + renderProfileLoader(state)
+      body = renderHealForm(state) + renderProfileLoader(state)
         + renderSpellPicker(state)
         + '<div class="routes-form">'
         + '<h3>Routes (v1)</h3>'
@@ -971,6 +1113,17 @@
             + stats.mana + (stats.maxMana !== null ? ' / ' + stats.maxMana : ''));
         }
         parts.push('<div class="stats-line">' + bits.join(' · ') + '</div>');
+      }
+      // Slice 2 (PR3, REQ-29): HEAL live line — module on/off + hp% vs the
+      // configured threshold (percent view of the saved absolute threshold).
+      const hmCfg = state.config && state.config.modules && state.config.modules.healMagic;
+      if (hmCfg && stats.health !== null && stats.maxHealth !== null && stats.maxHealth > 0) {
+        const hpPct = Math.round(stats.health / stats.maxHealth * 100);
+        const tAbs = Number(hmCfg.threshold);
+        const tPct = Number.isFinite(tAbs) && tAbs >= 0 ? Math.round(tAbs / stats.maxHealth * 100) : null;
+        parts.push('<div class="heal-state">' + (hmCfg.on === true
+          ? escapeHtml(tVar(state, 'heal.liveOn', { pct: hpPct, max: stats.maxHealth, t: tPct, slot: hmCfg.slot === null || hmCfg.slot === undefined ? '—' : hmCfg.slot }))
+          : escapeHtml(t(state, 'heal.liveOff'))) + '</div>');
       }
       const blocked = premiumBlockedModules(state.snapshot);
       if (blocked.length > 0) {

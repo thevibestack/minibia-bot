@@ -273,6 +273,12 @@
     } else if (target && target.matches && target.matches('#spell-search')) {
       // REQ-28 (slice 1b): spell picker search — pure UI state.
       dispatch({ type: 'PICKER_SEARCH', query: target.value });
+    } else if (target && target.matches && target.matches('#heal-threshold, #heal-slot, #heal-reserve')) {
+      // REQ-29 (PR3): HEAL settings form — pure UI values that survive
+      // re-renders; the Save button commits them into the config.
+      var healKey = target.matches('#heal-threshold') ? 'threshold'
+        : (target.matches('#heal-slot') ? 'slot' : 'reserve');
+      dispatch({ type: 'UPDATE_HEAL_INPUT', key: healKey, value: target.value });
     }
   });
 
@@ -329,6 +335,11 @@
     else if (target.matches('.picker-module-btn')) {
       // REQ-28 (slice 1b): switch the picker target (heal spell / training).
       dispatch({ type: 'PICKER_SET_MODULE', module: target.getAttribute('data-picker-module-btn') });
+    }
+    else if (target.matches('#heal-save-btn')) {
+      // REQ-29 (PR3): commit the HEAL settings form (threshold % -> absolute
+      // hp via snapshot maxHealth, slot, reserve) into the config.
+      dispatch({ type: 'SAVE_HEAL_SETTINGS' });
     }
   });
 
