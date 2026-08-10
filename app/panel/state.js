@@ -157,6 +157,19 @@
       'heal.save': 'Save heal settings',
       'heal.liveOn': 'Heal magic on — hp %pct%% of %max%, fires at %t%% (slot %slot%)',
       'heal.liveOff': 'Heal magic off — no heal actions',
+      // Slice 3 (PR4, REQ-30/31/32): TRAINER settings form + cap alert.
+      'trainer.formTitle': 'Trainer settings',
+      'trainer.capMode': 'Rune cap mode',
+      'trainer.capModeStrict': 'Strict — stop at cap',
+      'trainer.capModeOff': 'Off — never stop',
+      'trainer.capFullThreshold': 'Cap full at %',
+      'trainer.fallbackSlot': 'Fallback slot (empty = idle)',
+      'trainer.fallbackManaPct': 'Fallback mana %',
+      'trainer.reserve': 'Mana reserve',
+      'trainer.eatWithMagic': 'Eat with magic when mana low',
+      'trainer.eatMagicSlot': 'Magic food slot',
+      'trainer.save': 'Save trainer settings',
+      'trainer.capFullAlert': 'Rune cap full — rune-making stopped (fallback or idle)',
     },
     es: {
       'gate.disconnected': 'Desconectado',
@@ -227,6 +240,19 @@
       'heal.save': 'Guardar curación',
       'heal.liveOn': 'Magia de curación activa — vida %pct%% de %max%, dispara al %t%% (slot %slot%)',
       'heal.liveOff': 'Magia de curación apagada — sin acciones de curación',
+      // Slice 3 (PR4, REQ-30/31/32): formulario de ENTRENAR + alerta de tope.
+      'trainer.formTitle': 'Ajustes de entrenamiento',
+      'trainer.capMode': 'Modo de tope de runas',
+      'trainer.capModeStrict': 'Estricto — parar al tope',
+      'trainer.capModeOff': 'Apagado — no parar nunca',
+      'trainer.capFullThreshold': 'Tope lleno al %',
+      'trainer.fallbackSlot': 'Slot alternativo (vacío = esperar)',
+      'trainer.fallbackManaPct': 'Maná para el alternativo %',
+      'trainer.reserve': 'Reserva de maná',
+      'trainer.eatWithMagic': 'Comer con magia cuando falte maná',
+      'trainer.eatMagicSlot': 'Slot de comida mágica',
+      'trainer.save': 'Guardar entrenamiento',
+      'trainer.capFullAlert': 'Tope de runas lleno — se detuvo la fabricación (alternativo o espera)',
     },
   };
 
@@ -301,6 +327,12 @@
       // strings that survive re-renders (walkTo precedent); SAVE_HEAL_SETTINGS
       // converts + commits them into config.modules.healMagic.
       healForm: { threshold: '', slot: '', reserve: '' },
+      // Slice 3 (PR4, REQ-30/31/32): TRAINER settings form raw values — pure
+      // UI strings (percent/ratio conversion at save, see SAVE_TRAINER_SETTINGS).
+      trainerForm: {
+        capMode: '', capFullThreshold: '', fallbackSlot: '', fallbackManaPct: '',
+        reserve: '', eatMagic: '', eatMagicSlot: '',
+      },
     };
   }
 
@@ -331,6 +363,35 @@
     const slot = hm && hm.slot !== null && hm.slot !== undefined ? String(hm.slot) : '';
     const reserve = hm && Number.isFinite(Number(hm.reserve)) ? String(hm.reserve) : '';
     return { threshold: pct, slot, reserve };
+  }
+
+  /**
+   * Slice 3 (PR4, REQ-30/31/32): derive the TRAINER form values from the
+   * saved config. The config stores ratios (capFullThreshold/fallbackManaPct
+   * as 0..1) and the FORM speaks percent — the conversion happens here at
+   * render time and again at save (SAVE_TRAINER_SETTINGS). Missing values
+   * fall back to the forward-compat defaults (strict, 100%, 50%).
+   * @param {object} state
+   * @returns {object} trainerForm-shaped value strings
+   */
+  function trainerFormFromConfig(state) {
+    const cfg = state.config && state.config.modules || {};
+    const runes = cfg.runes || {};
+    const training = cfg.training || {};
+    const ew = training.eatWithMagic && typeof training.eatWithMagic === 'object'
+      ? training.eatWithMagic : {};
+    const threshold = Number(runes.capFullThreshold);
+    const pct = Number(runes.fallbackManaPct);
+    return {
+      capMode: runes.capMode === 'off' ? 'off' : 'strict',
+      capFullThreshold: String(Number.isFinite(threshold) ? Math.round(threshold * 100) : 100),
+      fallbackSlot: runes.fallbackSlot !== null && runes.fallbackSlot !== undefined
+        ? String(runes.fallbackSlot) : '',
+      fallbackManaPct: String(Number.isFinite(pct) ? Math.round(pct * 100) : 50),
+      reserve: Number.isFinite(Number(training.reserve)) ? String(training.reserve) : '',
+      eatMagic: ew.enabled === true ? 'true' : 'false',
+      eatMagicSlot: ew.slot !== null && ew.slot !== undefined ? String(ew.slot) : '',
+    };
   }
 
   /** Refusal factory — the shared "not connected" gate reason. */
@@ -767,6 +828,103 @@
           effects: [],
         };
 
+      /* ------------------- slice 3 (PR4, REQ-30/31/32): TRAINER form ------------------- */
+
+      case 'UPDATE_TRAINER_INPUT': {
+        // REQ-30/31/32: pure UI state — the TRAINER form values survive
+        // re-renders (healForm/walkTo precedent). No gate: typing pre-Connect
+        // is harmless.
+        const key = String(action.key || '');
+        const TRAINER_KEYS = ['capMode', 'capFullThreshold', 'fallbackSlot', 'fallbackManaPct',
+          'reserve', 'eatMagic', 'eatMagicSlot'];
+        if (TRAINER_KEYS.indexOf(key) === -1) return { state, effects: [] };
+        const trainerForm = Object.assign({}, state.trainerForm || {
+          capMode: '', capFullThreshold: '', fallbackSlot: '', fallbackManaPct: '',
+          reserve: '', eatMagic: '', eatMagicSlot: '',
+        });
+        trainerForm[key] = String(action.value === null || action.value === undefined ? '' : action.value);
+        return { state: Object.assign({}, state, { trainerForm }), effects: [] };
+      }
+
+      case 'SAVE_TRAINER_SETTINGS': {
+        // REQ-30/31/32 (PR4): commit the TRAINER form into the config.
+        // Percent inputs (cap full threshold, fallback mana) convert to the
+        // 0..1 ratios the agent compares; the cap settings land in
+        // config.modules.runes (the config shape owns them, D3) and the
+        // reserve + eat-with-magic land in config.modules.training (D2/D4).
+        // Invalid values are refused with a visible reason — never silently
+        // dropped. The push-config effect carries the change to the agent.
+        if (state.gate !== GATE_ARMED) return { state: refuse(state, action), effects: [] };
+        const form = state.trainerForm || {};
+        const at = Date.now();
+        const invalid = (reason) => ({
+          state: Object.assign({}, state, { refusal: { action: 'SAVE_TRAINER_SETTINGS', module: 'training', reason, at } }),
+          effects: [],
+        });
+        // The cap-mode select always renders a value (strict/off) — an
+        // untouched form (empty) means the default 'strict'.
+        const capMode = String(form.capMode || '').trim() || 'strict';
+        const rawThreshold = String(form.capFullThreshold || '').trim();
+        const rawFallbackSlot = String(form.fallbackSlot || '').trim();
+        const rawFallbackPct = String(form.fallbackManaPct || '').trim();
+        const rawReserve = String(form.reserve || '').trim();
+        const eatMagic = String(form.eatMagic || '');
+        const rawEatSlot = String(form.eatMagicSlot || '').trim();
+        if (capMode !== 'strict' && capMode !== 'off') {
+          return invalid('invalid trainer settings — cap mode must be strict or off');
+        }
+        const threshold = Number(rawThreshold);
+        const fallbackPct = Number(rawFallbackPct);
+        const reserve = Number(rawReserve);
+        if (rawThreshold === '' || rawFallbackPct === '' || rawReserve === ''
+          || !Number.isFinite(threshold) || threshold < 0 || threshold > 100
+          || !Number.isFinite(fallbackPct) || fallbackPct < 0 || fallbackPct > 100
+          || !Number.isFinite(reserve) || reserve < 0) {
+          return invalid('invalid trainer settings — cap % 0-100, fallback mana % 0-100, reserve >= 0');
+        }
+        const fallbackSlot = rawFallbackSlot === '' ? null : Number(rawFallbackSlot);
+        if (fallbackSlot !== null && (!Number.isInteger(fallbackSlot) || fallbackSlot < 1 || fallbackSlot > 12)) {
+          return invalid('invalid trainer settings — fallback slot must be 1-12 or empty');
+        }
+        const ewEnabled = eatMagic === 'true';
+        if (eatMagic !== 'true' && eatMagic !== 'false') {
+          return invalid('invalid trainer settings — eat with magic must be on or off');
+        }
+        const eatSlot = rawEatSlot === '' ? null : Number(rawEatSlot);
+        if (eatSlot !== null && (!Number.isInteger(eatSlot) || eatSlot < 1 || eatSlot > 12)) {
+          return invalid('invalid trainer settings — magic food slot must be 1-12 or empty');
+        }
+        if (ewEnabled && eatSlot === null) {
+          return invalid('invalid trainer settings — eat with magic needs a magic food slot');
+        }
+        const config = JSON.parse(JSON.stringify(state.config || {}));
+        if (!config.modules || typeof config.modules !== 'object') config.modules = {};
+        if (!config.modules.runes || typeof config.modules.runes !== 'object') config.modules.runes = {};
+        if (!config.modules.training || typeof config.modules.training !== 'object') config.modules.training = {};
+        config.modules.runes.capMode = capMode;
+        config.modules.runes.capFullThreshold = threshold / 100;
+        config.modules.runes.fallbackSlot = fallbackSlot;
+        config.modules.runes.fallbackManaPct = fallbackPct / 100;
+        config.modules.training.reserve = reserve;
+        if (!config.modules.training.eatWithMagic || typeof config.modules.training.eatWithMagic !== 'object') {
+          config.modules.training.eatWithMagic = {};
+        }
+        config.modules.training.eatWithMagic.enabled = ewEnabled;
+        config.modules.training.eatWithMagic.slot = eatSlot;
+        return {
+          state: Object.assign({}, state, {
+            config,
+            trainerForm: {
+              capMode, capFullThreshold: String(threshold), fallbackSlot: fallbackSlot === null ? '' : String(fallbackSlot),
+              fallbackManaPct: String(fallbackPct), reserve: String(reserve),
+              eatMagic, eatMagicSlot: eatSlot === null ? '' : String(eatSlot),
+            },
+            refusal: null,
+          }),
+          effects: [{ type: 'push-config' }],
+        };
+      }
+
       case 'RESET':
         return { state: reset(), effects: [] };
 
@@ -1042,6 +1200,49 @@
       + '</div>';
   }
 
+  /**
+   * TRAINER settings form (PR4, REQ-30/31/32): rune cap mode + full
+   * threshold %, fallback slot + fallback mana %, mana reserve and
+   * eat-with-magic (toggle + magic-food slot) + a Save button. Values come
+   * from the pure-UI trainerForm state (survive re-renders) falling back to
+   * the saved config (ratios shown as percent). The rune spell itself is
+   * chosen with the spell picker (picker module 'training', REQ-28); the
+   * module toggles live in the TRAINER tab module list.
+   * @param {object} state
+   * @returns {string}
+   */
+  function renderTrainerForm(state) {
+    const form = state.trainerForm || {};
+    const derived = trainerFormFromConfig(state);
+    const val = (key) => (form[key] !== '' && form[key] !== undefined ? form[key] : derived[key]);
+    const capMode = val('capMode');
+    const eatChecked = val('eatMagic') === 'true' ? ' checked' : '';
+    return '<div class="trainer-form">'
+      + '<h3>' + escapeHtml(t(state, 'trainer.formTitle')) + '</h3>'
+      + '<label class="trainer-field">' + escapeHtml(t(state, 'trainer.capMode'))
+      + ' <select id="trainer-cap-mode">'
+      + '<option value="strict"' + (capMode === 'strict' ? ' selected' : '') + '>'
+      + escapeHtml(t(state, 'trainer.capModeStrict')) + '</option>'
+      + '<option value="off"' + (capMode === 'off' ? ' selected' : '') + '>'
+      + escapeHtml(t(state, 'trainer.capModeOff')) + '</option>'
+      + '</select></label>'
+      + '<label class="trainer-field">' + escapeHtml(t(state, 'trainer.capFullThreshold'))
+      + ' <input type="number" id="trainer-cap-threshold" min="0" max="100" step="1" value="' + escapeHtml(val('capFullThreshold')) + '"></label>'
+      + '<label class="trainer-field">' + escapeHtml(t(state, 'trainer.fallbackSlot'))
+      + ' <input type="number" id="trainer-fallback-slot" min="1" max="12" step="1" value="' + escapeHtml(val('fallbackSlot')) + '"></label>'
+      + '<label class="trainer-field">' + escapeHtml(t(state, 'trainer.fallbackManaPct'))
+      + ' <input type="number" id="trainer-fallback-pct" min="0" max="100" step="1" value="' + escapeHtml(val('fallbackManaPct')) + '"></label>'
+      + '<label class="trainer-field">' + escapeHtml(t(state, 'trainer.reserve'))
+      + ' <input type="number" id="trainer-reserve" min="0" step="1" value="' + escapeHtml(val('reserve')) + '"></label>'
+      + '<label class="trainer-field trainer-check">'
+      + '<input type="checkbox" id="trainer-eat-magic"' + eatChecked + '> '
+      + escapeHtml(t(state, 'trainer.eatWithMagic')) + '</label>'
+      + '<label class="trainer-field">' + escapeHtml(t(state, 'trainer.eatMagicSlot'))
+      + ' <input type="number" id="trainer-eat-magic-slot" min="1" max="12" step="1" value="' + escapeHtml(val('eatMagicSlot')) + '"></label>'
+      + '<button type="button" id="trainer-save-btn">' + escapeHtml(t(state, 'trainer.save')) + '</button>'
+      + '</div>';
+  }
+
   /** Config form: module settings shell + the Routes v1 walk-to form
    *  (REQ-23, slice 6) + the slice-1b profile loader and spell picker.
    *  Route RECORDING is explicitly marked FUTURE — out of v1 scope per the
@@ -1052,7 +1253,7 @@
     let body;
     if (state.gate === GATE_ARMED) {
       const wt = state.walkTo || { x: '', y: '' };
-      body = renderHealForm(state) + renderProfileLoader(state)
+      body = renderHealForm(state) + renderTrainerForm(state) + renderProfileLoader(state)
         + renderSpellPicker(state)
         + '<div class="routes-form">'
         + '<h3>Routes (v1)</h3>'
@@ -1144,6 +1345,13 @@
         ? state.snapshot.agent.modules : null;
       if (modules && modules.eat && modules.eat.paused === true) {
         parts.push('<div class="module-alert alert-eat">Eating paused — 3 consecutive failed attempts.</div>');
+      }
+      // Slice 3 (PR4, REQ-30, D3): the trainer's strict-CAP state — the panel
+      // ALERT + beep fire on the rising edge (app.js); this line keeps the
+      // cap-full condition VISIBLE while it persists.
+      if (modules && modules.training && modules.training.capFull === true) {
+        parts.push('<div class="module-alert alert-cap-full">'
+          + escapeHtml(t(state, 'trainer.capFullAlert')) + '</div>');
       }
       if (modules && modules.routes) {
         const r = modules.routes;
@@ -1306,6 +1514,10 @@
     renderProfileLoader,
     renderSpellPicker,
     renderConfigForm,
+    healFormFromConfig,
+    renderHealForm,
+    trainerFormFromConfig,
+    renderTrainerForm,
     renderLiveState,
     renderLog,
     renderTutorial,

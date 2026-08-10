@@ -27,6 +27,7 @@
   var state = P.createInitialState();
   var pollTimer = null;
   var prefilledFor = null; // last character whose saved config was pre-fetched
+  var lastCapFull = false; // PR4 (REQ-30, D3): rising-edge detection for the cap-full alert
 
   /* ------------------------------- render ------------------------------- */
 
@@ -234,6 +235,17 @@
     });
     jsonRequest('/api/snapshot').then(function (res) {
       if (res) dispatch({ type: 'SNAPSHOT', data: res });
+      // PR4 (REQ-30, D3): the trainer's capFull state rides the snapshot —
+      // on the RISING edge the panel raises an ALERT (the ALERT dispatch
+      // rings the Web Audio beep; the live state view keeps the condition
+      // visible while it persists). Falling edge / steady state: silent.
+      if (res && res.agent && res.agent.modules && res.agent.modules.training) {
+        var capFull = res.agent.modules.training.capFull === true;
+        if (capFull && !lastCapFull) {
+          dispatch({ type: 'ALERT', kind: 'cap-full', message: 'Rune cap full — rune-making stopped (fallback or idle)' });
+        }
+        lastCapFull = capFull;
+      }
     });
   }
 
@@ -257,6 +269,13 @@
     var target = e.target;
     if (target && target.matches && target.matches('input[data-module]')) {
       dispatch({ type: 'TOGGLE_MODULE', module: target.getAttribute('data-module'), on: target.checked });
+    } else if (target && target.matches && target.matches('#trainer-eat-magic')) {
+      // REQ-32 (PR4): eat-with-magic checkbox — pure UI value (change, not
+      // input: checkboxes fire change).
+      dispatch({ type: 'UPDATE_TRAINER_INPUT', key: 'eatMagic', value: target.checked ? 'true' : 'false' });
+    } else if (target && target.matches && target.matches('#trainer-cap-mode')) {
+      // REQ-30 (PR4): cap mode select — pure UI value (selects fire change).
+      dispatch({ type: 'UPDATE_TRAINER_INPUT', key: 'capMode', value: target.value });
     }
   });
 
@@ -279,6 +298,15 @@
       var healKey = target.matches('#heal-threshold') ? 'threshold'
         : (target.matches('#heal-slot') ? 'slot' : 'reserve');
       dispatch({ type: 'UPDATE_HEAL_INPUT', key: healKey, value: target.value });
+    } else if (target && target.matches && target.matches(
+      '#trainer-cap-threshold, #trainer-fallback-slot, #trainer-fallback-pct, #trainer-reserve, #trainer-eat-magic-slot')) {
+      // REQ-30/31/32 (PR4): TRAINER settings form — pure UI values that
+      // survive re-renders; the Save button commits them into the config.
+      var trainerKey = target.matches('#trainer-cap-threshold') ? 'capFullThreshold'
+        : target.matches('#trainer-fallback-slot') ? 'fallbackSlot'
+          : target.matches('#trainer-fallback-pct') ? 'fallbackManaPct'
+            : target.matches('#trainer-reserve') ? 'reserve' : 'eatMagicSlot';
+      dispatch({ type: 'UPDATE_TRAINER_INPUT', key: trainerKey, value: target.value });
     }
   });
 
@@ -340,6 +368,12 @@
       // REQ-29 (PR3): commit the HEAL settings form (threshold % -> absolute
       // hp via snapshot maxHealth, slot, reserve) into the config.
       dispatch({ type: 'SAVE_HEAL_SETTINGS' });
+    }
+    else if (target.matches('#trainer-save-btn')) {
+      // REQ-30/31/32 (PR4): commit the TRAINER settings form (cap mode,
+      // cap % -> ratio, fallback slot + mana % -> ratio, reserve,
+      // eat-with-magic) into the config.
+      dispatch({ type: 'SAVE_TRAINER_SETTINGS' });
     }
   });
 
