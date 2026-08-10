@@ -131,6 +131,27 @@ test('1.4: ES switcher re-renders the panel in Spanish; EN is the default', asyn
   }
 });
 
+test('1.4: the language choice persists to localStorage and is restored on boot', async () => {
+  const first = makePanel();
+  try {
+    click(first, '.lang-btn[data-lang="es"]');
+    assert.equal(first.window.__mbPanel.getState().lang, 'es');
+    assert.equal(first.window.localStorage.getItem('mb-panel-lang'), 'es', 'lang persisted on SET_LANG');
+  } finally {
+    await teardown(first);
+  }
+  // A fresh page pre-seeded with the saved lang opens in Spanish.
+  const second = makePanel({
+    preEval: (win) => { win.localStorage.setItem('mb-panel-lang', 'es'); },
+  });
+  try {
+    assert.equal(second.window.__mbPanel.getState().lang, 'es', 'stored lang restored on boot');
+    assert.match(second.window.document.getElementById('status-bar').textContent, /Esperando al juego…/);
+  } finally {
+    await teardown(second);
+  }
+});
+
 /* -------------------------------- tutorial -------------------------------- */
 
 test('1.5: first run shows the tutorial; Next walks every tab; Dismiss persists tutorialSeen', async () => {
@@ -258,7 +279,7 @@ test('1.7: beep stub is exposed and feature-detects — silent no-op without Aud
   }
 });
 
-test('1.7: an ALERT dispatch rings the beep when AudioContext exists', async () => {
+test('1.7: an ALERT dispatch rings the beep when AudioContext exists; the sound toggle silences it', async () => {
   let contexts = 0;
   let starts = 0;
   const dom = makePanel({
@@ -283,7 +304,45 @@ test('1.7: an ALERT dispatch rings the beep when AudioContext exists', async () 
     assert.equal(contexts, 1, 'alert dispatch scheduled a beep');
     assert.equal(starts, 1, 'oscillator started');
     assert.equal(dom.window.__mbPanel.getState().alerts.length, 1);
+
+    // Audit: sound toggle OFF -> the beep must NOT play; visual alerts still show.
+    dom.window.__mbPanel.dispatch({ type: 'SET_SOUND', enabled: false });
+    assert.equal(dom.window.__mbPanel.getState().soundEnabled, false);
+    dom.window.__mbPanel.dispatch({ type: 'ALERT', kind: 'info', message: 'silent alert' });
+    assert.equal(contexts, 1, 'no beep while sound is disabled');
+    assert.equal(starts, 1, 'oscillator never started again');
+    assert.equal(dom.window.__mbPanel.getState().alerts.length, 2, 'visual alerts still recorded');
+
+    // Re-enable -> the beep rings again.
+    dom.window.__mbPanel.dispatch({ type: 'SET_SOUND', enabled: true });
+    dom.window.__mbPanel.dispatch({ type: 'ALERT', kind: 'info', message: 'audible again' });
+    assert.equal(contexts, 2, 'beep restored after re-enabling sound');
   } finally {
     await teardown(dom);
+  }
+});
+
+test('audit: the sound toggle persists to localStorage and is restored on boot', async () => {
+  const first = makePanel();
+  try {
+    const toggle = first.window.document.getElementById('sound-toggle');
+    assert.ok(toggle, 'sound toggle rendered in the status bar');
+    assert.equal(toggle.checked, true, 'sound ON by default');
+    toggle.checked = false;
+    toggle.dispatchEvent(new first.window.Event('change', { bubbles: true }));
+    assert.equal(first.window.__mbPanel.getState().soundEnabled, false);
+    assert.equal(first.window.localStorage.getItem('mb-panel-sound'), '0', 'preference persisted');
+  } finally {
+    await teardown(first);
+  }
+  // A fresh page pre-seeded with the muted preference opens silent.
+  const second = makePanel({
+    preEval: (win) => { win.localStorage.setItem('mb-panel-sound', '0'); },
+  });
+  try {
+    assert.equal(second.window.__mbPanel.getState().soundEnabled, false, 'muted state restored on boot');
+    assert.equal(second.window.document.getElementById('sound-toggle').checked, false);
+  } finally {
+    await teardown(second);
   }
 });

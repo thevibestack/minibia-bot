@@ -396,7 +396,10 @@ function createAgent(opts = {}) {
           if (entry && entry.cost !== undefined) cost = Number(entry.cost);
         }
       }
-    } catch (e) { cost = null; }
+    } catch (e) {
+      warn('readSpellCost: spell cost lookup failed: ' + (e && e.message ? e.message : e));
+      cost = null;
+    }
     if ((cost === null || !Number.isFinite(cost)) && Number.isFinite(Number(spell.cost))) cost = Number(spell.cost);
     return cost !== null && Number.isFinite(cost) ? cost : null;
   }
@@ -416,7 +419,9 @@ function createAgent(opts = {}) {
       if (hb && typeof hb.__canPlayerCastSpell === 'function') {
         return hb.__canPlayerCastSpell(sid) === true;
       }
-    } catch (e) { /* gate read failure => unknown */ }
+    } catch (e) {
+      warn('canCastSpell: vocation gate read failed — gate skipped: ' + (e && e.message ? e.message : e));
+    }
     return null;
   }
 
@@ -438,7 +443,10 @@ function createAgent(opts = {}) {
       const sid = entry && entry.spell;
       if (sid === null || sid === undefined) return null;
       return readSpellCost({ sid: sid });
-    } catch (e) { return null; }
+    } catch (e) {
+      warn('readRuneCost: slot cost resolution failed: ' + (e && e.message ? e.message : e));
+      return null;
+    }
   }
 
   /** Live-probed native rune windows: hotbarManager.__runeAttackUntil /
@@ -453,7 +461,10 @@ function createAgent(opts = {}) {
       const healUntil = hb.__runeHealUntil;
       if (attackUntil === undefined && healUntil === undefined) return null;
       return { attackUntil: attackUntil === undefined ? null : attackUntil, healUntil: healUntil === undefined ? null : healUntil };
-    } catch (e) { return null; }
+    } catch (e) {
+      warn('readRuneTimers: native rune timer read failed: ' + (e && e.message ? e.message : e));
+      return null;
+    }
   }
 
   /** Post-rune-fire wait in ms: __getRuneEffectiveCooldown() when present,
@@ -467,13 +478,17 @@ function createAgent(opts = {}) {
         const v = hb.__getRuneEffectiveCooldown();
         if (Number.isFinite(Number(v))) wait = Math.max(wait, Number(v));
       }
-    } catch (e) { /* best-effort */ }
+    } catch (e) {
+      warn('readRuneAfterFireWait: rune cooldown read failed: ' + (e && e.message ? e.message : e));
+    }
     try {
       const p = state.gameClient && state.gameClient.player;
       const sl = (p && p.state && p.state.attackSlowness) !== undefined
         ? (p.state.attackSlowness) : (p && p.attackSlowness);
       if (Number.isFinite(Number(sl))) wait = Math.max(wait, Number(sl));
-    } catch (e) { /* best-effort */ }
+    } catch (e) {
+      warn('readRuneAfterFireWait: attackSlowness read failed: ' + (e && e.message ? e.message : e));
+    }
     return wait;
   }
 
@@ -809,7 +824,16 @@ function createAgent(opts = {}) {
       // fields live in the runes config shape (characters.ts defaults).
       capConfig: cfg.runes,
       readCap: readCap,
-      getSpellCost: function (sid) { return readSpellCost({ sid: sid }); },
+      // D3 (REQ-30): the trainer resolves the FALLBACK spell cost FROM ITS
+      // SLOT (slot-driven, fallbackSid dropped — obs 10502). The hotbar
+      // slot -> sid mapping (readRuneCost) wins when the argument is a live
+      // hotbar slot; an argument that maps no slot (the training-spell sid
+      // path) falls through to the sid resolution unchanged.
+      getSpellCost: function (arg) {
+        const viaSlot = readRuneCost(arg);
+        if (viaSlot !== null && viaSlot !== undefined) return viaSlot;
+        return readSpellCost({ sid: arg });
+      },
       canCastSpell: canCastSpell,
       readCooldown: function (sid) { return GC_MOD.readCooldown(sid, { gameClient: state.gameClient }); },
       now: nowFn,

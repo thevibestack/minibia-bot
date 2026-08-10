@@ -219,6 +219,45 @@
       'cavebot.noRoute': 'No saved route yet — record and save one.',
       'cavebot.paused': 'Paused',
       'cavebot.editingFuture': 'Route editing — FUTURE (out of scope in v1).',
+      // Audit i18n completion: routes/attack/cavebot live lines, learning
+      // offer buttons, the eat-pause alert, the premium notice, the routes
+      // form and the anti-bot alert fallback (state.js + app.js).
+      'routes.title': 'Routes (v1)',
+      'routes.walkTo': 'Walk to',
+      'routes.recordingFuture': 'Route recording — FUTURE (out of scope in v1).',
+      'routes.unavailable': 'Routes: %reason%',
+      'routes.notWalking': 'Routes: not auto-walking',
+      'routes.autoWalkingSteps': 'Auto-walking: %count% steps remaining',
+      'routes.autoWalkingStepsTo': 'Auto-walking: %count% steps remaining to (%x%, %y%)',
+      'routes.autoWalkingProgress': 'Auto-walking: in progress',
+      'routes.autoWalkingProgressTo': 'Auto-walking: in progress to (%x%, %y%)',
+      'attack.stateOn': 'Attack: on — %targeting% (skeleton)',
+      'attack.stateOnSpell': 'Attack: on — %targeting% — spell sid %sid% (skeleton)',
+      'attack.stateOnRune': 'Attack: on — %targeting% — rune slot %slot% (skeleton)',
+      'attack.stateOnFull': 'Attack: on — %targeting% — spell sid %sid% — rune slot %slot% (skeleton)',
+      'attack.stateOff': 'Attack: off — %targeting% (skeleton)',
+      'cavebot.stateOn': 'Cavebot: on — %detail%',
+      'cavebot.stateOff': 'Cavebot: off — %detail%',
+      'cavebot.stateRecording': 'recording %count% waypoints',
+      'cavebot.stateNotRecording': 'not recording',
+      'cavebot.stateSavedRoute': ' — saved route %count% waypoints',
+      'cavebot.statePaused': ' — PAUSED',
+      'offers.title': 'Registration offers',
+      'offers.confirm': 'Confirm',
+      'offers.decline': 'Decline',
+      'eat.pausedAlert': 'Eating paused — 3 consecutive failed attempts.',
+      'premium.required': 'Premium required — %modules% stay disabled (REQ-22).',
+      'alert.antibot': 'Anti-bot: %kind%',
+      // Audit: panel alert list + sound toggle (state.js + app.js).
+      'alerts.title': 'Alerts',
+      'alerts.empty': 'No alerts yet.',
+      'alert.kind.cap-full': 'Rune cap full',
+      'alert.kind.antibot-speak': 'Anti-bot: speak',
+      'alert.kind.antibot-moved': 'Anti-bot: moved',
+      'alert.kind.antibot-attacked': 'Anti-bot: attack',
+      'alert.kind.info': 'Info',
+      'alert.kind.event': 'Event',
+      'sound.enabled': 'Alert sounds',
     },
     es: {
       'gate.disconnected': 'Desconectado',
@@ -346,6 +385,45 @@
       'cavebot.noRoute': 'Todavía no hay ruta guardada — grabá una y guardala.',
       'cavebot.paused': 'Pausado',
       'cavebot.editingFuture': 'Edición de rutas — FUTURO (fuera de alcance en v1).',
+      // Audit i18n completion: rutas/ataque/cavebot líneas en vivo, botones de
+      // oferta, alerta de comida pausada, aviso de premium y el formulario de
+      // rutas (state.js + app.js).
+      'routes.title': 'Rutas (v1)',
+      'routes.walkTo': 'Caminar a',
+      'routes.recordingFuture': 'Grabación de rutas — FUTURO (fuera de alcance en v1).',
+      'routes.unavailable': 'Rutas: %reason%',
+      'routes.notWalking': 'Rutas: sin caminado automático',
+      'routes.autoWalkingSteps': 'Caminado automático: quedan %count% pasos',
+      'routes.autoWalkingStepsTo': 'Caminado automático: quedan %count% pasos hasta (%x%, %y%)',
+      'routes.autoWalkingProgress': 'Caminado automático: en curso',
+      'routes.autoWalkingProgressTo': 'Caminado automático: en curso hasta (%x%, %y%)',
+      'attack.stateOn': 'Ataque: activo — %targeting% (esqueleto)',
+      'attack.stateOnSpell': 'Ataque: activo — %targeting% — hechizo sid %sid% (esqueleto)',
+      'attack.stateOnRune': 'Ataque: activo — %targeting% — runa slot %slot% (esqueleto)',
+      'attack.stateOnFull': 'Ataque: activo — %targeting% — hechizo sid %sid% — runa slot %slot% (esqueleto)',
+      'attack.stateOff': 'Ataque: apagado — %targeting% (esqueleto)',
+      'cavebot.stateOn': 'Cavebot: activo — %detail%',
+      'cavebot.stateOff': 'Cavebot: apagado — %detail%',
+      'cavebot.stateRecording': 'grabando %count% waypoints',
+      'cavebot.stateNotRecording': 'sin grabar',
+      'cavebot.stateSavedRoute': ' — ruta guardada de %count% waypoints',
+      'cavebot.statePaused': ' — PAUSADO',
+      'offers.title': 'Ofertas de registro',
+      'offers.confirm': 'Confirmar',
+      'offers.decline': 'Rechazar',
+      'eat.pausedAlert': 'Comer pausado — 3 intentos fallidos consecutivos.',
+      'premium.required': 'Se requiere Premium — %modules% permanecen desactivados (REQ-22).',
+      'alert.antibot': 'Anti-bot: %kind%',
+      // Audit: lista de alertas del panel + interruptor de sonido (state.js + app.js).
+      'alerts.title': 'Alertas',
+      'alerts.empty': 'Todavía no hay alertas.',
+      'alert.kind.cap-full': 'Tope de runas lleno',
+      'alert.kind.antibot-speak': 'Anti-bot: habla',
+      'alert.kind.antibot-moved': 'Anti-bot: movimiento',
+      'alert.kind.antibot-attacked': 'Anti-bot: ataque',
+      'alert.kind.info': 'Información',
+      'alert.kind.event': 'Evento',
+      'sound.enabled': 'Sonidos de alerta',
     },
   };
 
@@ -410,6 +488,7 @@
       // Slice 1a (REQ-26): product shell state.
       tab: 'heal',             // active tab id (TABS)
       lang: LANG_EN,           // 'en' | 'es' — default EN (REQ-26)
+      soundEnabled: true,      // alert sound toggle — default ON (persisted 'mb-panel-sound')
       tutorial: null,          // null | {step: number} — first-run stepper
       // Slice 1b (REQ-27/28): profile cross-load + spell picker state.
       profiles: [],            // character names with saved configs (REQ-27)
@@ -762,8 +841,18 @@
 
       case 'SET_LANG': {
         // i18n ES/EN (REQ-26): 'es' or anything else -> 'en' (default EN).
+        // The lang-set effect persists the choice (app.js -> localStorage
+        // 'mb-panel-lang') so the panel restores the chosen language.
         const lang = action.lang === LANG_ES ? LANG_ES : LANG_EN;
-        return { state: Object.assign({}, state, { lang }), effects: [] };
+        return { state: Object.assign({}, state, { lang }), effects: [{ type: 'lang-set', lang }] };
+      }
+
+      case 'SET_SOUND': {
+        // Audit: alert sound toggle — the sound-set effect persists it
+        // (app.js -> localStorage 'mb-panel-sound') so the choice survives
+        // reloads. Default ON; any non-true value turns the beep off.
+        const enabled = action.enabled === true || action.enabled === 'true';
+        return { state: Object.assign({}, state, { soundEnabled: enabled }), effects: [{ type: 'sound-set', enabled }] };
       }
 
       case 'TUTORIAL_START':
@@ -1359,18 +1448,6 @@
   }
 
   /**
-   * PR5 (REQ-33/34): anti-bot module state carried by the live snapshot
-   * (agent state modules.antibot). Pure — null when absent.
-   * @param {object|null} snapshot - SNAPSHOT payload
-   * @returns {object|null}
-   */
-  function snapshotAntibot(snapshot) {
-    const m = snapshot && snapshot.agent && snapshot.agent.modules
-      && snapshot.agent.modules.antibot;
-    return m && typeof m === 'object' ? m : null;
-  }
-
-  /**
    * PR6 (REQ-36): cavebot module state carried by the live snapshot (agent
    * state modules.cavebot). Pure — null when absent.
    * @param {object|null} snapshot - SNAPSHOT payload
@@ -1396,8 +1473,10 @@
       + '</div>';
   }
 
-  /** REQ-25: offer row HTML (word + time + best-effort sid + Confirm/Decline). */
-  function renderOffer(offer) {
+  /** REQ-25: offer row HTML (word + time + best-effort sid + localized
+   *  Confirm/Decline buttons). `state` optional — falls back to EN when absent
+   *  (kept backward-compatible for the exported pure call). */
+  function renderOffer(offer, state) {
     const when = offer.ts
       ? new Date(offer.ts).toLocaleTimeString() + ' ' + new Date(offer.ts).toLocaleDateString()
       : 'now';
@@ -1405,8 +1484,10 @@
     return '<div class="learning-offer">'
       + '<code>' + escapeHtml(offer.word) + '</code>'
       + ' <span class="offer-time">(' + escapeHtml(when) + (sid !== null ? ', sid ' + sid : '') + ')</span>'
-      + ' <button type="button" class="offer-btn" data-offer-action="confirm" data-word="' + escapeHtml(offer.word) + '">Confirm</button>'
-      + ' <button type="button" class="offer-btn" data-offer-action="decline" data-word="' + escapeHtml(offer.word) + '">Decline</button>'
+      + ' <button type="button" class="offer-btn" data-offer-action="confirm" data-word="' + escapeHtml(offer.word) + '">'
+      + escapeHtml(t(state, 'offers.confirm')) + '</button>'
+      + ' <button type="button" class="offer-btn" data-offer-action="decline" data-word="' + escapeHtml(offer.word) + '">'
+      + escapeHtml(t(state, 'offers.decline')) + '</button>'
       + '</div>';
   }
 
@@ -1439,6 +1520,11 @@
       + '<button type="button" class="lang-btn' + (state.lang === LANG_EN ? ' active' : '') + '" data-lang="en">EN</button>'
       + '<button type="button" class="lang-btn' + (state.lang === LANG_ES ? ' active' : '') + '" data-lang="es">ES</button>'
       + '</span>');
+    // Audit: alert sound toggle — checked = beep on ALERT (default ON); the
+    // reducer persists the choice (localStorage 'mb-panel-sound').
+    parts.push('<label class="sound-toggle"><input type="checkbox" id="sound-toggle"'
+      + (state.soundEnabled !== false ? ' checked' : '') + '> '
+      + escapeHtml(t(state, 'sound.enabled')) + '</label>');
     return '<div class="status-bar">' + parts.join(' ') + '</div>';
   }
 
@@ -1771,11 +1857,11 @@
         + renderProfileLoader(state)
         + renderSpellPicker(state)
         + '<div class="routes-form">'
-        + '<h3>Routes (v1)</h3>'
+        + '<h3>' + escapeHtml(t(state, 'routes.title')) + '</h3>'
         + '<label class="route-coord">X <input type="number" id="route-x" value="' + escapeHtml(wt.x) + '" step="any"></label>'
         + '<label class="route-coord">Y <input type="number" id="route-y" value="' + escapeHtml(wt.y) + '" step="any"></label>'
-        + '<button type="button" id="route-walk-btn">Walk to</button>'
-        + '<p class="routes-future">Route recording — FUTURE (out of scope in v1).</p>'
+        + '<button type="button" id="route-walk-btn">' + escapeHtml(t(state, 'routes.walkTo')) + '</button>'
+        + '<p class="routes-future">' + escapeHtml(t(state, 'routes.recordingFuture')) + '</p>'
         + '</div>';
     } else {
       body = '<div class="config-shell">' + escapeHtml(t(state, 'configLocked')) + '</div>';
@@ -1804,6 +1890,13 @@
       maxHealth: num((st && st.maxHealth) || (ag && ag.maxHealth)),
       maxMana: num((st && st.maxMana) || (ag && ag.maxMana)),
     };
+  }
+
+  /** PR6 (REQ-35): localized targeting label for the ATTACK live line — the
+   *  snapshot carries the targeting id (lowest-hp/nearest); the panel speaks
+   *  the localized label (never the raw id). */
+  function attackTargetingLabel(state, id) {
+    return id === 'nearest' ? t(state, 'attack.targetingNearest') : t(state, 'attack.targetingLowestHp');
   }
 
   /** Live state view: stats summary + REQ-22 premium notice + REQ-25
@@ -1843,15 +1936,15 @@
       }
       const blocked = premiumBlockedModules(state.snapshot);
       if (blocked.length > 0) {
-        parts.push('<div class="premium-required">Premium required — '
-          + blocked.map((b) => escapeHtml(b.label)).join(', ')
-          + ' stay disabled (REQ-22).</div>');
+        parts.push('<div class="premium-required">'
+          + escapeHtml(tVar(state, 'premium.required', { modules: blocked.map((b) => b.label).join(', ') }))
+          + '</div>');
       }
       const offers = snapshotOffers(state.snapshot);
       if (offers.length > 0) {
         parts.push('<div class="offers">'
-          + '<h3>Registration offers</h3>'
-          + offers.map(renderOffer).join('')
+          + '<h3>' + escapeHtml(t(state, 'offers.title')) + '</h3>'
+          + offers.map((o) => renderOffer(o, state)).join('')
           + '</div>');
       }
       // Slice-6 polish (REQ-17/23): module alert states wired into the live
@@ -1859,7 +1952,7 @@
       const modules = state.snapshot.agent && state.snapshot.agent.modules
         ? state.snapshot.agent.modules : null;
       if (modules && modules.eat && modules.eat.paused === true) {
-        parts.push('<div class="module-alert alert-eat">Eating paused — 3 consecutive failed attempts.</div>');
+        parts.push('<div class="module-alert alert-eat">' + escapeHtml(t(state, 'eat.pausedAlert')) + '</div>');
       }
       // Slice 3 (PR4, REQ-30, D3): the trainer's strict-CAP state — the panel
       // ALERT + beep fire on the rising edge (app.js); this line keeps the
@@ -1899,15 +1992,21 @@
         const r = modules.routes;
         let line;
         if (r.available !== true) {
-          line = 'Routes: ' + (r.reason || 'no pathfinder data');
+          line = tVar(state, 'routes.unavailable', { reason: r.reason || 'no pathfinder data' });
         } else if (r.isAutoWalking === true) {
-          line = 'Auto-walking: '
-            + (Number.isInteger(r.stepsRemaining) ? r.stepsRemaining + ' steps remaining' : 'in progress');
-          if (r.destination && Number.isFinite(r.destination.x) && Number.isFinite(r.destination.y)) {
-            line += ' to (' + r.destination.x + ', ' + r.destination.y + ')';
+          const hasDest = r.destination && Number.isFinite(Number(r.destination.x))
+            && Number.isFinite(Number(r.destination.y));
+          if (Number.isInteger(r.stepsRemaining)) {
+            line = hasDest
+              ? tVar(state, 'routes.autoWalkingStepsTo', { count: r.stepsRemaining, x: r.destination.x, y: r.destination.y })
+              : tVar(state, 'routes.autoWalkingSteps', { count: r.stepsRemaining });
+          } else {
+            line = hasDest
+              ? tVar(state, 'routes.autoWalkingProgressTo', { x: r.destination.x, y: r.destination.y })
+              : tVar(state, 'routes.autoWalkingProgress');
           }
         } else {
-          line = 'Routes: not auto-walking';
+          line = t(state, 'routes.notWalking');
         }
         parts.push('<div class="routes-state">' + escapeHtml(line) + '</div>');
       }
@@ -1916,25 +2015,37 @@
       // ride the snapshot like every other module line.
       if (modules && modules.attack) {
         const a = modules.attack;
-        let line = 'Attack: ' + (a.on === true ? 'on' : 'off')
-          + ' — ' + (a.targeting || 'lowest-hp');
+        const targeting = attackTargetingLabel(state, a.targeting);
+        const hasSpell = a.on === true && a.spell && a.spell.sid !== null && a.spell.sid !== undefined;
+        const hasRune = a.on === true && a.rune && a.rune.slot !== null && a.rune.slot !== undefined;
+        let line;
         if (a.on === true) {
-          if (a.spell && a.spell.sid !== null && a.spell.sid !== undefined) line += ' — spell sid ' + a.spell.sid;
-          if (a.rune && a.rune.slot !== null && a.rune.slot !== undefined) line += ' — rune slot ' + a.rune.slot;
+          if (hasSpell && hasRune) {
+            line = tVar(state, 'attack.stateOnFull', { targeting, sid: a.spell.sid, slot: a.rune.slot });
+          } else if (hasSpell) {
+            line = tVar(state, 'attack.stateOnSpell', { targeting, sid: a.spell.sid });
+          } else if (hasRune) {
+            line = tVar(state, 'attack.stateOnRune', { targeting, slot: a.rune.slot });
+          } else {
+            line = tVar(state, 'attack.stateOn', { targeting });
+          }
+        } else {
+          line = tVar(state, 'attack.stateOff', { targeting });
         }
-        line += ' (skeleton)';
         parts.push('<div class="attack-state">' + escapeHtml(line) + '</div>');
       }
       const cavebot = snapshotCavebot(state.snapshot);
       if (cavebot) {
-        let line = 'Cavebot: ' + (cavebot.on === true ? 'on' : 'off') + ' — ';
-        line += cavebot.recording && cavebot.recording.active === true
-          ? 'recording ' + cavebot.recording.points + ' waypoints' : 'not recording';
+        let detail = cavebot.recording && cavebot.recording.active === true
+          ? tVar(state, 'cavebot.stateRecording', { count: cavebot.recording.points })
+          : t(state, 'cavebot.stateNotRecording');
         if (cavebot.savedRoute && cavebot.savedRoute.count > 0) {
-          line += ' — saved route ' + cavebot.savedRoute.count + ' waypoints';
+          detail += tVar(state, 'cavebot.stateSavedRoute', { count: cavebot.savedRoute.count });
         }
-        if (cavebot.paused === true) line += ' — PAUSED';
-        parts.push('<div class="cavebot-state">' + escapeHtml(line) + '</div>');
+        if (cavebot.paused === true) detail += t(state, 'cavebot.statePaused');
+        parts.push('<div class="cavebot-state">'
+          + escapeHtml(tVar(state, cavebot.on === true ? 'cavebot.stateOn' : 'cavebot.stateOff', { detail }))
+          + '</div>');
       }
       body = parts.join('');
     }
@@ -2033,14 +2144,47 @@
       + '</div>';
   }
 
-  /** Full panel body render (status bar + tabs + config + live state + log
-   *  + tutorial overlay). */
+  /** Audit: localized severity/kind label for a panel alert. Unknown kinds
+   *  fall back to the raw kind id (never the key itself). */
+  function alertKindLabel(state, kind) {
+    const key = 'alert.kind.' + String(kind || 'event');
+    const label = t(state, key);
+    return label === key ? String(kind || 'event') : label;
+  }
+
+  /** Audit: visible panel alerts section — bounded to the last 8 entries,
+   *  HTML-escaped, with a localized kind label + timestamp (REQ-26 readable,
+   *  never raw JSON). Rendered from state.alerts (the reducer already caps
+   *  the list at 20; the render bounds the section to a readable window). */
+  function renderAlerts(state) {
+    const alerts = Array.isArray(state.alerts) ? state.alerts.slice(-8) : [];
+    const parts = ['<section class="panel-alerts">', '<h2>' + escapeHtml(t(state, 'alerts.title')) + '</h2>'];
+    if (alerts.length === 0) {
+      parts.push('<p class="alerts-empty">' + escapeHtml(t(state, 'alerts.empty')) + '</p>');
+    } else {
+      parts.push('<div class="alerts-list">' + alerts.map((a) => {
+        const when = Number.isFinite(Number(a.at))
+          ? new Date(Number(a.at)).toLocaleTimeString() : '--:--:--';
+        return '<div class="panel-alert" data-alert-kind="' + escapeHtml(String(a.kind || 'event')) + '">'
+          + '<span class="panel-alert-kind">' + escapeHtml(alertKindLabel(state, a.kind)) + '</span>'
+          + ' <span class="panel-alert-time">' + escapeHtml(when) + '</span>'
+          + ' <span class="panel-alert-message">' + escapeHtml(String(a.message || '')) + '</span>'
+          + '</div>';
+      }).join('') + '</div>');
+    }
+    parts.push('</section>');
+    return parts.join('');
+  }
+
+  /** Full panel body render (status bar + tabs + config + live state + alerts
+   *  + log + tutorial overlay). */
   function renderPanel(state) {
     return '<main id="panel-root">'
       + renderStatusBar(state)
       + renderModuleList(state)
       + renderConfigForm(state)
       + renderLiveState(state)
+      + renderAlerts(state)
       + renderLog(state)
       + renderTutorial(state)
       + '</main>';
@@ -2079,6 +2223,8 @@
     formatLogResult,
     renderOffer,
     renderAntibotAlert,
+    alertKindLabel,
+    renderAlerts,
     renderStatusBar,
     renderModuleList,
     renderProfileLoader,

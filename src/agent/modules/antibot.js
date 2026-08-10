@@ -257,7 +257,10 @@ function createAntibotModule(opts = {}) {
     let entries = [];
     try {
       entries = CHAT_MOD.getRecentMessages({ gameClient: gameClient, document: doc });
-    } catch (e) { entries = []; }
+    } catch (e) {
+      warn('antibot: Default-channel chat read failed — no events this tick: ' + (e && e.message ? e.message : e));
+      entries = [];
+    }
     observeChat(entries);
     observeContext();
     return { alerts: state.alerts.slice() };

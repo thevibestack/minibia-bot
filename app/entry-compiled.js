@@ -47,7 +47,11 @@ function resolveAgentBundle() {
     try {
       const source = fs.readFileSync(candidate, 'utf8');
       if (source && source.length > 0) return source;
-    } catch (e) { /* try next candidate */ }
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.warn('[minibia-desktop-bot] agent bundle candidate unreadable: ' + candidate
+        + ' — ' + (e && e.message ? e.message : e));
+    }
   }
   throw new Error('minibia-desktop-agent.js bundle not found (build input missing)');
 }

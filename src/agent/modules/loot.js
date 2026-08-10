@@ -1,5 +1,7 @@
 'use strict';
 
+const { createPremiumReader } = require('../../core/premium');
+
 /**
  * Auto-loot list module (REQ-19, design "Loot" row, task 5.2).
  *
@@ -59,15 +61,9 @@ function createLootModule(opts = {}) {
     lastRouted: null,
   };
 
-  /** Eager premium read (REQ-22): panel-facing state computed on getState. */
-  function currentPremium() {
-    const p = typeof readPremium === 'function' ? readPremium() : null;
-    return {
-      gated: p ? p.gated : true,
-      active: p ? p.active : null,
-      blocked: Boolean(p && p.active === false),
-    };
-  }
+  // Eager premium read (REQ-22): panel-facing state computed on getState —
+  // shared reader (core/premium) so every gated module exposes the same shape.
+  const currentPremium = createPremiumReader(readPremium);
 
   /**
    * Pure destination resolution (REQ-19): per-monster first, then the default

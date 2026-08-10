@@ -1,5 +1,7 @@
 'use strict';
 
+const { createPremiumReader } = require('../../core/premium');
+
 /**
  * Hunt session stats module (REQ-21, design "Hunt stats" row, task 5.4).
  *
@@ -67,15 +69,9 @@ function createHuntStats(opts = {}) {
     lastSampleAt: 0,
   };
 
-  /** Eager premium read (REQ-22): panel-facing state computed on getState. */
-  function currentPremium() {
-    const p = typeof readPremium === 'function' ? readPremium() : null;
-    return {
-      gated: p ? p.gated : true,
-      active: p ? p.active : null,
-      blocked: Boolean(p && p.active === false),
-    };
-  }
+  // Eager premium read (REQ-22): panel-facing state computed on getState —
+  // shared reader (core/premium) so every gated module exposes the same shape.
+  const currentPremium = createPremiumReader(readPremium);
 
   /**
    * Sample the current raw counters + kill feed. Every metric is

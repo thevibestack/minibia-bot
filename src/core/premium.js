@@ -110,4 +110,26 @@ function isPremiumBlocked(state) {
   return Boolean(state && state.gated && state.active === false);
 }
 
-module.exports = { readPremiumState, isPremiumBlocked, toEpochMs };
+/**
+ * REQ-22 factory: wrap an injected premium reader (a function returning the
+ * {gated, active, source} verdict from readPremiumState) into the
+ * panel-facing {gated, active, blocked} shape every gated module exposes via
+ * getState(). Shared by trade/loot/spawns/huntStats (the same 6-line helper
+ * used to be duplicated in each module). Unknown state (absent reader or
+ * null active) never blocks — the blocked predicate is the reader verdict
+ * with `active === false`, exactly as the modules always computed it.
+ * @param {(() => {gated?: boolean, active?: boolean|null, source?: string|null})|null} readPremium
+ * @returns {() => {gated: boolean, active: boolean|null, blocked: boolean}}
+ */
+function createPremiumReader(readPremium) {
+  return function currentPremium() {
+    const p = typeof readPremium === 'function' ? readPremium() : null;
+    return {
+      gated: p ? p.gated : true,
+      active: p ? p.active : null,
+      blocked: Boolean(p && p.active === false),
+    };
+  };
+}
+
+module.exports = { readPremiumState, isPremiumBlocked, createPremiumReader, toEpochMs };

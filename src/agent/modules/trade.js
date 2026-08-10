@@ -1,5 +1,7 @@
 'use strict';
 
+const { createPremiumReader } = require('../../core/premium');
+
 /**
  * Auto trade broadcast module (REQ-18, design D6 "Trade" row, task 5.1).
  *
@@ -54,16 +56,10 @@ function createTradeModule(opts = {}) {
 
   const state = { available: true, reason: 'ok' };
 
-  /** Eager premium read (REQ-22): the panel-facing state is computed on
-   *  getState — fresh regardless of whether the tree reached this module. */
-  function currentPremium() {
-    const p = typeof readPremium === 'function' ? readPremium() : null;
-    return {
-      gated: p ? p.gated : true,
-      active: p ? p.active : null,
-      blocked: Boolean(p && p.active === false),
-    };
-  }
+  // Eager premium read (REQ-22): the panel-facing state is computed on
+  // getState — fresh regardless of whether the tree reached this module.
+  // Shared reader (core/premium) so every gated module exposes the same shape.
+  const currentPremium = createPremiumReader(readPremium);
 
   /**
    * Pure decision (REQ-18): ON + message configured + interval elapsed since

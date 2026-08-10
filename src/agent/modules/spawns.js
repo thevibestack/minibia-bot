@@ -1,5 +1,7 @@
 'use strict';
 
+const { createPremiumReader } = require('../../core/premium');
+
 /**
  * Monster spawn maps provider (REQ-20, design "Spawns" row, task 5.3).
  *
@@ -85,15 +87,9 @@ function createSpawnsModule(opts = {}) {
 
   const state = { lastQuery: null };
 
-  /** Eager premium read (REQ-22): panel-facing state computed on getState. */
-  function currentPremium() {
-    const p = typeof readPremium === 'function' ? readPremium() : null;
-    return {
-      gated: p ? p.gated : true,
-      active: p ? p.active : null,
-      blocked: Boolean(p && p.active === false),
-    };
-  }
+  // Eager premium read (REQ-22): panel-facing state computed on getState —
+  // shared reader (core/premium) so every gated module exposes the same shape.
+  const currentPremium = createPremiumReader(readPremium);
 
   /**
    * Query the spawn locations for a monster (read-only, REQ-20). The panel

@@ -115,6 +115,22 @@
       } catch (e) { /* private mode / disabled storage: best-effort */ }
       return;
     }
+    // Audit: language persistence — the chosen lang survives reloads
+    // ('mb-panel-lang'); restored on boot below.
+    if (effect.type === 'lang-set') {
+      try {
+        window.localStorage.setItem('mb-panel-lang', effect.lang === 'es' ? 'es' : 'en');
+      } catch (e) { /* private mode / disabled storage: best-effort */ }
+      return;
+    }
+    // Audit: alert sound toggle persistence ('mb-panel-sound'); restored on
+    // boot below.
+    if (effect.type === 'sound-set') {
+      try {
+        window.localStorage.setItem('mb-panel-sound', effect.enabled === true ? '1' : '0');
+      } catch (e) { /* private mode / disabled storage: best-effort */ }
+      return;
+    }
     if (!fetchImpl) return; // tests without network: state machine only
     switch (effect.type) {
       case 'connect': {
@@ -234,7 +250,9 @@
     // REQ-26 (slice 1a): panel-level alerts ring the audio stub (feature-
     // detected; TRAINER/OTHERS slices route their module alerts through the
     // same ALERT action — the hook is live now, the sound arrives with them).
-    if (action && action.type === 'ALERT') beep();
+    // Audit: the sound toggle (state.soundEnabled) silences the beep; visual
+    // alerts still render.
+    if (action && action.type === 'ALERT' && state.soundEnabled !== false) beep();
     return state;
   }
 
@@ -269,7 +287,7 @@
       if (res && res.agent && res.agent.modules && res.agent.modules.training) {
         var capFull = res.agent.modules.training.capFull === true;
         if (capFull && !lastCapFull) {
-          dispatch({ type: 'ALERT', kind: 'cap-full', message: 'Rune cap full — rune-making stopped (fallback or idle)' });
+          dispatch({ type: 'ALERT', kind: 'cap-full', message: P.t(state, 'trainer.capFullAlert') });
         }
         lastCapFull = capFull;
       }
@@ -292,7 +310,7 @@
               dispatch({
                 type: 'ALERT',
                 kind: 'antibot-' + (alert.kind || 'event'),
-                message: alert.message || 'Anti-bot: ' + (alert.kind || 'event'),
+                message: alert.message || P.tVar(state, 'alert.antibot', { kind: alert.kind || 'event' }),
               });
             }
           }
@@ -332,6 +350,9 @@
     } else if (target && target.matches && target.matches('#attack-targeting')) {
       // REQ-35 (PR6): attack targeting select — pure UI value.
       dispatch({ type: 'UPDATE_ATTACK_INPUT', key: 'targeting', value: target.value });
+    } else if (target && target.matches && target.matches('#sound-toggle')) {
+      // Audit: alert sound toggle — change (not input): checkboxes fire change.
+      dispatch({ type: 'SET_SOUND', enabled: target.checked });
     }
   });
 
@@ -508,6 +529,22 @@
     tutorialSeen = window.localStorage && window.localStorage.getItem('tutorialSeen') === '1';
   } catch (e) { tutorialSeen = false; }
   if (!tutorialSeen) dispatch({ type: 'TUTORIAL_START' });
+
+  // Audit: restore the persisted language ('mb-panel-lang') so the panel
+  // opens in the chosen ES/EN; EN stays the default when nothing is stored.
+  try {
+    if (window.localStorage && window.localStorage.getItem('mb-panel-lang') === 'es') {
+      dispatch({ type: 'SET_LANG', lang: 'es' });
+    }
+  } catch (e) { /* private mode / disabled storage: best-effort */ }
+
+  // Audit: restore the alert-sound preference ('mb-panel-sound'); ON stays
+  // the default when nothing is stored.
+  try {
+    if (window.localStorage && window.localStorage.getItem('mb-panel-sound') === '0') {
+      dispatch({ type: 'SET_SOUND', enabled: false });
+    }
+  } catch (e) { /* private mode / disabled storage: best-effort */ }
 
   render();
   startPolling();

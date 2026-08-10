@@ -1463,7 +1463,29 @@ function isPremiumBlocked(state) {
   return Boolean(state && state.gated && state.active === false);
 }
 
-module.exports = { readPremiumState, isPremiumBlocked, toEpochMs };
+/**
+ * REQ-22 factory: wrap an injected premium reader (a function returning the
+ * {gated, active, source} verdict from readPremiumState) into the
+ * panel-facing {gated, active, blocked} shape every gated module exposes via
+ * getState(). Shared by trade/loot/spawns/huntStats (the same 6-line helper
+ * used to be duplicated in each module). Unknown state (absent reader or
+ * null active) never blocks — the blocked predicate is the reader verdict
+ * with `active === false`, exactly as the modules always computed it.
+ * @param {(() => {gated?: boolean, active?: boolean|null, source?: string|null})|null} readPremium
+ * @returns {() => {gated: boolean, active: boolean|null, blocked: boolean}}
+ */
+function createPremiumReader(readPremium) {
+  return function currentPremium() {
+    const p = typeof readPremium === 'function' ? readPremium() : null;
+    return {
+      gated: p ? p.gated : true,
+      active: p ? p.active : null,
+      blocked: Boolean(p && p.active === false),
+    };
+  };
+}
+
+module.exports = { readPremiumState, isPremiumBlocked, createPremiumReader, toEpochMs };
 
 return module.exports;
 })();
@@ -2922,7 +2944,7 @@ function createRunes(opts = {}) {
     if (ctx.mana === null || ctx.mana === undefined || !Number.isFinite(Number(ctx.mana))) return null;
     let cost = null;
     if (typeof getSpellCost === 'function') {
-      try { cost = getSpellCost(slot); } catch (e) { cost = null; }
+      try { cost = getSpellCost(slot); } catch (e) { warn('runes: spell cost read failed: ' + (e && e.message ? e.message : e)); cost = null; }
     }
     if (cost === null || !Number.isFinite(cost)) return null; // cost unknown -> skip
     const feas = FEAS_MOD.canCast({
@@ -3163,7 +3185,7 @@ function createTraining(opts = {}) {
     if (cc.capMode !== 'strict') return { full: false };
     let cap = null;
     if (typeof readCap === 'function') {
-      try { cap = readCap(); } catch (e) { cap = null; }
+      try { cap = readCap(); } catch (e) { warn('training: cap read failed: ' + (e && e.message ? e.message : e)); cap = null; }
     }
     state.cap = cap && typeof cap === 'object' ? cap : null;
     const ratio = state.cap ? state.cap.ratio : null;
@@ -3172,14 +3194,34 @@ function createTraining(opts = {}) {
     const capFull = Number.isFinite(threshold) ? ratio >= threshold : ratio >= 1;
     if (!capFull) return { full: false };
 
-    // Cap full: fallback slot cast when mana >= fallbackManaPct*maxMana
-    // (ronda-1), else idle until mana recovers (REQ-30).
+    // Cap full: fallback slot cast when the fallback is AFFORDABLE — its REAL
+    // spell cost (resolved from the slot via getSpellCost) + reserve must be
+    // covered by the current mana (FEAS_MOD.canCast, the same pattern the
+    // training cast uses). When the cost cannot be resolved (slot mapping
+    // absent) the v1 %-of-maxMana behavior stands — degrade safe (REQ-30).
     const fallbackSlot = Number(cc.fallbackSlot);
     const pct = Number(cc.fallbackManaPct);
-    const manaOk = Number.isFinite(pct)
-      && ctx.mana !== null && ctx.mana !== undefined
-      && Number.isFinite(ctx.maxMana) && ctx.maxMana > 0
-      && ctx.mana >= pct * ctx.maxMana;
+    const manaKnown = ctx.mana !== null && ctx.mana !== undefined
+      && Number.isFinite(ctx.maxMana) && ctx.maxMana > 0;
+    let manaOk = Number.isFinite(pct) && manaKnown && ctx.mana >= pct * ctx.maxMana;
+    if (manaKnown && Number.isInteger(fallbackSlot) && fallbackSlot >= 1 && fallbackSlot <= 12
+      && typeof getSpellCost === 'function') {
+      let fallbackCost = null;
+      try { fallbackCost = getSpellCost(fallbackSlot); } catch (e) { fallbackCost = null; }
+      if (fallbackCost !== null && fallbackCost !== undefined
+        && Number.isFinite(Number(fallbackCost)) && Number(fallbackCost) >= 0) {
+        const feas = FEAS_MOD.canCast({
+          mana: ctx.mana,
+          cost: Number(fallbackCost),
+          reserve: Number(config.reserve) || 0,
+          maxMana: ctx.maxMana,
+          key: 'training-fallback-' + fallbackSlot,
+          warned,
+          onWarn: warn,
+        });
+        manaOk = feas.fire;
+      }
+    }
     if (Number.isInteger(fallbackSlot) && fallbackSlot >= 1 && fallbackSlot <= 12 && manaOk) {
       // Honest cooldown verdict for the fallback (fallbackSid dropped, obs
       // 10502): the fallback fires SLOT-driven and never carried a resolvable
@@ -3218,7 +3260,9 @@ function createTraining(opts = {}) {
     if (typeof canCastSpell === 'function') {
       try {
         if (canCastSpell(config.sid) === false) return { fire: false, reason: 'vocation-gate' };
-      } catch (e) { /* gate read failure => skip the gate, never block */ }
+      } catch (e) {
+        warn('training: vocation gate read failed — gate skipped: ' + (e && e.message ? e.message : e));
+      }
     }
 
     // REQ-30 (D3): strict rune CAP stops rune-making at the cap threshold —
@@ -3542,6 +3586,8 @@ const exports = module.exports;
 const require = __mbRequire;
 'use strict';
 
+const { createPremiumReader } = require('core/premium');
+
 /**
  * Auto trade broadcast module (REQ-18, design D6 "Trade" row, task 5.1).
  *
@@ -3596,16 +3642,10 @@ function createTradeModule(opts = {}) {
 
   const state = { available: true, reason: 'ok' };
 
-  /** Eager premium read (REQ-22): the panel-facing state is computed on
-   *  getState — fresh regardless of whether the tree reached this module. */
-  function currentPremium() {
-    const p = typeof readPremium === 'function' ? readPremium() : null;
-    return {
-      gated: p ? p.gated : true,
-      active: p ? p.active : null,
-      blocked: Boolean(p && p.active === false),
-    };
-  }
+  // Eager premium read (REQ-22): the panel-facing state is computed on
+  // getState — fresh regardless of whether the tree reached this module.
+  // Shared reader (core/premium) so every gated module exposes the same shape.
+  const currentPremium = createPremiumReader(readPremium);
 
   /**
    * Pure decision (REQ-18): ON + message configured + interval elapsed since
@@ -3689,6 +3729,8 @@ const exports = module.exports;
 const require = __mbRequire;
 'use strict';
 
+const { createPremiumReader } = require('core/premium');
+
 /**
  * Auto-loot list module (REQ-19, design "Loot" row, task 5.2).
  *
@@ -3748,15 +3790,9 @@ function createLootModule(opts = {}) {
     lastRouted: null,
   };
 
-  /** Eager premium read (REQ-22): panel-facing state computed on getState. */
-  function currentPremium() {
-    const p = typeof readPremium === 'function' ? readPremium() : null;
-    return {
-      gated: p ? p.gated : true,
-      active: p ? p.active : null,
-      blocked: Boolean(p && p.active === false),
-    };
-  }
+  // Eager premium read (REQ-22): panel-facing state computed on getState —
+  // shared reader (core/premium) so every gated module exposes the same shape.
+  const currentPremium = createPremiumReader(readPremium);
 
   /**
    * Pure destination resolution (REQ-19): per-monster first, then the default
@@ -3876,6 +3912,8 @@ const exports = module.exports;
 const require = __mbRequire;
 'use strict';
 
+const { createPremiumReader } = require('core/premium');
+
 /**
  * Monster spawn maps provider (REQ-20, design "Spawns" row, task 5.3).
  *
@@ -3961,15 +3999,9 @@ function createSpawnsModule(opts = {}) {
 
   const state = { lastQuery: null };
 
-  /** Eager premium read (REQ-22): panel-facing state computed on getState. */
-  function currentPremium() {
-    const p = typeof readPremium === 'function' ? readPremium() : null;
-    return {
-      gated: p ? p.gated : true,
-      active: p ? p.active : null,
-      blocked: Boolean(p && p.active === false),
-    };
-  }
+  // Eager premium read (REQ-22): panel-facing state computed on getState —
+  // shared reader (core/premium) so every gated module exposes the same shape.
+  const currentPremium = createPremiumReader(readPremium);
 
   /**
    * Query the spawn locations for a monster (read-only, REQ-20). The panel
@@ -4036,6 +4068,8 @@ const module = { exports: {} };
 const exports = module.exports;
 const require = __mbRequire;
 'use strict';
+
+const { createPremiumReader } = require('core/premium');
 
 /**
  * Hunt session stats module (REQ-21, design "Hunt stats" row, task 5.4).
@@ -4104,15 +4138,9 @@ function createHuntStats(opts = {}) {
     lastSampleAt: 0,
   };
 
-  /** Eager premium read (REQ-22): panel-facing state computed on getState. */
-  function currentPremium() {
-    const p = typeof readPremium === 'function' ? readPremium() : null;
-    return {
-      gated: p ? p.gated : true,
-      active: p ? p.active : null,
-      blocked: Boolean(p && p.active === false),
-    };
-  }
+  // Eager premium read (REQ-22): panel-facing state computed on getState —
+  // shared reader (core/premium) so every gated module exposes the same shape.
+  const currentPremium = createPremiumReader(readPremium);
 
   /**
    * Sample the current raw counters + kill feed. Every metric is
@@ -4834,7 +4862,10 @@ function createAntibotModule(opts = {}) {
     let entries = [];
     try {
       entries = CHAT_MOD.getRecentMessages({ gameClient: gameClient, document: doc });
-    } catch (e) { entries = []; }
+    } catch (e) {
+      warn('antibot: Default-channel chat read failed — no events this tick: ' + (e && e.message ? e.message : e));
+      entries = [];
+    }
     observeChat(entries);
     observeContext();
     return { alerts: state.alerts.slice() };
@@ -5985,7 +6016,10 @@ function createAgent(opts = {}) {
           if (entry && entry.cost !== undefined) cost = Number(entry.cost);
         }
       }
-    } catch (e) { cost = null; }
+    } catch (e) {
+      warn('readSpellCost: spell cost lookup failed: ' + (e && e.message ? e.message : e));
+      cost = null;
+    }
     if ((cost === null || !Number.isFinite(cost)) && Number.isFinite(Number(spell.cost))) cost = Number(spell.cost);
     return cost !== null && Number.isFinite(cost) ? cost : null;
   }
@@ -6005,7 +6039,9 @@ function createAgent(opts = {}) {
       if (hb && typeof hb.__canPlayerCastSpell === 'function') {
         return hb.__canPlayerCastSpell(sid) === true;
       }
-    } catch (e) { /* gate read failure => unknown */ }
+    } catch (e) {
+      warn('canCastSpell: vocation gate read failed — gate skipped: ' + (e && e.message ? e.message : e));
+    }
     return null;
   }
 
@@ -6027,7 +6063,10 @@ function createAgent(opts = {}) {
       const sid = entry && entry.spell;
       if (sid === null || sid === undefined) return null;
       return readSpellCost({ sid: sid });
-    } catch (e) { return null; }
+    } catch (e) {
+      warn('readRuneCost: slot cost resolution failed: ' + (e && e.message ? e.message : e));
+      return null;
+    }
   }
 
   /** Live-probed native rune windows: hotbarManager.__runeAttackUntil /
@@ -6042,7 +6081,10 @@ function createAgent(opts = {}) {
       const healUntil = hb.__runeHealUntil;
       if (attackUntil === undefined && healUntil === undefined) return null;
       return { attackUntil: attackUntil === undefined ? null : attackUntil, healUntil: healUntil === undefined ? null : healUntil };
-    } catch (e) { return null; }
+    } catch (e) {
+      warn('readRuneTimers: native rune timer read failed: ' + (e && e.message ? e.message : e));
+      return null;
+    }
   }
 
   /** Post-rune-fire wait in ms: __getRuneEffectiveCooldown() when present,
@@ -6056,13 +6098,17 @@ function createAgent(opts = {}) {
         const v = hb.__getRuneEffectiveCooldown();
         if (Number.isFinite(Number(v))) wait = Math.max(wait, Number(v));
       }
-    } catch (e) { /* best-effort */ }
+    } catch (e) {
+      warn('readRuneAfterFireWait: rune cooldown read failed: ' + (e && e.message ? e.message : e));
+    }
     try {
       const p = state.gameClient && state.gameClient.player;
       const sl = (p && p.state && p.state.attackSlowness) !== undefined
         ? (p.state.attackSlowness) : (p && p.attackSlowness);
       if (Number.isFinite(Number(sl))) wait = Math.max(wait, Number(sl));
-    } catch (e) { /* best-effort */ }
+    } catch (e) {
+      warn('readRuneAfterFireWait: attackSlowness read failed: ' + (e && e.message ? e.message : e));
+    }
     return wait;
   }
 
@@ -6398,7 +6444,16 @@ function createAgent(opts = {}) {
       // fields live in the runes config shape (characters.ts defaults).
       capConfig: cfg.runes,
       readCap: readCap,
-      getSpellCost: function (sid) { return readSpellCost({ sid: sid }); },
+      // D3 (REQ-30): the trainer resolves the FALLBACK spell cost FROM ITS
+      // SLOT (slot-driven, fallbackSid dropped — obs 10502). The hotbar
+      // slot -> sid mapping (readRuneCost) wins when the argument is a live
+      // hotbar slot; an argument that maps no slot (the training-spell sid
+      // path) falls through to the sid resolution unchanged.
+      getSpellCost: function (arg) {
+        const viaSlot = readRuneCost(arg);
+        if (viaSlot !== null && viaSlot !== undefined) return viaSlot;
+        return readSpellCost({ sid: arg });
+      },
       canCastSpell: canCastSpell,
       readCooldown: function (sid) { return GC_MOD.readCooldown(sid, { gameClient: state.gameClient }); },
       now: nowFn,

@@ -104,9 +104,13 @@ test('REQ-16: fire calls __handleClick via the proven firing path', () => {
 
 /* ------------------------- PR 4 (REQ-30/31/32, D2/D3/D4) ------------------------- */
 
-/** Strict-cap module: capMode strict, threshold 1.0, fallback slot 3 at 50% mana. */
+/** Strict-cap module: capMode strict, threshold 1.0, fallback slot 3 at 50% mana.
+ *  The FALLBACK slot cost defaults to UNKNOWN (null) so cap-full scenarios keep
+ *  the v1 %-based fallback gate; the training-spell sid still resolves (cost 25)
+ *  so a recovered cap resumes normal training. Cost-aware tests inject a slot
+ *  resolver via opts. */
 function capModule(overrides = {}, opts = {}) {
-  return moduleWith({}, Object.assign({
+  return moduleWith(Object.assign({}, overrides.training || {}), Object.assign({
     capConfig: Object.assign({
       capMode: 'strict',
       capFullThreshold: 1.0,
@@ -114,6 +118,7 @@ function capModule(overrides = {}, opts = {}) {
       fallbackManaPct: 0.5,
     }, overrides.capConfig || {}),
     readCap: overrides.readCap || (() => ({ capacity: 400, maxCapacity: 400, ratio: 1, source: 'state' })),
+    getSpellCost: overrides.getSpellCost || ((arg) => (arg === 3 ? null : 25)),
   }, opts));
 }
 
@@ -158,6 +163,45 @@ test('REQ-30 (D3): cap full + mana >= fallback% -> the fallback spell casts (slo
   assert.equal(d.slot, 3);
   assert.equal(d.reason, 'cap-full-fallback');
   assert.equal(m.getState().capFull, true);
+});
+
+test('REQ-30 (D3): the fallback verifies its REAL spell cost — fires only when mana covers cost+reserve', () => {
+  // Fallback slot 3 resolves cost 80; %-gate at 50% maxMana (250) also passes.
+  // mana 300 covers 80 + reserve 0 -> the fallback fires (slot-driven cost).
+  const m = capModule({}, { getSpellCost: (slot) => (slot === 3 ? 80 : null) });
+  const d = m.decide({ mana: 300, maxMana: 500 });
+  assert.equal(d.fire, true);
+  assert.equal(d.kind, 'fallback');
+  assert.equal(d.slot, 3, 'the slot is passed to the cost resolver');
+  assert.equal(d.reason, 'cap-full-fallback');
+});
+
+test('REQ-30 (D3): the fallback idles when mana covers the %-gate but NOT cost+reserve', () => {
+  // Fallback cost 80 + training reserve 250 -> needs mana >= 330. mana 300
+  // passes the 50% %-gate (250) yet must NOT fire an unaffordable fallback.
+  const m = capModule({ training: { reserve: 250 } },
+    { getSpellCost: (slot) => (slot === 3 ? 80 : null) });
+  const d = m.decide({ mana: 300, maxMana: 500 });
+  assert.equal(d.fire, false, 'an unaffordable fallback never fires');
+  assert.equal(d.reason, 'cap-full-idle');
+  assert.equal(m.getState().capFull, true);
+
+  // Mana recovers to cost + reserve -> the fallback fires.
+  const d2 = m.decide({ mana: 330, maxMana: 500 });
+  assert.equal(d2.fire, true);
+  assert.equal(d2.kind, 'fallback');
+  assert.equal(d2.slot, 3);
+});
+
+test('REQ-30 (D3): unknown fallback cost degrades to the %-based behavior (safe)', () => {
+  // No cost resolvable for the fallback slot -> the v1 %-of-maxMana gate stands.
+  const m = capModule({}, { getSpellCost: () => null });
+  const fire = m.decide({ mana: 300, maxMana: 500 }); // 60% >= 50% -> fires
+  assert.equal(fire.fire, true);
+  assert.equal(fire.kind, 'fallback');
+  const idle = m.decide({ mana: 200, maxMana: 500 }); // 40% < 50% -> idles
+  assert.equal(idle.fire, false);
+  assert.equal(idle.reason, 'cap-full-idle');
 });
 
 test('REQ-30 (D3): cap full + mana < fallback% -> trainer idles until mana recovers', () => {
