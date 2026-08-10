@@ -4,7 +4,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { JSDOM } = require('jsdom');
 
-const { readStats, readCooldown, enumerateSpellCatalog, filterCatalogByVocation, spellValidationError } = require('../../src/adapters/gameClient');
+const { readStats, readCooldown, readCap, enumerateSpellCatalog, filterCatalogByVocation, spellValidationError } = require('../../src/adapters/gameClient');
 
 function makeDoc(bodyHtml) {
   const dom = new JSDOM(`<!DOCTYPE html><html><body>${bodyHtml}</body></html>`);
@@ -181,4 +181,44 @@ test('REQ-28: spellValidationError explains why a sid cannot apply (vocation/lev
   assert.deepEqual(spellValidationError(null, {}), { reason: 'unknown spell' });
   assert.equal(spellValidationError(spell, { vocationLabel: 'druid', playerLevel: 8, mana: null }), null,
     'mana null = not checked (cross-load path)');
+});
+
+test('REQ-30 (D3): readCap reads the probed __state.capacity + maxCapacity locations', () => {
+  const ctx = { gameClient: { player: { state: { __state: { capacity: 209 }, maxCapacity: 400 } } } };
+  const cap = readCap(ctx);
+  assert.equal(cap.capacity, 209);
+  assert.equal(cap.maxCapacity, 400);
+  assert.equal(cap.ratio, 209 / 400, 'ratio = capacity / maxCapacity (0.5225 -> not full)');
+  assert.equal(cap.source, 'state');
+});
+
+test('REQ-30 (D3): readCap feature-detects the alternate field locations', () => {
+  const ctx = { gameClient: { player: { state: { capacity: 300 }, maxCapacity: 300 } } };
+  assert.equal(readCap(ctx).ratio, 1, 'state.capacity + state.maxCapacity fallback');
+  const playerMax = { gameClient: { player: { state: { __state: { capacity: 250 } }, maxCapacity: 500 } } };
+  assert.equal(readCap(playerMax).ratio, 0.5, 'player.maxCapacity fallback');
+  assert.equal(readCap(playerMax).maxCapacity, 500);
+});
+
+test('REQ-30 (D3): readCap coerces string values', () => {
+  const ctx = { gameClient: { player: { state: { __state: { capacity: '209' }, maxCapacity: '400' } } } };
+  const cap = readCap(ctx);
+  assert.equal(cap.capacity, 209);
+  assert.equal(cap.ratio, 209 / 400);
+});
+
+test('REQ-30 (D3): readCap degrades — no player state -> ratio null, source none', () => {
+  assert.deepEqual(readCap({}), { capacity: null, maxCapacity: null, ratio: null, source: 'none' });
+  assert.deepEqual(readCap({ gameClient: {} }), { capacity: null, maxCapacity: null, ratio: null, source: 'none' });
+});
+
+test('REQ-30 (D3): readCap ratio-guards — partial data or maxCapacity <= 0 -> ratio null', () => {
+  const partial = readCap({ gameClient: { player: { state: { __state: { capacity: 209 } } } } });
+  assert.equal(partial.capacity, 209);
+  assert.equal(partial.maxCapacity, null);
+  assert.equal(partial.ratio, null, 'one side unknown -> no ratio (degrade, never invent)');
+  assert.equal(partial.source, 'partial');
+  const zeroMax = readCap({ gameClient: { player: { state: { __state: { capacity: 10 }, maxCapacity: 0 } } } });
+  assert.equal(zeroMax.ratio, null, 'maxCapacity 0 cannot divide -> ratio null');
+  assert.equal(zeroMax.source, 'partial');
 });
