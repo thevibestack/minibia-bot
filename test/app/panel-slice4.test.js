@@ -314,6 +314,104 @@ test('REQ-42 (B): SAVE_TRAINER_SETTINGS refuses a rune sid outside the catalog (
   assert.equal(ok.state.refusal, null);
 });
 
+test('REQ-44 (B): UPDATE_TRAINER_INPUT accepts the toggle switches', () => {
+  let state = armedState();
+  state = P.panelReducer(state, { type: 'UPDATE_TRAINER_INPUT', key: 'autoFallback', value: 'true' }).state;
+  state = P.panelReducer(state, { type: 'UPDATE_TRAINER_INPUT', key: 'stopRuneMaking', value: 'true' }).state;
+  state = P.panelReducer(state, { type: 'UPDATE_TRAINER_INPUT', key: 'stopBotting', value: 'false' }).state;
+  assert.equal(state.trainerForm.autoFallback, 'true');
+  assert.equal(state.trainerForm.stopRuneMaking, 'true');
+  assert.equal(state.trainerForm.stopBotting, 'false');
+  assert.equal(state.trainerForm.capMode, '', 'other keys untouched');
+});
+
+test('REQ-44 (B): the Sound Alert toggle maps to SET_SOUND and reflects in the form', () => {
+  let state = armedState();
+  const r = P.panelReducer(state, { type: 'SET_SOUND', enabled: false });
+  assert.equal(r.state.soundEnabled, false);
+  assert.deepEqual(r.effects, [{ type: 'sound-set', enabled: false }]);
+  const html = P.renderConfigForm(r.state);
+  assert.ok(!/id="trainer-sound-alert" checked/.test(html), 'checkbox unchecked when sound off');
+  assert.match(P.renderConfigForm(state), /id="trainer-sound-alert" checked/, 'checkbox checked by default');
+});
+
+test('REQ-44 (B): Auto Fallback Magic ON requires a fallback slot on save', () => {
+  const refused = saveTrainer(armedState(), Object.assign({}, VALID_FORM, { fallbackSlot: '', autoFallback: 'true' }));
+  assert.equal(refused.effects.length, 0, 'no push without a fallback slot');
+  assert.match(refused.state.refusal.reason, /auto fallback magic needs a fallback slot/, 'visible refusal');
+  const ok = saveTrainer(armedState(), Object.assign({}, VALID_FORM, { autoFallback: 'true' }));
+  assert.deepEqual(ok.effects, [{ type: 'push-config' }], 'ON with a slot passes');
+  assert.equal(ok.state.refusal, null);
+});
+
+test('REQ-44 (B): Stop Rune-Making turns ONLY the runes module off — heal/eat continue', () => {
+  let state = armedState();
+  state = P.panelReducer(state, { type: 'TOGGLE_MODULE', module: 'healItems', on: true }).state;
+  state = P.panelReducer(state, { type: 'TOGGLE_MODULE', module: 'eat', on: true }).state;
+  state = P.panelReducer(state, { type: 'TOGGLE_MODULE', module: 'runes', on: true }).state;
+  const r = saveTrainer(state, Object.assign({}, VALID_FORM, { stopRuneMaking: 'true' }));
+  assert.deepEqual(r.effects, [{ type: 'push-config' }]);
+  assert.equal(r.state.modules.runes, false, 'runes off');
+  assert.equal(r.state.modules.healItems, true, 'healing continues');
+  assert.equal(r.state.modules.eat, true, 'eating continues');
+  assert.equal(r.state.refusal, null);
+});
+
+test('REQ-45 (B): Stop Botting Entirely is gated by the confirm overlay and heal/eat continue', () => {
+  let state = armedState();
+  state = P.panelReducer(state, { type: 'TOGGLE_MODULE', module: 'healItems', on: true }).state;
+  state = P.panelReducer(state, { type: 'TOGGLE_MODULE', module: 'runes', on: true }).state;
+  const pending = saveTrainer(state, Object.assign({}, VALID_FORM, { stopBotting: 'true' }));
+  assert.deepEqual(pending.effects, [], 'no push while the confirm is pending');
+  assert.equal(pending.state.confirmStop.pending, true, 'confirm overlay armed');
+  assert.equal(pending.state.config, state.config, 'config untouched while pending');
+  assert.equal(pending.state.modules.runes, true, 'runes still on while pending');
+  const yes = P.panelReducer(pending.state, { type: 'CONFIRM_STOP' });
+  assert.deepEqual(yes.effects, [{ type: 'push-config' }]);
+  assert.equal(yes.state.confirmStop, null, 'overlay cleared after commit');
+  assert.equal(yes.state.modules.runes, false, 'runes module off after confirm');
+  assert.equal(yes.state.modules.healItems, true, 'healing continues');
+  assert.match(P.renderConfigForm(yes.state), /Botting stopped — rune-making is off/, 'persistent banner after confirm');
+});
+
+test('REQ-45 (B): the confirm overlay No (CANCEL_STOP) drops the pending save without committing', () => {
+  let state = armedState();
+  state = P.panelReducer(state, { type: 'TOGGLE_MODULE', module: 'runes', on: true }).state;
+  const pending = saveTrainer(state, Object.assign({}, VALID_FORM, { stopBotting: 'true' }));
+  const no = P.panelReducer(pending.state, { type: 'CANCEL_STOP' });
+  assert.deepEqual(no.effects, [], 'no push');
+  assert.equal(no.state.confirmStop, null, 'overlay cleared');
+  assert.equal(no.state.modules.runes, true, 'runes untouched');
+  assert.equal(no.state.config, state.config, 'config untouched');
+  const again = P.panelReducer(no.state, { type: 'SAVE_TRAINER_SETTINGS' });
+  assert.equal(again.state.confirmStop.pending, true, 'destructive actions are always re-confirmed');
+});
+
+test('REQ-45 (B): a save while the confirm is pending commits directly (CONFIRM_STOP path)', () => {
+  let state = armedState();
+  state = P.panelReducer(state, { type: 'TOGGLE_MODULE', module: 'runes', on: true }).state;
+  const pending = saveTrainer(state, Object.assign({}, VALID_FORM, { stopBotting: 'true' }));
+  const r = P.panelReducer(pending.state, { type: 'SAVE_TRAINER_SETTINGS' });
+  assert.deepEqual(r.effects, [{ type: 'push-config' }], 'a pending confirm commits on the next save');
+  assert.equal(r.state.confirmStop, null);
+  assert.equal(r.state.modules.runes, false);
+});
+
+test('REQ-45 (B): the confirm overlay renders when pending with localized Yes/No', () => {
+  let state = armedState();
+  state = Object.assign({}, state, { confirmStop: { pending: true, at: 1 } });
+  const html = P.renderConfigForm(state);
+  assert.match(html, /Stop botting entirely\?/, 'EN confirm title');
+  assert.match(html, /This turns rune-making off/, 'EN confirm body');
+  assert.match(html, /id="confirm-stop-yes"/, 'Yes button');
+  assert.match(html, /id="confirm-stop-no"/, 'No button');
+  const esHtml = P.renderConfigForm(Object.assign({}, state, { lang: 'es' }));
+  assert.match(esHtml, /¿Detener el bot por completo\?/, 'ES confirm title');
+  assert.match(esHtml, /Sí, detener el bot/, 'ES Yes button');
+  assert.match(esHtml, /Cancelar/, 'ES No button');
+  assert.ok(!P.renderConfigForm(armedState()).includes('confirm-stop-yes'), 'no overlay when nothing is pending');
+});
+
 test('REQ-42 (B): the form derives the rune sid, hotkeys and toggles from the saved config', () => {
   let state = armedState();
   state = P.panelReducer(state, {

@@ -555,6 +555,7 @@
       lang: LANG_EN,           // 'en' | 'es' — default EN (REQ-26)
       soundEnabled: true,      // alert sound toggle — default ON (persisted 'mb-panel-sound')
       tutorial: null,          // null | {step: number} — first-run stepper
+      confirmStop: null,       // Slice B (REQ-45, D-B6): null | {pending: true, at} — Stop-Botting confirm overlay
       // Slice 1b (REQ-27/28): profile cross-load + spell picker state.
       profiles: [],            // character names with saved configs (REQ-27)
       catalog: { spells: [], loaded: false, reason: null }, // filtered client catalog (REQ-28)
@@ -794,6 +795,134 @@
   /** Identity change detection: name differs from the confirmed one. */
   function identityChanged(state, identity) {
     return Boolean(state.identity && identity && state.identity.name !== identity.name);
+  }
+
+  /**
+   * Slice B (REQ-30/31/32 + REQ-42..46): validate + commit the TRAINER form
+   * into the config. Percent inputs (cap full threshold, fallback mana)
+   * convert to the 0..1 ratios the agent compares; the cap settings land in
+   * config.modules.runes (D3), reserve + eat-with-magic + rune sid + hotkeys
+   * in config.modules.training (D2/D4/D-B2/D-B3). Slice-B toggle semantics
+   * (D-B4): Auto Fallback Magic ON requires a fallback slot; Stop Rune-Making
+   * and Stop Botting Entirely BOTH end at the runes module OFF only — healing
+   * and eating continue (decision 4). Invalid values are refused with a
+   * visible reason — never silently dropped. Pure; shared by
+   * SAVE_TRAINER_SETTINGS and the Stop-Botting confirm commit (CONFIRM_STOP).
+   * @param {object} state
+   * @param {object} form - trainerForm-shaped raw values
+   * @returns {{ok: boolean, state?: object, effects?: Array, refusal?: object}}
+   */
+  function commitTrainerSettings(state, form) {
+    const at = Date.now();
+    const invalid = (reason) => ({ ok: false, refusal: { action: 'SAVE_TRAINER_SETTINGS', module: 'training', reason, at } });
+    const capMode = String(form.capMode || '').trim() || 'strict';
+    const rawThreshold = String(form.capFullThreshold || '').trim();
+    const rawFallbackSlot = String(form.fallbackSlot || '').trim();
+    const rawFallbackPct = String(form.fallbackManaPct || '').trim();
+    const rawReserve = String(form.reserve || '').trim();
+    const eatMagic = String(form.eatMagic || '');
+    const rawEatSlot = String(form.eatMagicSlot || '').trim();
+    const runeSid = String(form.runeSid || '').trim();
+    // Empty toggles default OFF (a fresh form never blocks an untouched save).
+    const autoFallback = String(form.autoFallback || '') || 'false';
+    const stopRuneMaking = String(form.stopRuneMaking || '') || 'false';
+    const stopBotting = String(form.stopBotting || '') || 'false';
+    const runeKey = String(form.runeKey || '').trim() || 'F4';
+    const fallbackKey = String(form.fallbackKey || '').trim() || 'F5';
+    if (capMode !== 'strict' && capMode !== 'off') {
+      return invalid('invalid trainer settings — cap mode must be strict or off');
+    }
+    const threshold = Number(rawThreshold);
+    const fallbackPct = Number(rawFallbackPct);
+    const reserve = Number(rawReserve);
+    if (rawThreshold === '' || rawFallbackPct === '' || rawReserve === ''
+      || !Number.isFinite(threshold) || threshold < 0 || threshold > 100
+      || !Number.isFinite(fallbackPct) || fallbackPct < 0 || fallbackPct > 100
+      || !Number.isFinite(reserve) || reserve < 0) {
+      return invalid('invalid trainer settings — cap % 0-100, fallback mana % 0-100, reserve >= 0');
+    }
+    const fallbackSlot = rawFallbackSlot === '' ? null : Number(rawFallbackSlot);
+    if (fallbackSlot !== null && (!Number.isInteger(fallbackSlot) || fallbackSlot < 1 || fallbackSlot > 12)) {
+      return invalid('invalid trainer settings — fallback slot must be 1-12 or empty');
+    }
+    const ewEnabled = eatMagic === 'true';
+    if (eatMagic !== 'true' && eatMagic !== 'false') {
+      return invalid('invalid trainer settings — eat with magic must be on or off');
+    }
+    const eatSlot = rawEatSlot === '' ? null : Number(rawEatSlot);
+    if (eatSlot !== null && (!Number.isInteger(eatSlot) || eatSlot < 1 || eatSlot > 12)) {
+      return invalid('invalid trainer settings — magic food slot must be 1-12 or empty');
+    }
+    if (ewEnabled && eatSlot === null) {
+      return invalid('invalid trainer settings — eat with magic needs a magic food slot');
+    }
+    // Slice B (REQ-42, D-B2): the inline rune select — a non-empty sid MUST
+    // resolve to a catalog spell (PICK_SPELL pattern, REQ-28).
+    if (runeSid !== '') {
+      const sid = Number(runeSid);
+      if (!Number.isInteger(sid)) {
+        return invalid('invalid trainer settings — rune spell id must be a number');
+      }
+      const spells = (state.catalog && state.catalog.spells) || [];
+      if (spells.filter((s) => Number(s.sid) === sid).length === 0) {
+        const label = (state.identity && state.identity.vocationLabel) || 'current vocation';
+        return invalid('invalid trainer settings — rune spell not available for ' + label);
+      }
+    }
+    // Slice B (REQ-44, D-B4): toggle value validation.
+    if (autoFallback !== 'true' && autoFallback !== 'false') {
+      return invalid('invalid trainer settings — auto fallback magic must be on or off');
+    }
+    if (autoFallback === 'true' && fallbackSlot === null) {
+      return invalid('invalid trainer settings — auto fallback magic needs a fallback slot');
+    }
+    if (stopRuneMaking !== 'true' && stopRuneMaking !== 'false') {
+      return invalid('invalid trainer settings — stop rune-making must be on or off');
+    }
+    if (stopBotting !== 'true' && stopBotting !== 'false') {
+      return invalid('invalid trainer settings — stop botting must be on or off');
+    }
+    // Slice B (REQ-46, D-B3): hotkeys must be selectable F-keys.
+    if (FKEYS.indexOf(runeKey) === -1 || FKEYS.indexOf(fallbackKey) === -1) {
+      return invalid('invalid trainer settings — hotkeys must be F1-F12');
+    }
+    const config = JSON.parse(JSON.stringify(state.config || {}));
+    if (!config.modules || typeof config.modules !== 'object') config.modules = {};
+    if (!config.modules.runes || typeof config.modules.runes !== 'object') config.modules.runes = {};
+    if (!config.modules.training || typeof config.modules.training !== 'object') config.modules.training = {};
+    config.modules.runes.capMode = capMode;
+    config.modules.runes.capFullThreshold = threshold / 100;
+    config.modules.runes.fallbackSlot = fallbackSlot;
+    config.modules.runes.fallbackManaPct = fallbackPct / 100;
+    config.modules.training.reserve = reserve;
+    if (!config.modules.training.eatWithMagic || typeof config.modules.training.eatWithMagic !== 'object') {
+      config.modules.training.eatWithMagic = {};
+    }
+    config.modules.training.eatWithMagic.enabled = ewEnabled;
+    config.modules.training.eatWithMagic.slot = eatSlot;
+    // Slice B (REQ-44, D-B4): either stop toggle turns the runes MODULE off
+    // only — healing and eating continue (decision 4). The module toggle
+    // state is what the push reads (buildPushConfig), so flip it here too.
+    const modules = Object.assign({}, state.modules);
+    if (stopRuneMaking === 'true' || stopBotting === 'true') {
+      modules.runes = false;
+      config.modules.runes.on = false;
+    }
+    return {
+      ok: true,
+      state: Object.assign({}, state, {
+        modules,
+        config,
+        trainerForm: {
+          capMode, capFullThreshold: String(threshold), fallbackSlot: fallbackSlot === null ? '' : String(fallbackSlot),
+          fallbackManaPct: String(fallbackPct), reserve: String(reserve),
+          eatMagic, eatMagicSlot: eatSlot === null ? '' : String(eatSlot),
+          runeSid, runeKey, fallbackKey, autoFallback, stopRuneMaking, stopBotting,
+        },
+        refusal: null,
+      }),
+      effects: [{ type: 'push-config' }],
+    };
   }
 
   /**
@@ -1228,10 +1357,12 @@
       case 'UPDATE_TRAINER_INPUT': {
         // REQ-30/31/32: pure UI state — the TRAINER form values survive
         // re-renders (healForm/walkTo precedent). No gate: typing pre-Connect
-        // is harmless.
+        // is harmless. Slice B (REQ-44, D-B4): the toggle switches
+        // (autoFallback/stopRuneMaking/stopBotting) are form values too.
         const key = String(action.key || '');
         const TRAINER_KEYS = ['capMode', 'capFullThreshold', 'fallbackSlot', 'fallbackManaPct',
-          'reserve', 'eatMagic', 'eatMagicSlot'];
+          'reserve', 'eatMagic', 'eatMagicSlot',
+          'autoFallback', 'stopRuneMaking', 'stopBotting'];
         if (TRAINER_KEYS.indexOf(key) === -1) return { state, effects: [] };
         const trainerForm = Object.assign({}, state.trainerForm || {
           capMode: '', capFullThreshold: '', fallbackSlot: '', fallbackManaPct: '',
@@ -1242,98 +1373,42 @@
       }
 
       case 'SAVE_TRAINER_SETTINGS': {
-        // REQ-30/31/32 (PR4): commit the TRAINER form into the config.
-        // Percent inputs (cap full threshold, fallback mana) convert to the
-        // 0..1 ratios the agent compares; the cap settings land in
-        // config.modules.runes (the config shape owns them, D3) and the
-        // reserve + eat-with-magic land in config.modules.training (D2/D4).
-        // Invalid values are refused with a visible reason — never silently
-        // dropped. The push-config effect carries the change to the agent.
+        // REQ-30/31/32 (PR4) + Slice B (REQ-42..46): commit the TRAINER form
+        // into the config (see commitTrainerSettings). Slice B (REQ-45,
+        // D-B6): Stop Botting Entirely is a DESTRUCTIVE action — the first
+        // save with stopBotting on only ARMS the confirm overlay (no commit,
+        // no push); the overlay's Yes dispatches CONFIRM_STOP which commits.
+        // The form is validated up front so a refusal never opens the dialog.
         if (state.gate !== GATE_ARMED) return { state: refuse(state, action), effects: [] };
         const form = state.trainerForm || {};
-        const at = Date.now();
-        const invalid = (reason) => ({
-          state: Object.assign({}, state, { refusal: { action: 'SAVE_TRAINER_SETTINGS', module: 'training', reason, at } }),
-          effects: [],
-        });
-        // The cap-mode select always renders a value (strict/off) — an
-        // untouched form (empty) means the default 'strict'.
-        const capMode = String(form.capMode || '').trim() || 'strict';
-        const rawThreshold = String(form.capFullThreshold || '').trim();
-        const rawFallbackSlot = String(form.fallbackSlot || '').trim();
-        const rawFallbackPct = String(form.fallbackManaPct || '').trim();
-        const rawReserve = String(form.reserve || '').trim();
-        const eatMagic = String(form.eatMagic || '');
-        const rawEatSlot = String(form.eatMagicSlot || '').trim();
-        if (capMode !== 'strict' && capMode !== 'off') {
-          return invalid('invalid trainer settings — cap mode must be strict or off');
+        const probe = commitTrainerSettings(state, form);
+        if (!probe.ok) return { state: Object.assign({}, state, { refusal: probe.refusal }), effects: [] };
+        if (String(form.stopBotting || '') === 'true' && !(state.confirmStop && state.confirmStop.pending)) {
+          return {
+            state: Object.assign({}, state, { confirmStop: { pending: true, at: Date.now() }, refusal: null }),
+            effects: [],
+          };
         }
-        const threshold = Number(rawThreshold);
-        const fallbackPct = Number(rawFallbackPct);
-        const reserve = Number(rawReserve);
-        if (rawThreshold === '' || rawFallbackPct === '' || rawReserve === ''
-          || !Number.isFinite(threshold) || threshold < 0 || threshold > 100
-          || !Number.isFinite(fallbackPct) || fallbackPct < 0 || fallbackPct > 100
-          || !Number.isFinite(reserve) || reserve < 0) {
-          return invalid('invalid trainer settings — cap % 0-100, fallback mana % 0-100, reserve >= 0');
+        return { state: Object.assign({}, probe.state, { confirmStop: null }), effects: probe.effects };
+      }
+
+      case 'CONFIRM_STOP': {
+        // REQ-45 (D-B6): the confirm overlay's Yes — commits the pending
+        // trainer save with stopBotting honored (rune-making off; heal/eat
+        // continue). No-op when no confirmation is pending.
+        if (state.gate !== GATE_ARMED) return { state: refuse(state, action), effects: [] };
+        if (!(state.confirmStop && state.confirmStop.pending)) return { state, effects: [] };
+        const result = commitTrainerSettings(state, state.trainerForm || {});
+        if (!result.ok) {
+          return { state: Object.assign({}, state, { refusal: result.refusal, confirmStop: null }), effects: [] };
         }
-        const fallbackSlot = rawFallbackSlot === '' ? null : Number(rawFallbackSlot);
-        if (fallbackSlot !== null && (!Number.isInteger(fallbackSlot) || fallbackSlot < 1 || fallbackSlot > 12)) {
-          return invalid('invalid trainer settings — fallback slot must be 1-12 or empty');
-        }
-        const ewEnabled = eatMagic === 'true';
-        if (eatMagic !== 'true' && eatMagic !== 'false') {
-          return invalid('invalid trainer settings — eat with magic must be on or off');
-        }
-        const eatSlot = rawEatSlot === '' ? null : Number(rawEatSlot);
-        if (eatSlot !== null && (!Number.isInteger(eatSlot) || eatSlot < 1 || eatSlot > 12)) {
-          return invalid('invalid trainer settings — magic food slot must be 1-12 or empty');
-        }
-        if (ewEnabled && eatSlot === null) {
-          return invalid('invalid trainer settings — eat with magic needs a magic food slot');
-        }
-        // Slice B (REQ-42, D-B2): the inline rune select — a non-empty sid
-        // MUST resolve to a catalog spell (PICK_SPELL pattern, REQ-28). An
-        // unknown/non-numeric sid refuses the save with a visible reason —
-        // never silently dropped. Empty = no rune chosen (allowed).
-        const runeSid = String(form.runeSid || '').trim();
-        if (runeSid !== '') {
-          const sid = Number(runeSid);
-          if (!Number.isInteger(sid)) {
-            return invalid('invalid trainer settings — rune spell id must be a number');
-          }
-          const spells = (state.catalog && state.catalog.spells) || [];
-          if (spells.filter((s) => Number(s.sid) === sid).length === 0) {
-            const label = (state.identity && state.identity.vocationLabel) || 'current vocation';
-            return invalid('invalid trainer settings — rune spell not available for ' + label);
-          }
-        }
-        const config = JSON.parse(JSON.stringify(state.config || {}));
-        if (!config.modules || typeof config.modules !== 'object') config.modules = {};
-        if (!config.modules.runes || typeof config.modules.runes !== 'object') config.modules.runes = {};
-        if (!config.modules.training || typeof config.modules.training !== 'object') config.modules.training = {};
-        config.modules.runes.capMode = capMode;
-        config.modules.runes.capFullThreshold = threshold / 100;
-        config.modules.runes.fallbackSlot = fallbackSlot;
-        config.modules.runes.fallbackManaPct = fallbackPct / 100;
-        config.modules.training.reserve = reserve;
-        if (!config.modules.training.eatWithMagic || typeof config.modules.training.eatWithMagic !== 'object') {
-          config.modules.training.eatWithMagic = {};
-        }
-        config.modules.training.eatWithMagic.enabled = ewEnabled;
-        config.modules.training.eatWithMagic.slot = eatSlot;
-        return {
-          state: Object.assign({}, state, {
-            config,
-            trainerForm: {
-              capMode, capFullThreshold: String(threshold), fallbackSlot: fallbackSlot === null ? '' : String(fallbackSlot),
-              fallbackManaPct: String(fallbackPct), reserve: String(reserve),
-              eatMagic, eatMagicSlot: eatSlot === null ? '' : String(eatSlot),
-            },
-            refusal: null,
-          }),
-          effects: [{ type: 'push-config' }],
-        };
+        return { state: Object.assign({}, result.state, { confirmStop: null }), effects: result.effects };
+      }
+
+      case 'CANCEL_STOP': {
+        // REQ-45 (D-B6): the confirm overlay's No — drop the pending
+        // confirmation; nothing is saved or pushed.
+        return { state: Object.assign({}, state, { confirmStop: null }), effects: [] };
       }
 
       /* ------------------- slice 5 (PR5, REQ-33/34): OTHERS form ------------------- */
@@ -2109,6 +2184,21 @@
         + '</div>';
     } else {
       body = '<div class="config-shell">' + escapeHtml(t(state, 'configLocked')) + '</div>';
+    }
+    // Slice B (REQ-45, D-B6): the Stop-Botting confirm overlay (renderTutorial
+    // pattern — fixed-position, styled card, Yes/No buttons wired by app.js).
+    if (state.confirmStop && state.confirmStop.pending) {
+      body += '<div class="confirm-overlay" data-confirm-stop role="dialog"'
+        + ' aria-label="' + escapeHtml(t(state, 'trainer.confirmTitle')) + '">'
+        + '<div class="confirm-card">'
+        + '<h3>' + escapeHtml(t(state, 'trainer.confirmTitle')) + '</h3>'
+        + '<p>' + escapeHtml(t(state, 'trainer.confirmBody')) + '</p>'
+        + '<div class="confirm-actions">'
+        + '<button type="button" id="confirm-stop-no" class="tutorial-btn" data-confirm-stop-action="no">'
+        + escapeHtml(t(state, 'trainer.confirmNo')) + '</button>'
+        + '<button type="button" id="confirm-stop-yes" class="tutorial-btn primary" data-confirm-stop-action="yes">'
+        + escapeHtml(t(state, 'trainer.confirmYes')) + '</button>'
+        + '</div></div></div>';
     }
     return '<section class="config-form">' + head + body + '</section>';
   }

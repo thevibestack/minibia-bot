@@ -362,6 +362,21 @@
     } else if (target && target.matches && target.matches('#trainer-cap-mode')) {
       // REQ-30 (PR4): cap mode select — pure UI value (selects fire change).
       dispatch({ type: 'UPDATE_TRAINER_INPUT', key: 'capMode', value: target.value });
+    } else if (target && target.matches && target.matches('#trainer-auto-fallback')) {
+      // REQ-44 (B, D-B4): Auto Fallback Magic toggle — pure UI value (save
+      // refuses when ON without a fallback slot).
+      dispatch({ type: 'UPDATE_TRAINER_INPUT', key: 'autoFallback', value: target.checked ? 'true' : 'false' });
+    } else if (target && target.matches && target.matches('#trainer-sound-alert')) {
+      // REQ-44 (B): Sound Alert toggle — maps to the existing SET_SOUND
+      // action (PR4 reuse), persisted via 'mb-panel-sound'.
+      dispatch({ type: 'SET_SOUND', enabled: target.checked });
+    } else if (target && target.matches && target.matches('#trainer-stop-runes')) {
+      // REQ-44 (B, D-B4): Stop Rune-Making — runes module off only.
+      dispatch({ type: 'UPDATE_TRAINER_INPUT', key: 'stopRuneMaking', value: target.checked ? 'true' : 'false' });
+    } else if (target && target.matches && target.matches('#trainer-stop-botting')) {
+      // REQ-44/45 (B, D-B4/D-B6): Stop Botting Entirely — runes module off
+      // only, gated by the confirm overlay at save time.
+      dispatch({ type: 'UPDATE_TRAINER_INPUT', key: 'stopBotting', value: target.checked ? 'true' : 'false' });
     } else if (target && target.matches && target.matches('#attack-targeting')) {
       // REQ-35 (PR6): attack targeting select — pure UI value.
       dispatch({ type: 'UPDATE_ATTACK_INPUT', key: 'targeting', value: target.value });
@@ -474,10 +489,20 @@
       dispatch({ type: 'SAVE_HEAL_SETTINGS' });
     }
     else if (target.matches('#trainer-save-btn')) {
-      // REQ-30/31/32 (PR4): commit the TRAINER settings form (cap mode,
-      // cap % -> ratio, fallback slot + mana % -> ratio, reserve,
-      // eat-with-magic) into the config.
+      // REQ-30/31/32 (PR4) + REQ-44/45 (B): commit the TRAINER settings form
+      // (cap mode, cap % -> ratio, fallback slot + mana % -> ratio, reserve,
+      // eat-with-magic, rune sid, hotkeys, toggles). Stop Botting is gated by
+      // the confirm overlay (the reducer arms it; Yes commits).
       dispatch({ type: 'SAVE_TRAINER_SETTINGS' });
+    }
+    else if (target.matches('#confirm-stop-yes')) {
+      // REQ-45 (B, D-B6): the Stop-Botting confirm overlay — Yes commits the
+      // pending trainer save (rune-making off; heal/eat continue).
+      dispatch({ type: 'CONFIRM_STOP' });
+    }
+    else if (target.matches('#confirm-stop-no')) {
+      // REQ-45 (B, D-B6): No drops the pending confirmation — nothing saved.
+      dispatch({ type: 'CANCEL_STOP' });
     }
     else if (target.matches('#others-save-btn')) {
       // REQ-33/34 (PR5): commit the OTHERS settings form (food slot +

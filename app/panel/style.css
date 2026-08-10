@@ -429,3 +429,26 @@ body {
 .bar-fill { height: 100%; border-radius: 6px; transition: width 0.3s ease; }
 .bar.mana-bar .bar-fill { background: linear-gradient(90deg, #3fbf6f, #4f9cf7); }
 .bar.cap-bar .bar-fill { background: linear-gradient(90deg, #e8b64c, #e0655f); }
+
+/* Slice B (REQ-45, D-B6): Stop-Botting confirm overlay (tutorial pattern). */
+.confirm-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(10, 12, 16, 0.72);
+}
+.confirm-card {
+  width: min(440px, 90vw);
+  padding: 20px 22px;
+  background: var(--panel);
+  border: 1px solid var(--err);
+  border-radius: 12px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+}
+.confirm-card h3 { margin: 0 0 8px; color: var(--err); }
+.confirm-card p { margin: 0 0 14px; line-height: 1.55; }
+.confirm-actions { display: flex; gap: 10px; justify-content: flex-end; }
+.alert-stop-botting { background: #fdecea; border: 1px solid #f5b5ae; color: #8a2a22; }
