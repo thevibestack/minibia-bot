@@ -3194,14 +3194,34 @@ function createTraining(opts = {}) {
     const capFull = Number.isFinite(threshold) ? ratio >= threshold : ratio >= 1;
     if (!capFull) return { full: false };
 
-    // Cap full: fallback slot cast when mana >= fallbackManaPct*maxMana
-    // (ronda-1), else idle until mana recovers (REQ-30).
+    // Cap full: fallback slot cast when the fallback is AFFORDABLE — its REAL
+    // spell cost (resolved from the slot via getSpellCost) + reserve must be
+    // covered by the current mana (FEAS_MOD.canCast, the same pattern the
+    // training cast uses). When the cost cannot be resolved (slot mapping
+    // absent) the v1 %-of-maxMana behavior stands — degrade safe (REQ-30).
     const fallbackSlot = Number(cc.fallbackSlot);
     const pct = Number(cc.fallbackManaPct);
-    const manaOk = Number.isFinite(pct)
-      && ctx.mana !== null && ctx.mana !== undefined
-      && Number.isFinite(ctx.maxMana) && ctx.maxMana > 0
-      && ctx.mana >= pct * ctx.maxMana;
+    const manaKnown = ctx.mana !== null && ctx.mana !== undefined
+      && Number.isFinite(ctx.maxMana) && ctx.maxMana > 0;
+    let manaOk = Number.isFinite(pct) && manaKnown && ctx.mana >= pct * ctx.maxMana;
+    if (manaKnown && Number.isInteger(fallbackSlot) && fallbackSlot >= 1 && fallbackSlot <= 12
+      && typeof getSpellCost === 'function') {
+      let fallbackCost = null;
+      try { fallbackCost = getSpellCost(fallbackSlot); } catch (e) { fallbackCost = null; }
+      if (fallbackCost !== null && fallbackCost !== undefined
+        && Number.isFinite(Number(fallbackCost)) && Number(fallbackCost) >= 0) {
+        const feas = FEAS_MOD.canCast({
+          mana: ctx.mana,
+          cost: Number(fallbackCost),
+          reserve: Number(config.reserve) || 0,
+          maxMana: ctx.maxMana,
+          key: 'training-fallback-' + fallbackSlot,
+          warned,
+          onWarn: warn,
+        });
+        manaOk = feas.fire;
+      }
+    }
     if (Number.isInteger(fallbackSlot) && fallbackSlot >= 1 && fallbackSlot <= 12 && manaOk) {
       // Honest cooldown verdict for the fallback (fallbackSid dropped, obs
       // 10502): the fallback fires SLOT-driven and never carried a resolvable
@@ -6424,7 +6444,16 @@ function createAgent(opts = {}) {
       // fields live in the runes config shape (characters.ts defaults).
       capConfig: cfg.runes,
       readCap: readCap,
-      getSpellCost: function (sid) { return readSpellCost({ sid: sid }); },
+      // D3 (REQ-30): the trainer resolves the FALLBACK spell cost FROM ITS
+      // SLOT (slot-driven, fallbackSid dropped — obs 10502). The hotbar
+      // slot -> sid mapping (readRuneCost) wins when the argument is a live
+      // hotbar slot; an argument that maps no slot (the training-spell sid
+      // path) falls through to the sid resolution unchanged.
+      getSpellCost: function (arg) {
+        const viaSlot = readRuneCost(arg);
+        if (viaSlot !== null && viaSlot !== undefined) return viaSlot;
+        return readSpellCost({ sid: arg });
+      },
       canCastSpell: canCastSpell,
       readCooldown: function (sid) { return GC_MOD.readCooldown(sid, { gameClient: state.gameClient }); },
       now: nowFn,

@@ -113,14 +113,34 @@ function createTraining(opts = {}) {
     const capFull = Number.isFinite(threshold) ? ratio >= threshold : ratio >= 1;
     if (!capFull) return { full: false };
 
-    // Cap full: fallback slot cast when mana >= fallbackManaPct*maxMana
-    // (ronda-1), else idle until mana recovers (REQ-30).
+    // Cap full: fallback slot cast when the fallback is AFFORDABLE — its REAL
+    // spell cost (resolved from the slot via getSpellCost) + reserve must be
+    // covered by the current mana (FEAS_MOD.canCast, the same pattern the
+    // training cast uses). When the cost cannot be resolved (slot mapping
+    // absent) the v1 %-of-maxMana behavior stands — degrade safe (REQ-30).
     const fallbackSlot = Number(cc.fallbackSlot);
     const pct = Number(cc.fallbackManaPct);
-    const manaOk = Number.isFinite(pct)
-      && ctx.mana !== null && ctx.mana !== undefined
-      && Number.isFinite(ctx.maxMana) && ctx.maxMana > 0
-      && ctx.mana >= pct * ctx.maxMana;
+    const manaKnown = ctx.mana !== null && ctx.mana !== undefined
+      && Number.isFinite(ctx.maxMana) && ctx.maxMana > 0;
+    let manaOk = Number.isFinite(pct) && manaKnown && ctx.mana >= pct * ctx.maxMana;
+    if (manaKnown && Number.isInteger(fallbackSlot) && fallbackSlot >= 1 && fallbackSlot <= 12
+      && typeof getSpellCost === 'function') {
+      let fallbackCost = null;
+      try { fallbackCost = getSpellCost(fallbackSlot); } catch (e) { fallbackCost = null; }
+      if (fallbackCost !== null && fallbackCost !== undefined
+        && Number.isFinite(Number(fallbackCost)) && Number(fallbackCost) >= 0) {
+        const feas = FEAS_MOD.canCast({
+          mana: ctx.mana,
+          cost: Number(fallbackCost),
+          reserve: Number(config.reserve) || 0,
+          maxMana: ctx.maxMana,
+          key: 'training-fallback-' + fallbackSlot,
+          warned,
+          onWarn: warn,
+        });
+        manaOk = feas.fire;
+      }
+    }
     if (Number.isInteger(fallbackSlot) && fallbackSlot >= 1 && fallbackSlot <= 12 && manaOk) {
       // Honest cooldown verdict for the fallback (fallbackSid dropped, obs
       // 10502): the fallback fires SLOT-driven and never carried a resolvable

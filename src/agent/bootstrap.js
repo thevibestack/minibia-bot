@@ -824,7 +824,16 @@ function createAgent(opts = {}) {
       // fields live in the runes config shape (characters.ts defaults).
       capConfig: cfg.runes,
       readCap: readCap,
-      getSpellCost: function (sid) { return readSpellCost({ sid: sid }); },
+      // D3 (REQ-30): the trainer resolves the FALLBACK spell cost FROM ITS
+      // SLOT (slot-driven, fallbackSid dropped — obs 10502). The hotbar
+      // slot -> sid mapping (readRuneCost) wins when the argument is a live
+      // hotbar slot; an argument that maps no slot (the training-spell sid
+      // path) falls through to the sid resolution unchanged.
+      getSpellCost: function (arg) {
+        const viaSlot = readRuneCost(arg);
+        if (viaSlot !== null && viaSlot !== undefined) return viaSlot;
+        return readSpellCost({ sid: arg });
+      },
       canCastSpell: canCastSpell,
       readCooldown: function (sid) { return GC_MOD.readCooldown(sid, { gameClient: state.gameClient }); },
       now: nowFn,
