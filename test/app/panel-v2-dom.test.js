@@ -131,6 +131,27 @@ test('1.4: ES switcher re-renders the panel in Spanish; EN is the default', asyn
   }
 });
 
+test('1.4: the language choice persists to localStorage and is restored on boot', async () => {
+  const first = makePanel();
+  try {
+    click(first, '.lang-btn[data-lang="es"]');
+    assert.equal(first.window.__mbPanel.getState().lang, 'es');
+    assert.equal(first.window.localStorage.getItem('mb-panel-lang'), 'es', 'lang persisted on SET_LANG');
+  } finally {
+    await teardown(first);
+  }
+  // A fresh page pre-seeded with the saved lang opens in Spanish.
+  const second = makePanel({
+    preEval: (win) => { win.localStorage.setItem('mb-panel-lang', 'es'); },
+  });
+  try {
+    assert.equal(second.window.__mbPanel.getState().lang, 'es', 'stored lang restored on boot');
+    assert.match(second.window.document.getElementById('status-bar').textContent, /Esperando al juego…/);
+  } finally {
+    await teardown(second);
+  }
+});
+
 /* -------------------------------- tutorial -------------------------------- */
 
 test('1.5: first run shows the tutorial; Next walks every tab; Dismiss persists tutorialSeen', async () => {

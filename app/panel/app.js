@@ -115,6 +115,14 @@
       } catch (e) { /* private mode / disabled storage: best-effort */ }
       return;
     }
+    // Audit: language persistence — the chosen lang survives reloads
+    // ('mb-panel-lang'); restored on boot below.
+    if (effect.type === 'lang-set') {
+      try {
+        window.localStorage.setItem('mb-panel-lang', effect.lang === 'es' ? 'es' : 'en');
+      } catch (e) { /* private mode / disabled storage: best-effort */ }
+      return;
+    }
     if (!fetchImpl) return; // tests without network: state machine only
     switch (effect.type) {
       case 'connect': {
@@ -269,7 +277,7 @@
       if (res && res.agent && res.agent.modules && res.agent.modules.training) {
         var capFull = res.agent.modules.training.capFull === true;
         if (capFull && !lastCapFull) {
-          dispatch({ type: 'ALERT', kind: 'cap-full', message: 'Rune cap full — rune-making stopped (fallback or idle)' });
+          dispatch({ type: 'ALERT', kind: 'cap-full', message: P.t(state, 'trainer.capFullAlert') });
         }
         lastCapFull = capFull;
       }
@@ -292,7 +300,7 @@
               dispatch({
                 type: 'ALERT',
                 kind: 'antibot-' + (alert.kind || 'event'),
-                message: alert.message || 'Anti-bot: ' + (alert.kind || 'event'),
+                message: alert.message || P.tVar(state, 'alert.antibot', { kind: alert.kind || 'event' }),
               });
             }
           }
@@ -508,6 +516,14 @@
     tutorialSeen = window.localStorage && window.localStorage.getItem('tutorialSeen') === '1';
   } catch (e) { tutorialSeen = false; }
   if (!tutorialSeen) dispatch({ type: 'TUTORIAL_START' });
+
+  // Audit: restore the persisted language ('mb-panel-lang') so the panel
+  // opens in the chosen ES/EN; EN stays the default when nothing is stored.
+  try {
+    if (window.localStorage && window.localStorage.getItem('mb-panel-lang') === 'es') {
+      dispatch({ type: 'SET_LANG', lang: 'es' });
+    }
+  } catch (e) { /* private mode / disabled storage: best-effort */ }
 
   render();
   startPolling();
