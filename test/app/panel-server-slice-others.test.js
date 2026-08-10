@@ -127,3 +127,40 @@ test('REQ-34: per-character isolation — confirming for one character never lea
     'confirmed list only exists on the character that confirmed (additive shape)');
   assert.deepEqual(other.config.modules.antibot.replies, [], 'default replies untouched');
 });
+
+test('REQ-34: the persisted confirmed log is capped at 200 — oldest dropped, newest kept', async (t) => {
+  const { srv, calls, base } = await makeServer(t);
+  await connect(srv);
+
+  // 201 distinct confirmations overflow the 200 cap.
+  let last;
+  for (let i = 1; i <= 201; i += 1) {
+    const res = await fetch(srv.url + '/api/antibot-confirm', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ character: 'Flamamex', pattern: 'pattern-' + i }),
+    });
+    assert.equal(res.status, 200, 'overflow confirmations still answer 200');
+    last = await res.json();
+  }
+
+  // The response carries the bounded array: exactly 200, oldest dropped,
+  // newest kept.
+  assert.equal(last.ok, true);
+  assert.equal(last.confirmed.length, 200, 'capped at the last 200 patterns');
+  assert.equal(last.confirmed[0], 'pattern-2', 'oldest (pattern-1) dropped');
+  assert.equal(last.confirmed[199], 'pattern-201', 'newest kept');
+  assert.equal(calls.confirmAntibot.length, 201, 'every confirm still RPCs the session agent');
+
+  // The persisted store matches the bounded in-memory array.
+  const loaded = store.loadCharacter({ baseDir: base, name: 'Flamamex' });
+  assert.equal(loaded.config.modules.antibot.confirmed.length, 200);
+  assert.equal(loaded.config.modules.antibot.confirmed[0], 'pattern-2');
+  assert.equal(loaded.config.modules.antibot.confirmed[199], 'pattern-201');
+
+  // Confirming an existing pattern after the cap keeps the array bounded.
+  const again = await (await fetch(srv.url + '/api/antibot-confirm', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ character: 'Flamamex', pattern: 'pattern-201' }),
+  })).json();
+  assert.equal(again.confirmed.length, 200, 'idempotent confirm inside the cap stays bounded');
+});

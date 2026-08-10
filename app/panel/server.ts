@@ -492,6 +492,13 @@ function createPanelServer(opts) {
         }
         const confirmed = config.modules.antibot.confirmed || [];
         if (confirmed.indexOf(pattern) === -1) confirmed.push(pattern);
+        // Bounded cap (post-chain maintenance, obs 10502 — verify SUGGESTION
+        // 3): keep at most the LAST 200 confirmed patterns per character,
+        // dropping the oldest on overflow. The agent's session-scoped set is
+        // already bounded; this keeps the persisted per-character log bounded
+        // too (an append-only log with no cap would grow forever).
+        const CONFIRMED_CAP = 200;
+        if (confirmed.length > CONFIRMED_CAP) confirmed.splice(0, confirmed.length - CONFIRMED_CAP);
         config.modules.antibot.confirmed = confirmed;
         config.connected = true;
         await confirmAntibotFn(pattern); // in-page session confirmation (REQ-34)
