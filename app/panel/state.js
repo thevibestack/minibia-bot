@@ -184,6 +184,32 @@
       'trainer.runeCheckResumed': 'Rune check resolved — botting resumed',
       'trainer.resumeBtn': 'Resume botting',
       'alert.kind.antibot-runecheck': 'Rune check',
+      // Slice B (REQ-42..46, D-B1..B6): TRAINER 2-col redesign — rune select,
+      // hotkeys, mana/CAP bars, toggles and the Stop-Botting confirm. New
+      // labels are i18n EN+ES; the tab/module labels keep following the panel
+      // language (decision 1, D-B1).
+      'trainer.runeMakingTitle': 'Rune-making',
+      'trainer.capacityTitle': 'Capacity & alerts',
+      'trainer.runeSelect': 'Select Rune to Create',
+      'trainer.runeSelectFallback': 'No rune spells matched — showing the full catalog',
+      'trainer.castLogic': 'If Mana >= cost + reserve',
+      'trainer.runeHotkey': 'Rune Hotkey',
+      'trainer.fallbackHotkey': 'Fallback Hotkey',
+      'trainer.assignBtn': 'Assign',
+      'trainer.fallbackMagic': 'Fallback Magic',
+      'trainer.autoFallbackMagic': 'Auto Fallback Magic',
+      'trainer.manaBar': 'Your mana',
+      'trainer.capBar': 'Current cap',
+      'trainer.whenCapFull': 'When CAP is Full',
+      'trainer.soundAlert': 'Sound Alert',
+      'trainer.stopRuneMaking': 'Stop Rune-Making',
+      'trainer.stopBotting': 'Stop Botting Entirely',
+      'trainer.stopBottingActive': 'Botting stopped — rune-making is off (healing and eating continue). Save with Stop Botting off to re-enable.',
+      'trainer.confirmTitle': 'Stop botting entirely?',
+      'trainer.confirmBody': 'This turns rune-making off — healing and eating continue. You can re-enable it any time.',
+      'trainer.confirmYes': 'Yes, stop botting',
+      'trainer.confirmNo': 'Cancel',
+      'trainer.hotkeyUnavailable': 'Hotkeys unavailable — the game keyboard surface is not exposed (display only)',
       // Slice 5 (PR5, REQ-33/34): OTHERS settings form + anti-bot live state.
       'others.formTitle': 'Other settings',
       'others.foodTitle': 'Food',
@@ -357,6 +383,32 @@
       'trainer.runeCheckResumed': 'Check de runas resuelto — bot reanudado',
       'trainer.resumeBtn': 'Reanudar bot',
       'alert.kind.antibot-runecheck': 'Check de runas',
+      // Slice B (REQ-42..46, D-B1..B6): rediseño del ENTRENAR en 2 columnas —
+      // selector de runas, teclas, barras de maná/capacidad, interruptores y
+      // confirmación de "detener el bot". Etiquetas nuevas i18n EN+ES (las de
+      // pestañas/módulos ya siguen el idioma del panel, decisión 1).
+      'trainer.runeMakingTitle': 'Fabricar runas',
+      'trainer.capacityTitle': 'Capacidad y alertas',
+      'trainer.runeSelect': 'Elegir runa a crear',
+      'trainer.runeSelectFallback': 'No se encontraron runas — mostrando todo el catálogo',
+      'trainer.castLogic': 'Si Maná >= coste + reserva',
+      'trainer.runeHotkey': 'Tecla de runa',
+      'trainer.fallbackHotkey': 'Tecla de alternativa',
+      'trainer.assignBtn': 'Asignar',
+      'trainer.fallbackMagic': 'Magia alternativa',
+      'trainer.autoFallbackMagic': 'Magia alternativa automática',
+      'trainer.manaBar': 'Tu maná',
+      'trainer.capBar': 'Capacidad actual',
+      'trainer.whenCapFull': 'Cuando la capacidad esté llena',
+      'trainer.soundAlert': 'Alerta sonora',
+      'trainer.stopRuneMaking': 'Detener fabricación de runas',
+      'trainer.stopBotting': 'Detener el bot por completo',
+      'trainer.stopBottingActive': 'Bot detenido — fabricación de runas apagada (curar y comer continúan). Guardá con "Detener el bot" desactivado para reanudar.',
+      'trainer.confirmTitle': '¿Detener el bot por completo?',
+      'trainer.confirmBody': 'Esto apaga la fabricación de runas — curar y comer continúan. Podés volver a activarlo cuando quieras.',
+      'trainer.confirmYes': 'Sí, detener el bot',
+      'trainer.confirmNo': 'Cancelar',
+      'trainer.hotkeyUnavailable': 'Teclas no disponibles — la superficie de teclado del juego no está expuesta (solo lectura)',
       // Slice 5 (PR5, REQ-33/34): formulario de OTROS + estado anti-bot en vivo.
       'others.formTitle': 'Otros ajustes',
       'others.foodTitle': 'Comida',
@@ -514,9 +566,13 @@
       healForm: { threshold: '', slot: '', reserve: '' },
       // Slice 3 (PR4, REQ-30/31/32): TRAINER settings form raw values — pure
       // UI strings (percent/ratio conversion at save, see SAVE_TRAINER_SETTINGS).
+      // Slice B (REQ-42..46): runeSid (inline rune select, D-B2), the F-key
+      // hotkey selects (D-B3) and the toggle switches (D-B4) extend the form.
       trainerForm: {
         capMode: '', capFullThreshold: '', fallbackSlot: '', fallbackManaPct: '',
         reserve: '', eatMagic: '', eatMagicSlot: '',
+        runeSid: '', runeKey: '', fallbackKey: '',
+        autoFallback: '', stopRuneMaking: '', stopBotting: '',
       },
       // Slice 5 (PR5, REQ-33/34): OTHERS settings form raw values — pure UI
       // strings (food slot, every-N-casts, loot default destination, anti-bot
@@ -567,6 +623,8 @@
    * as 0..1) and the FORM speaks percent — the conversion happens here at
    * render time and again at save (SAVE_TRAINER_SETTINGS). Missing values
    * fall back to the forward-compat defaults (strict, 100%, 50%).
+   * Slice B (REQ-42..46): the inline rune sid (D-B2), the hotkey F-keys
+   * (D-B3) and the toggle switches (D-B4) derive here too.
    * @param {object} state
    * @returns {object} trainerForm-shaped value strings
    */
@@ -576,8 +634,11 @@
     const training = cfg.training || {};
     const ew = training.eatWithMagic && typeof training.eatWithMagic === 'object'
       ? training.eatWithMagic : {};
+    const hotkeys = training.hotkeys && typeof training.hotkeys === 'object'
+      ? training.hotkeys : {};
     const threshold = Number(runes.capFullThreshold);
     const pct = Number(runes.fallbackManaPct);
+    const sid = Number(training.sid);
     return {
       capMode: runes.capMode === 'off' ? 'off' : 'strict',
       capFullThreshold: String(Number.isFinite(threshold) ? Math.round(threshold * 100) : 100),
@@ -587,7 +648,68 @@
       reserve: Number.isFinite(Number(training.reserve)) ? String(training.reserve) : '',
       eatMagic: ew.enabled === true ? 'true' : 'false',
       eatMagicSlot: ew.slot !== null && ew.slot !== undefined ? String(ew.slot) : '',
+      // Slice B (D-B2/D-B3/D-B4): rune sid + hotkey F-keys + toggles.
+      runeSid: Number.isInteger(sid) ? String(sid) : '',
+      runeKey: hotkeys.runeKey || 'F4',
+      fallbackKey: hotkeys.fallbackKey || 'F5',
+      autoFallback: runes.fallbackSlot !== null && runes.fallbackSlot !== undefined ? 'true' : 'false',
+      stopRuneMaking: training.stopRuneMaking === true ? 'true' : 'false',
+      stopBotting: training.stopBotting === true ? 'true' : 'false',
     };
+  }
+
+  /** Slice B (REQ-46, D-B3): the F-key selectable hotkeys. */
+  const FKEYS = ['F1', 'F2', 'F3', 'F4', 'F5', 'F6', 'F7', 'F8', 'F9', 'F10', 'F11', 'F12'];
+
+  /**
+   * Slice B (REQ-42, D-B2): catalog rows filtered to rune spells — /rune/i on
+   * the name OR the words (the catalog carries NO rune flag, documented
+   * limitation D-B2). Falls back to the FULL list when no rune matches so the
+   * select stays honest and usable. Pure.
+   * @param {object} state
+   * @returns {{runes: Array, list: Array, fallback: boolean}}
+   */
+  function filterRuneCatalog(state) {
+    const spells = (state.catalog && state.catalog.spells) || [];
+    const runes = spells.filter((s) => s && typeof s === 'object'
+      && (/rune/i.test(String(s.name || '')) || /rune/i.test(String(s.words || ''))));
+    return { runes, list: runes.length > 0 ? runes : spells, fallback: runes.length === 0 && spells.length > 0 };
+  }
+
+  /**
+   * Slice B (REQ-43, D-B5): the trainer CAP snapshot — the training module
+   * carries {capacity, maxCapacity, ratio} in its getState (training.js:261,
+   * already live). Pure; null when absent.
+   * @param {object|null} snapshot
+   * @returns {{capacity: number|null, maxCapacity: number|null, ratio: number|null}|null}
+   */
+  function snapshotCap(snapshot) {
+    const c = snapshot && snapshot.agent && snapshot.agent.modules
+      && snapshot.agent.modules.training && snapshot.agent.modules.training.cap;
+    if (!c || typeof c !== 'object') return null;
+    const num = (v) => (v === null || v === undefined || v === '' ? null
+      : (Number.isFinite(Number(v)) ? Number(v) : null));
+    return { capacity: num(c.capacity), maxCapacity: num(c.maxCapacity), ratio: num(c.ratio) };
+  }
+
+  /** Slice B (REQ-43, D-B5): shared gradient-bar markup — localized label,
+   *  percent, cur/max values and the CSS-width fill. Pure.
+   *  @param {object} state
+   *  @param {string} cls - bar variant class (mana-bar / cap-bar)
+   *  @param {string} data - data-bar attribute (test hook)
+   *  @param {string} labelKey - i18n key (trainer.manaBar / trainer.capBar)
+   *  @param {number|null} cur
+   *  @param {number|null} max
+   *  @param {number|null} pct - percent to display + drive the fill width */
+  function renderBar(state, cls, data, labelKey, cur, max, pct) {
+    const pctText = pct === null ? '—' : String(pct) + '%';
+    const width = pct === null ? 0 : Math.max(0, Math.min(100, pct));
+    return '<div class="bar ' + cls + '" data-bar="' + data + '">'
+      + '<div class="bar-label">' + escapeHtml(t(state, labelKey)) + ': <strong>' + escapeHtml(pctText) + '</strong>'
+      + ' <span class="bar-values">' + escapeHtml(cur === null ? '—' : String(cur)) + ' / '
+      + escapeHtml(max === null ? '—' : String(max)) + '</span></div>'
+      + '<div class="bar-track"><div class="bar-fill" style="width:' + width + '%"></div></div>'
+      + '</div>';
   }
 
   /**
@@ -1720,13 +1842,20 @@
   }
 
   /**
-   * TRAINER settings form (PR4, REQ-30/31/32): rune cap mode + full
-   * threshold %, fallback slot + fallback mana %, mana reserve and
-   * eat-with-magic (toggle + magic-food slot) + a Save button. Values come
-   * from the pure-UI trainerForm state (survive re-renders) falling back to
-   * the saved config (ratios shown as percent). The rune spell itself is
-   * chosen with the spell picker (picker module 'training', REQ-28); the
-   * module toggles live in the TRAINER tab module list.
+   * TRAINER settings form — Slice B 2-col redesign (REQ-42..46, D-B1..B6).
+   * Left RUNE-MAKING: inline rune select (catalog filtered /rune/i, D-B2),
+   * Cast Logic "If Mana >= cost + [reserve]", Rune Hotkey F4 + Assign (D-B3),
+   * the Fallback Magic block (slot + mana % + Fallback Hotkey F5) and the
+   * legacy eat-with-magic fields. Right CAPACITY & ALERTS: CURRENT CAP bar
+   * (REQ-43, D-B5), "When CAP is Full" select, the Sound Alert / Auto
+   * Fallback Magic / Stop Rune-Making / Stop Botting Entirely toggles (D-B4)
+   * and Save bottom-right.
+   * Values come from the pure-UI trainerForm state (survive re-renders)
+   * falling back to the saved config (ratios shown as percent). KEPT element
+   * ids: trainer-cap-mode, trainer-cap-threshold, trainer-fallback-slot,
+   * trainer-fallback-pct, trainer-reserve, trainer-eat-magic,
+   * trainer-eat-magic-slot, trainer-save-btn (rollback: revert to the
+   * string-concat form).
    * @param {object} state
    * @returns {string}
    */
@@ -1736,9 +1865,81 @@
     const val = (key) => (form[key] !== '' && form[key] !== undefined ? form[key] : derived[key]);
     const capMode = val('capMode');
     const eatChecked = val('eatMagic') === 'true' ? ' checked' : '';
+    const autoFallback = val('autoFallback') === 'true';
+    const stopRuneMaking = val('stopRuneMaking') === 'true';
+    const stopBotting = val('stopBotting') === 'true';
+    const soundOn = state.soundEnabled !== false;
+    const hotkeysAvailable = !(state.hotkeys && state.hotkeys.available === false);
+    const fkeySelect = (id, key) => '<select id="' + id + '"' + (hotkeysAvailable ? '' : ' disabled') + '>'
+      + FKEYS.map((k) => '<option value="' + k + '"' + (val(key) === k ? ' selected' : '') + '>' + k + '</option>').join('')
+      + '</select>';
+    const assignBtn = (id) => '<button type="button" id="' + id + '"' + (hotkeysAvailable ? '' : ' disabled') + '>'
+      + escapeHtml(t(state, 'trainer.assignBtn')) + '</button>';
+    // Bars (REQ-43, D-B5): mana from snapshotStats, CAP from the training
+    // module snapshot. Missing data degrades to '—' (never invented numbers).
+    const stats = snapshotStats(state.snapshot);
+    const manaPct = (stats.mana !== null && stats.maxMana !== null && stats.maxMana > 0)
+      ? Math.round(stats.mana / stats.maxMana * 100) : null;
+    const manaBar = renderBar(state, 'mana-bar', 'mana', 'trainer.manaBar', stats.mana, stats.maxMana, manaPct);
+    const cap = snapshotCap(state.snapshot);
+    const capPct = cap && cap.ratio !== null ? Math.round(Math.max(0, Math.min(1, cap.ratio)) * 100) : null;
+    const capBar = renderBar(state, 'cap-bar', 'cap', 'trainer.capBar',
+      cap ? cap.capacity : null, cap ? cap.maxCapacity : null, capPct);
+    // Inline rune select (REQ-42, D-B2): rune spells only, full-list fallback.
+    const rune = filterRuneCatalog(state);
+    const currentSid = val('runeSid');
+    const runeOpts = rune.list.map((s) => {
+      const sid = String(Number(s.sid));
+      return '<option value="' + sid + '"' + (currentSid === sid ? ' selected' : '') + '>'
+        + escapeHtml(String(s.name || '')) + (s.words ? ' — ' + escapeHtml(String(s.words)) : '') + '</option>';
+    }).join('');
+    const runeSelect = '<select id="trainer-rune-select">'
+      + (rune.list.length === 0 ? '<option value="">' + escapeHtml(t(state, 'picker.none')) + '</option>' : runeOpts)
+      + '</select>';
+    const runeFallbackNote = rune.fallback
+      ? '<p class="trainer-note">' + escapeHtml(t(state, 'trainer.runeSelectFallback')) + '</p>' : '';
+    const hotkeyNote = hotkeysAvailable ? '' : '<p class="trainer-hotkey-note">'
+      + escapeHtml(t(state, 'trainer.hotkeyUnavailable')) + '</p>';
+    const stopNote = stopBotting
+      ? '<div class="module-alert alert-stop-botting">' + escapeHtml(t(state, 'trainer.stopBottingActive')) + '</div>' : '';
     return '<div class="trainer-form">'
       + '<h3>' + escapeHtml(t(state, 'trainer.formTitle')) + '</h3>'
-      + '<label class="trainer-field">' + escapeHtml(t(state, 'trainer.capMode'))
+      + stopNote
+      + '<div class="trainer-grid">'
+      // Left column — RUNE-MAKING.
+      + '<div class="trainer-col">'
+      + '<h4>' + escapeHtml(t(state, 'trainer.runeMakingTitle')) + '</h4>'
+      + manaBar
+      + '<label class="trainer-field">' + escapeHtml(t(state, 'trainer.runeSelect'))
+      + ' ' + runeSelect + '</label>'
+      + runeFallbackNote
+      + '<label class="trainer-field">' + escapeHtml(t(state, 'trainer.castLogic'))
+      + ' <input type="number" id="trainer-reserve" min="0" step="1" value="' + escapeHtml(val('reserve')) + '"></label>'
+      + '<div class="trainer-hotkey-row">'
+      + '<span class="trainer-field-label">' + escapeHtml(t(state, 'trainer.runeHotkey')) + '</span>'
+      + fkeySelect('trainer-rune-key', 'runeKey') + assignBtn('trainer-rune-assign')
+      + '</div>'
+      + '<h4 class="trainer-sub">' + escapeHtml(t(state, 'trainer.fallbackMagic')) + '</h4>'
+      + '<label class="trainer-field">' + escapeHtml(t(state, 'trainer.fallbackSlot'))
+      + ' <input type="number" id="trainer-fallback-slot" min="1" max="12" step="1" value="' + escapeHtml(val('fallbackSlot')) + '"></label>'
+      + '<label class="trainer-field">' + escapeHtml(t(state, 'trainer.fallbackManaPct'))
+      + ' <input type="number" id="trainer-fallback-pct" min="0" max="100" step="1" value="' + escapeHtml(val('fallbackManaPct')) + '"></label>'
+      + '<div class="trainer-hotkey-row">'
+      + '<span class="trainer-field-label">' + escapeHtml(t(state, 'trainer.fallbackHotkey')) + '</span>'
+      + fkeySelect('trainer-fallback-key', 'fallbackKey') + assignBtn('trainer-fallback-assign')
+      + '</div>'
+      + '<label class="trainer-field trainer-check">'
+      + '<input type="checkbox" id="trainer-eat-magic"' + eatChecked + '> '
+      + escapeHtml(t(state, 'trainer.eatWithMagic')) + '</label>'
+      + '<label class="trainer-field">' + escapeHtml(t(state, 'trainer.eatMagicSlot'))
+      + ' <input type="number" id="trainer-eat-magic-slot" min="1" max="12" step="1" value="' + escapeHtml(val('eatMagicSlot')) + '"></label>'
+      + hotkeyNote
+      + '</div>'
+      // Right column — CAPACITY & ALERTS.
+      + '<div class="trainer-col">'
+      + '<h4>' + escapeHtml(t(state, 'trainer.capacityTitle')) + '</h4>'
+      + capBar
+      + '<label class="trainer-field">' + escapeHtml(t(state, 'trainer.whenCapFull'))
       + ' <select id="trainer-cap-mode">'
       + '<option value="strict"' + (capMode === 'strict' ? ' selected' : '') + '>'
       + escapeHtml(t(state, 'trainer.capModeStrict')) + '</option>'
@@ -1747,18 +1948,24 @@
       + '</select></label>'
       + '<label class="trainer-field">' + escapeHtml(t(state, 'trainer.capFullThreshold'))
       + ' <input type="number" id="trainer-cap-threshold" min="0" max="100" step="1" value="' + escapeHtml(val('capFullThreshold')) + '"></label>'
-      + '<label class="trainer-field">' + escapeHtml(t(state, 'trainer.fallbackSlot'))
-      + ' <input type="number" id="trainer-fallback-slot" min="1" max="12" step="1" value="' + escapeHtml(val('fallbackSlot')) + '"></label>'
-      + '<label class="trainer-field">' + escapeHtml(t(state, 'trainer.fallbackManaPct'))
-      + ' <input type="number" id="trainer-fallback-pct" min="0" max="100" step="1" value="' + escapeHtml(val('fallbackManaPct')) + '"></label>'
-      + '<label class="trainer-field">' + escapeHtml(t(state, 'trainer.reserve'))
-      + ' <input type="number" id="trainer-reserve" min="0" step="1" value="' + escapeHtml(val('reserve')) + '"></label>'
+      + '<div class="trainer-toggles">'
       + '<label class="trainer-field trainer-check">'
-      + '<input type="checkbox" id="trainer-eat-magic"' + eatChecked + '> '
-      + escapeHtml(t(state, 'trainer.eatWithMagic')) + '</label>'
-      + '<label class="trainer-field">' + escapeHtml(t(state, 'trainer.eatMagicSlot'))
-      + ' <input type="number" id="trainer-eat-magic-slot" min="1" max="12" step="1" value="' + escapeHtml(val('eatMagicSlot')) + '"></label>'
-      + '<button type="button" id="trainer-save-btn">' + escapeHtml(t(state, 'trainer.save')) + '</button>'
+      + '<input type="checkbox" id="trainer-sound-alert"' + (soundOn ? ' checked' : '') + '> '
+      + escapeHtml(t(state, 'trainer.soundAlert')) + '</label>'
+      + '<label class="trainer-field trainer-check">'
+      + '<input type="checkbox" id="trainer-auto-fallback"' + (autoFallback ? ' checked' : '') + '> '
+      + escapeHtml(t(state, 'trainer.autoFallbackMagic')) + '</label>'
+      + '<label class="trainer-field trainer-check">'
+      + '<input type="checkbox" id="trainer-stop-runes"' + (stopRuneMaking ? ' checked' : '') + '> '
+      + escapeHtml(t(state, 'trainer.stopRuneMaking')) + '</label>'
+      + '<label class="trainer-field trainer-check">'
+      + '<input type="checkbox" id="trainer-stop-botting"' + (stopBotting ? ' checked' : '') + '> '
+      + escapeHtml(t(state, 'trainer.stopBotting')) + '</label>'
+      + '</div>'
+      + '<button type="button" id="trainer-save-btn" class="trainer-save">'
+      + escapeHtml(t(state, 'trainer.save')) + '</button>'
+      + '</div>'
+      + '</div>'
       + '</div>';
   }
 
@@ -2267,6 +2474,9 @@
     renderHealForm,
     trainerFormFromConfig,
     renderTrainerForm,
+    filterRuneCatalog,
+    snapshotCap,
+    renderBar,
     othersFormFromConfig,
     parseRepliesText,
     renderOthersForm,

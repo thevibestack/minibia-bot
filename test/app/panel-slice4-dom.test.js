@@ -221,3 +221,24 @@ test('REQ-41 (PR A, jsdom): the rune-check banner renders and Resume posts /api/
     await teardown(dom);
   }
 });
+
+test('REQ-42 (B, jsdom): the TRAINER form renders as a 2-column grid with the kept ids', async () => {
+  const { dom } = makePanel(ROUTES);
+  try {
+    await connect(dom);
+    const doc = dom.window.document;
+    assert.ok(doc.querySelector('.trainer-grid'), 'grid container rendered');
+    assert.equal(doc.querySelectorAll('.trainer-col').length, 2, 'two columns');
+    for (const id of ['trainer-cap-mode', 'trainer-cap-threshold', 'trainer-fallback-slot',
+      'trainer-fallback-pct', 'trainer-reserve', 'trainer-eat-magic', 'trainer-eat-magic-slot',
+      'trainer-save-btn', 'trainer-rune-select', 'trainer-rune-key', 'trainer-rune-assign',
+      'trainer-fallback-key', 'trainer-fallback-assign', 'trainer-sound-alert',
+      'trainer-auto-fallback', 'trainer-stop-runes', 'trainer-stop-botting']) {
+      assert.ok(doc.getElementById(id), id + ' rendered');
+    }
+    assert.ok(doc.querySelector('.bar.mana-bar'), 'mana bar rendered');
+    assert.ok(doc.querySelector('.bar.cap-bar'), 'CAP bar rendered');
+  } finally {
+    await teardown(dom);
+  }
+});

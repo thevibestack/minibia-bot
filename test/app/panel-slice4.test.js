@@ -41,7 +41,9 @@ test('REQ-30/31/32 (PR4): UPDATE_TRAINER_INPUT preserves the raw form values acr
   for (const key of Object.keys(VALID_FORM)) {
     state = P.panelReducer(state, { type: 'UPDATE_TRAINER_INPUT', key, value: VALID_FORM[key] }).state;
   }
-  assert.deepEqual(state.trainerForm, VALID_FORM);
+  for (const key of Object.keys(VALID_FORM)) {
+    assert.equal(state.trainerForm[key], VALID_FORM[key], key + ' preserved');
+  }
   const r = P.panelReducer(state, { type: 'UPDATE_TRAINER_INPUT', key: 'capFullThreshold', value: '' });
   assert.equal(r.state.trainerForm.capFullThreshold, '');
   assert.equal(r.state.trainerForm.capMode, 'strict', 'other keys untouched');
@@ -68,7 +70,14 @@ test('REQ-30/31/32 (PR4): SAVE_TRAINER_SETTINGS converts % to ratios and writes 
   assert.equal(training.reserve, 30);
   assert.equal(training.eatWithMagic.enabled, true);
   assert.equal(training.eatWithMagic.slot, 5);
-  assert.deepEqual(r.state.trainerForm, VALID_FORM, 'committed values shown back');
+  const committed = r.state.trainerForm;
+  assert.equal(committed.capMode, 'strict');
+  assert.equal(committed.capFullThreshold, '100');
+  assert.equal(committed.fallbackSlot, '3');
+  assert.equal(committed.fallbackManaPct, '50');
+  assert.equal(committed.reserve, '30');
+  assert.equal(committed.eatMagic, 'true');
+  assert.equal(committed.eatMagicSlot, '5', 'committed values shown back');
 });
 
 test('REQ-30/31/32 (PR4): SAVE_TRAINER_SETTINGS refuses invalid values with a visible reason — no config write', () => {
@@ -109,7 +118,7 @@ test('REQ-30/31/32 (PR4): renderConfigForm shows the TRAINER form when armed and
   assert.match(armed, /id="trainer-eat-magic"/);
   assert.match(armed, /id="trainer-eat-magic-slot"/);
   assert.match(armed, /id="trainer-save-btn"/);
-  assert.match(armed, /Rune cap mode/);
+  assert.match(armed, /When CAP is Full/);
   const unarmed = P.renderConfigForm(P.createInitialState());
   assert.match(unarmed, /Configuration unlocks after Connect/);
   assert.ok(!unarmed.includes('trainer-save-btn'), 'no TRAINER form pre-Connect');
@@ -153,6 +162,8 @@ test('REQ-30 (PR4): trainerFormFromConfig falls back to the forward-compat defau
   assert.deepEqual(derived, {
     capMode: 'strict', capFullThreshold: '100', fallbackSlot: '',
     fallbackManaPct: '50', reserve: '', eatMagic: 'false', eatMagicSlot: '',
+    runeSid: '', runeKey: 'F4', fallbackKey: 'F5', autoFallback: 'false',
+    stopRuneMaking: 'false', stopBotting: 'false',
   });
 });
 
@@ -187,4 +198,82 @@ test('REQ-41 (PR A): RUNECHECK_RESUME is armed-gated and emits the runecheck-res
   const unarmed = P.panelReducer(P.createInitialState(), { type: 'RUNECHECK_RESUME' });
   assert.equal(unarmed.effects.length, 0, 'no effect pre-Connect');
   assert.equal(unarmed.state.refusal.reason, 'not connected', 'visible refusal (REQ-02)');
+});
+
+test('REQ-42 (B): the TRAINER form renders a 2-column grid with every kept + new field', () => {
+  const html = P.renderConfigForm(armedState());
+  assert.match(html, /class="trainer-grid"/, 'two-column grid container');
+  assert.ok((html.match(/class="trainer-col"/g) || []).length === 2, 'two columns');
+  // Kept ids (rollback contract) + Slice B ids all present.
+  for (const id of ['trainer-cap-mode', 'trainer-cap-threshold', 'trainer-fallback-slot',
+    'trainer-fallback-pct', 'trainer-reserve', 'trainer-eat-magic', 'trainer-eat-magic-slot',
+    'trainer-save-btn']) {
+    assert.match(html, new RegExp('id="' + id + '"'), 'kept id ' + id);
+  }
+  for (const id of ['trainer-rune-select', 'trainer-rune-key', 'trainer-rune-assign',
+    'trainer-fallback-key', 'trainer-fallback-assign', 'trainer-sound-alert',
+    'trainer-auto-fallback', 'trainer-stop-runes', 'trainer-stop-botting']) {
+    assert.match(html, new RegExp('id="' + id + '"'), 'new id ' + id);
+  }
+  assert.match(html, /data-bar="mana"/, 'mana bar rendered');
+  assert.match(html, /data-bar="cap"/, 'CAP bar rendered');
+  assert.match(html, /Select Rune to Create/, 'rune select label');
+  assert.match(html, /If Mana &gt;= cost \+ reserve/, 'cast logic label');
+  assert.match(html, /Rune Hotkey/, 'rune hotkey label');
+  assert.match(html, /Fallback Hotkey/, 'fallback hotkey label');
+  assert.match(html, /Assign/, 'assign button label');
+  assert.match(html, /Sound Alert/, 'sound alert toggle label');
+  assert.match(html, /Auto Fallback Magic/, 'auto fallback toggle label');
+  assert.match(html, /Stop Rune-Making/, 'stop rune-making toggle label');
+  assert.match(html, /Stop Botting Entirely/, 'stop botting toggle label');
+});
+
+test('REQ-42 (B): the 2-col TRAINER form localizes every new label in Spanish', () => {
+  let state = armedState();
+  state = Object.assign({}, state, { lang: 'es' });
+  const html = P.renderConfigForm(state);
+  assert.match(html, /Elegir runa a crear/, 'ES rune select label');
+  assert.match(html, /Si Maná &gt;= coste \+ reserva/, 'ES cast logic label');
+  assert.match(html, /Tecla de runa/, 'ES rune hotkey label');
+  assert.match(html, /Tecla de alternativa/, 'ES fallback hotkey label');
+  assert.match(html, /Asignar/, 'ES assign label');
+  assert.match(html, /Tu maná/, 'ES mana bar label');
+  assert.match(html, /Capacidad actual/, 'ES cap bar label');
+  assert.match(html, /Alerta sonora/, 'ES sound alert toggle');
+  assert.match(html, /Magia alternativa automática/, 'ES auto fallback toggle');
+  assert.match(html, /Detener fabricación de runas/, 'ES stop rune-making toggle');
+  assert.match(html, /Detener el bot por completo/, 'ES stop botting toggle');
+});
+
+test('REQ-42 (B): the form derives the rune sid, hotkeys and toggles from the saved config', () => {
+  let state = armedState();
+  state = P.panelReducer(state, {
+    type: 'PREFILL_CONFIG',
+    config: {
+      character: 'Flamamex',
+      modules: {
+        runes: { on: false, capMode: 'strict', capFullThreshold: 0.8, fallbackSlot: 2, fallbackManaPct: 0.25 },
+        training: {
+          on: false, reserve: 10, sid: 42,
+          eatWithMagic: { enabled: true, slot: 6, sid: 12 },
+          hotkeys: { runeKey: 'F6', fallbackKey: 'F7' },
+          stopRuneMaking: true, stopBotting: true,
+        },
+      },
+    },
+  }).state;
+  state = P.panelReducer(state, {
+    type: 'SPELL_CATALOG',
+    spells: [
+      { sid: 42, name: 'Blank Rune', words: 'adori vita', mana: 100, level: 1, vocations: [] },
+      { sid: 43, name: 'Sudden Death Rune', words: 'adori tera', mana: 120, level: 2, vocations: [] },
+    ],
+  }).state;
+  const html = P.renderConfigForm(state);
+  assert.match(html, /id="trainer-rune-select"[\s\S]*?<option value="42" selected/, 'rune sid selected from config');
+  assert.match(html, /id="trainer-rune-key"[\s\S]*?<option value="F6" selected/, 'rune hotkey restored');
+  assert.match(html, /id="trainer-fallback-key"[\s\S]*?<option value="F7" selected/, 'fallback hotkey restored');
+  assert.match(html, /id="trainer-stop-runes" checked/, 'stop rune-making derived checked');
+  assert.match(html, /id="trainer-stop-botting" checked/, 'stop botting derived checked');
+  assert.match(html, /Botting stopped — rune-making is off/, 'persistent stop-botting banner');
 });

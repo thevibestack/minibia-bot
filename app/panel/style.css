@@ -381,3 +381,34 @@ body {
 .antibot-alert-kind { font-weight: 600; color: var(--warn, #d9a13b); }
 .antibot-alert-time { color: var(--muted); margin: 0 6px; }
 .alert-antibot-send { color: var(--warn, #d9a13b); }
+
+/* ------------ Slice B (REQ-42..46): TRAINER 2-col form + bars + toggles ---- */
+.trainer-form { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); }
+.trainer-form h4 { margin: 12px 0 6px; font-size: 13px; color: var(--accent); }
+.trainer-form h4:first-of-type { margin-top: 4px; }
+.trainer-form h4.trainer-sub { margin-top: 14px; }
+.trainer-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 18px; }
+.trainer-col { min-width: 0; }
+.trainer-field { display: block; margin: 6px 0; color: var(--muted); font-size: 13px; }
+.trainer-field input[type="number"],
+.trainer-field select { width: 180px; }
+.trainer-field-label { color: var(--muted); font-size: 13px; }
+.trainer-hotkey-row { display: flex; gap: 8px; align-items: center; margin: 8px 0; flex-wrap: wrap; }
+.trainer-hotkey-row select { width: auto; }
+.trainer-hotkey-row button {
+  padding: 4px 12px;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--accent);
+  cursor: pointer;
+  font-weight: 600;
+}
+.trainer-hotkey-row button:hover { background: var(--accent); color: #0b1016; }
+.trainer-hotkey-row button:disabled,
+.trainer-hotkey-row select:disabled { opacity: 0.45; cursor: not-allowed; }
+.trainer-note, .trainer-hotkey-note { margin: 4px 0; color: var(--muted); font-size: 12px; font-style: italic; }
+.trainer-toggles { margin: 10px 0; }
+.trainer-field.trainer-check { display: flex; align-items: center; gap: 8px; color: var(--text); cursor: pointer; }
+.trainer-field.trainer-check input[type="checkbox"] { accent-color: var(--accent); width: 15px; height: 15px; }
+#trainer-save-btn.trainer-save { margin-top: 12px; padding: 7px 18px; }
