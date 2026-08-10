@@ -83,6 +83,25 @@
   }
 
   /**
+   * Slice B (REQ-46, D-B3): fetch the hotkey surface availability + the
+   * configured F-keys so the TRAINER form degrades to display-only when the
+   * game keyboard surface is absent. Ignored while not connected (the server
+   * answers 409 — nothing to read yet).
+   */
+  function refreshHotkeys() {
+    if (!fetchImpl) return;
+    jsonRequest('/api/hotkeys').then(function (res) {
+      if (!res || res.ok === false) return; // not connected yet — ignore
+      dispatch({
+        type: 'HOTKEYS_LOADED',
+        available: res.available === true,
+        reason: res.available === true ? null : (res.reason || null),
+        configured: res.configured || null,
+      });
+    });
+  }
+
+  /**
    * Slice 1b (REQ-27/28): after Connect the panel fetches the castable spell
    * catalog (filtered server-side) and the profile list for the cross-load
    * offer. Refetches on every connect (new character = new catalog).
@@ -139,6 +158,7 @@
           if (res && res.ok) {
             dispatch({ type: 'PREFILL_CONFIG', config: res.config });
             refreshSpellData(); // REQ-27/28: catalog + profiles after Connect
+            refreshHotkeys();   // REQ-46 (B): hotkey surface + configured F-keys
           } else {
             dispatch({ type: 'CONNECT_FAILED', message: (res && res.reason) || 'connect refused' });
           }
@@ -230,6 +250,40 @@
             dispatch({ type: 'ALERT', kind: 'info', message: P.t(state, 'trainer.runeCheckResumed') });
           } else if (res && res.ok === false && res.reason) {
             dispatch({ type: 'ERROR', message: 'resume refused: ' + res.reason });
+          }
+        });
+        break;
+      }
+      case 'hotkey-assign': {
+        // REQ-46 (D-B3): assign the rune/fallback hotkey — the server RPCs
+        // setHotbarKeybind (writes keyboard.__hotbarKeybinds) and persists
+        // the key per character. The rune key maps to the rune-making slot
+        // (training.slot); the fallback key to the fallback slot
+        // (runes.fallbackSlot). A missing slot refuses visibly.
+        var which = effect.which === 'fallback' ? 'fallback' : 'rune';
+        var key = which === 'rune'
+          ? (state.trainerForm.runeKey || 'F4')
+          : (state.trainerForm.fallbackKey || 'F5');
+        var cfg = state.config || {};
+        var training = cfg.modules && cfg.modules.training || {};
+        var runes = cfg.modules && cfg.modules.runes || {};
+        var slot = which === 'rune' ? Number(training.slot) : Number(runes.fallbackSlot);
+        if (!Number.isInteger(slot) || slot < 1 || slot > 12) {
+          dispatch({
+            type: 'HOTKEY_RESULT', ok: false, which: which,
+            reason: 'no ' + which + ' hotbar slot configured',
+          });
+          return;
+        }
+        postJson('/api/hotkeys', {
+          character: state.identity ? state.identity.name : null,
+          slot: slot,
+          key: key,
+        }).then(function (res) {
+          if (res && res.ok === true) {
+            dispatch({ type: 'HOTKEY_RESULT', ok: true, which: which });
+          } else if (res && res.ok === false) {
+            dispatch({ type: 'HOTKEY_RESULT', ok: false, which: which, reason: res.reason || 'hotkey assign failed' });
           }
         });
         break;
@@ -362,6 +416,16 @@
     } else if (target && target.matches && target.matches('#trainer-cap-mode')) {
       // REQ-30 (PR4): cap mode select — pure UI value (selects fire change).
       dispatch({ type: 'UPDATE_TRAINER_INPUT', key: 'capMode', value: target.value });
+    } else if (target && target.matches && target.matches('#trainer-rune-select')) {
+      // REQ-42 (B, D-B2): inline rune select — pure UI value (the save
+      // validates the sid is castable, PICK_SPELL pattern).
+      dispatch({ type: 'UPDATE_TRAINER_INPUT', key: 'runeSid', value: target.value });
+    } else if (target && target.matches && target.matches('#trainer-rune-key')) {
+      // REQ-46 (B, D-B3): Rune Hotkey select — pure UI value.
+      dispatch({ type: 'UPDATE_TRAINER_INPUT', key: 'runeKey', value: target.value });
+    } else if (target && target.matches && target.matches('#trainer-fallback-key')) {
+      // REQ-46 (B, D-B3): Fallback Hotkey select — pure UI value.
+      dispatch({ type: 'UPDATE_TRAINER_INPUT', key: 'fallbackKey', value: target.value });
     } else if (target && target.matches && target.matches('#trainer-auto-fallback')) {
       // REQ-44 (B, D-B4): Auto Fallback Magic toggle — pure UI value (save
       // refuses when ON without a fallback slot).
@@ -504,6 +568,15 @@
       // REQ-45 (B, D-B6): No drops the pending confirmation — nothing saved.
       dispatch({ type: 'CANCEL_STOP' });
     }
+    else if (target.matches('#trainer-rune-assign')) {
+      // REQ-46 (B, D-B3): assign the Rune Hotkey to the rune-making slot
+      // (server -> setHotbarKeybind RPC + per-character persistence).
+      dispatch({ type: 'ASSIGN_HOTKEY', which: 'rune' });
+    }
+    else if (target.matches('#trainer-fallback-assign')) {
+      // REQ-46 (B, D-B3): assign the Fallback Hotkey to the fallback slot.
+      dispatch({ type: 'ASSIGN_HOTKEY', which: 'fallback' });
+    }
     else if (target.matches('#others-save-btn')) {
       // REQ-33/34 (PR5): commit the OTHERS settings form (food slot +
       // every-N-casts, loot default destination, anti-bot pattern => reply
@@ -593,6 +666,7 @@
 
   render();
   startPolling();
+  refreshHotkeys(); // REQ-46 (B): hotkey surface read — ignored until connected (server 409)
 
   window.__mbPanel = {
     dispatch: dispatch,
