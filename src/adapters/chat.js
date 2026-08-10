@@ -13,6 +13,21 @@
  * Fully injectable: `ctx = { gameClient, document }`.
  */
 
+/** Normalize the raw `__time` to epoch ms (REQ-37, D-A1): real client
+ *  entries carry a Date OBJECT (live probe: {message, __time: Date, ...})
+ *  while the antibot/learning watermark dedupe expects numeric timestamps —
+ *  a raw passthrough left the watermarks dead on real data. Date objects ->
+ *  getTime(); numeric passthrough; missing/null/invalid -> null (null-safe,
+ *  never throws). */
+function normalizeTime(t) {
+  if (t === null || t === undefined) return null;
+  if (t instanceof Date) {
+    const ms = t.getTime();
+    return Number.isFinite(ms) ? ms : null;
+  }
+  return typeof t === 'number' && Number.isFinite(t) ? t : null;
+}
+
 /** Normalize one channel entry to the canonical read shape. `type` is the
  *  raw speak-type field when the game exposes it (PR5/REQ-33: speak types 0
  *  and 2); null when absent (the anti-bot watcher treats a null type as a
@@ -21,7 +36,7 @@ function fromChannelEntry(entry) {
   return {
     name: entry?.name ?? null,
     message: entry?.message ?? '',
-    time: entry?.__time ?? null,
+    time: normalizeTime(entry?.__time),
     type: entry?.type ?? null,
     source: 'channel',
   };
