@@ -44,6 +44,31 @@ test('REQ-19: no destination configured at all -> no route, no fire', () => {
   assert.equal(d.reason, 'no-destination');
 });
 
+test('REQ-33 (PR5): auto-loot no-ops with only whitespace destinations (trim guard)', () => {
+  const { mod, commands } = makeModule({
+    config: { on: true, defaultDest: '   ', perMonster: { Rat: '  ' } },
+  });
+  mod.observeKills([{ name: 'Rat', loot: true }]);
+  const d = mod.decide();
+  assert.equal(d.fire, false, 'whitespace-only destinations never fire (REQ-33 gate)');
+  assert.equal(d.reason, 'no-destination');
+  assert.equal(commands.length, 0);
+  assert.equal(mod.getState().pendingCount, 1, 'the pending item is NOT dropped');
+});
+
+test('REQ-33 (PR5): per-monster list WITHOUT a default routes only listed monsters', () => {
+  const { mod, commands } = makeModule({
+    config: { on: true, defaultDest: null, perMonster: { Rat: 'Dust bag' } },
+  });
+  mod.observeKills([{ name: 'Rat', loot: true }, { name: 'Wolf', loot: true }]);
+  assert.equal(mod.decide().fire, true, 'listed monster routes via its own destination');
+  assert.equal(mod.decide().route.dest, 'Dust bag');
+  assert.equal(mod.fire(mod.decide()), true);
+  assert.deepEqual(commands, [{ monster: 'Rat', dest: 'Dust bag' }]);
+  assert.equal(mod.getState().pendingCount, 1, 'unlisted Wolf stays pending — no default to route it');
+  assert.equal(mod.decide().fire, false, 'no default destination -> no-op for unlisted monsters');
+});
+
 test('REQ-19: a kill with loot routes to the destination via the game command', () => {
   const { mod, commands } = makeModule({
     config: { on: true, defaultDest: 'Loot bag', perMonster: { Rat: 'Dust bag' } },
