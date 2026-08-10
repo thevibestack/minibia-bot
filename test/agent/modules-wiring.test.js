@@ -300,6 +300,26 @@ test('REQ-17: eat OFF + SATED false -> zero eat actions', async () => {
   }
 });
 
+test('REQ-17 (PR5 regression): NORMAL hunger (SATED false) enqueues an eat action through the Action Queue', async () => {
+  const { dom, uses, gameClient } = makePage();
+  try {
+    const handle = dom.window.__mbAgentHandle;
+    assert.equal(await waitFor(() => handle.isReady()), true);
+    gameClient.player.conditions = { has: (k) => k === 'SATED' && false }; // hungry
+    dom.window.__mbAgent.applyConfig(moduleConfig({
+      eat: { on: true, everyCasts: 0, warningWindowSec: 60, fallbackIntervalSec: 10, slot: null, cids: [] },
+    }));
+    // Normal food path (no forced cadence): the hunger flag drives the eat
+    // decision -> queue-dispatched attempt -> mouse.use fallback lands.
+    assert.equal(await waitFor(() => uses.length >= 1, { timeout: 6000 }), true,
+      'hunger eat attempt lands via mouse.use (REQ-17 normal food enqueue)');
+    const q = handle.getState().queue;
+    assert.ok(q.enqueued >= 1 && q.dispatched >= 1, 'the eat action passed the queue (REQ-12 no-bypass)');
+  } finally {
+    teardown(dom);
+  }
+});
+
 test('REQ-11: survival priority — heal-magic beats training in the same tick cadence', async () => {
   const { dom, casts, gameClient } = makePage();
   try {
