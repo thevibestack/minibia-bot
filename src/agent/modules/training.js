@@ -104,7 +104,7 @@ function createTraining(opts = {}) {
     if (cc.capMode !== 'strict') return { full: false };
     let cap = null;
     if (typeof readCap === 'function') {
-      try { cap = readCap(); } catch (e) { cap = null; }
+      try { cap = readCap(); } catch (e) { warn('training: cap read failed: ' + (e && e.message ? e.message : e)); cap = null; }
     }
     state.cap = cap && typeof cap === 'object' ? cap : null;
     const ratio = state.cap ? state.cap.ratio : null;
@@ -159,7 +159,9 @@ function createTraining(opts = {}) {
     if (typeof canCastSpell === 'function') {
       try {
         if (canCastSpell(config.sid) === false) return { fire: false, reason: 'vocation-gate' };
-      } catch (e) { /* gate read failure => skip the gate, never block */ }
+      } catch (e) {
+        warn('training: vocation gate read failed — gate skipped: ' + (e && e.message ? e.message : e));
+      }
     }
 
     // REQ-30 (D3): strict rune CAP stops rune-making at the cap threshold —

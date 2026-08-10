@@ -88,7 +88,7 @@ function createRunes(opts = {}) {
     if (ctx.mana === null || ctx.mana === undefined || !Number.isFinite(Number(ctx.mana))) return null;
     let cost = null;
     if (typeof getSpellCost === 'function') {
-      try { cost = getSpellCost(slot); } catch (e) { cost = null; }
+      try { cost = getSpellCost(slot); } catch (e) { warn('runes: spell cost read failed: ' + (e && e.message ? e.message : e)); cost = null; }
     }
     if (cost === null || !Number.isFinite(cost)) return null; // cost unknown -> skip
     const feas = FEAS_MOD.canCast({

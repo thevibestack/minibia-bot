@@ -2922,7 +2922,7 @@ function createRunes(opts = {}) {
     if (ctx.mana === null || ctx.mana === undefined || !Number.isFinite(Number(ctx.mana))) return null;
     let cost = null;
     if (typeof getSpellCost === 'function') {
-      try { cost = getSpellCost(slot); } catch (e) { cost = null; }
+      try { cost = getSpellCost(slot); } catch (e) { warn('runes: spell cost read failed: ' + (e && e.message ? e.message : e)); cost = null; }
     }
     if (cost === null || !Number.isFinite(cost)) return null; // cost unknown -> skip
     const feas = FEAS_MOD.canCast({
@@ -3163,7 +3163,7 @@ function createTraining(opts = {}) {
     if (cc.capMode !== 'strict') return { full: false };
     let cap = null;
     if (typeof readCap === 'function') {
-      try { cap = readCap(); } catch (e) { cap = null; }
+      try { cap = readCap(); } catch (e) { warn('training: cap read failed: ' + (e && e.message ? e.message : e)); cap = null; }
     }
     state.cap = cap && typeof cap === 'object' ? cap : null;
     const ratio = state.cap ? state.cap.ratio : null;
@@ -3218,7 +3218,9 @@ function createTraining(opts = {}) {
     if (typeof canCastSpell === 'function') {
       try {
         if (canCastSpell(config.sid) === false) return { fire: false, reason: 'vocation-gate' };
-      } catch (e) { /* gate read failure => skip the gate, never block */ }
+      } catch (e) {
+        warn('training: vocation gate read failed — gate skipped: ' + (e && e.message ? e.message : e));
+      }
     }
 
     // REQ-30 (D3): strict rune CAP stops rune-making at the cap threshold —
@@ -4834,7 +4836,10 @@ function createAntibotModule(opts = {}) {
     let entries = [];
     try {
       entries = CHAT_MOD.getRecentMessages({ gameClient: gameClient, document: doc });
-    } catch (e) { entries = []; }
+    } catch (e) {
+      warn('antibot: Default-channel chat read failed — no events this tick: ' + (e && e.message ? e.message : e));
+      entries = [];
+    }
     observeChat(entries);
     observeContext();
     return { alerts: state.alerts.slice() };
@@ -5985,7 +5990,10 @@ function createAgent(opts = {}) {
           if (entry && entry.cost !== undefined) cost = Number(entry.cost);
         }
       }
-    } catch (e) { cost = null; }
+    } catch (e) {
+      warn('readSpellCost: spell cost lookup failed: ' + (e && e.message ? e.message : e));
+      cost = null;
+    }
     if ((cost === null || !Number.isFinite(cost)) && Number.isFinite(Number(spell.cost))) cost = Number(spell.cost);
     return cost !== null && Number.isFinite(cost) ? cost : null;
   }
@@ -6005,7 +6013,9 @@ function createAgent(opts = {}) {
       if (hb && typeof hb.__canPlayerCastSpell === 'function') {
         return hb.__canPlayerCastSpell(sid) === true;
       }
-    } catch (e) { /* gate read failure => unknown */ }
+    } catch (e) {
+      warn('canCastSpell: vocation gate read failed — gate skipped: ' + (e && e.message ? e.message : e));
+    }
     return null;
   }
 
@@ -6027,7 +6037,10 @@ function createAgent(opts = {}) {
       const sid = entry && entry.spell;
       if (sid === null || sid === undefined) return null;
       return readSpellCost({ sid: sid });
-    } catch (e) { return null; }
+    } catch (e) {
+      warn('readRuneCost: slot cost resolution failed: ' + (e && e.message ? e.message : e));
+      return null;
+    }
   }
 
   /** Live-probed native rune windows: hotbarManager.__runeAttackUntil /
@@ -6042,7 +6055,10 @@ function createAgent(opts = {}) {
       const healUntil = hb.__runeHealUntil;
       if (attackUntil === undefined && healUntil === undefined) return null;
       return { attackUntil: attackUntil === undefined ? null : attackUntil, healUntil: healUntil === undefined ? null : healUntil };
-    } catch (e) { return null; }
+    } catch (e) {
+      warn('readRuneTimers: native rune timer read failed: ' + (e && e.message ? e.message : e));
+      return null;
+    }
   }
 
   /** Post-rune-fire wait in ms: __getRuneEffectiveCooldown() when present,
@@ -6056,13 +6072,17 @@ function createAgent(opts = {}) {
         const v = hb.__getRuneEffectiveCooldown();
         if (Number.isFinite(Number(v))) wait = Math.max(wait, Number(v));
       }
-    } catch (e) { /* best-effort */ }
+    } catch (e) {
+      warn('readRuneAfterFireWait: rune cooldown read failed: ' + (e && e.message ? e.message : e));
+    }
     try {
       const p = state.gameClient && state.gameClient.player;
       const sl = (p && p.state && p.state.attackSlowness) !== undefined
         ? (p.state.attackSlowness) : (p && p.attackSlowness);
       if (Number.isFinite(Number(sl))) wait = Math.max(wait, Number(sl));
-    } catch (e) { /* best-effort */ }
+    } catch (e) {
+      warn('readRuneAfterFireWait: attackSlowness read failed: ' + (e && e.message ? e.message : e));
+    }
     return wait;
   }
 
