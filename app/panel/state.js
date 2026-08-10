@@ -248,6 +248,16 @@
       'eat.pausedAlert': 'Eating paused — 3 consecutive failed attempts.',
       'premium.required': 'Premium required — %modules% stay disabled (REQ-22).',
       'alert.antibot': 'Anti-bot: %kind%',
+      // Audit: panel alert list + sound toggle (state.js + app.js).
+      'alerts.title': 'Alerts',
+      'alerts.empty': 'No alerts yet.',
+      'alert.kind.cap-full': 'Rune cap full',
+      'alert.kind.antibot-speak': 'Anti-bot: speak',
+      'alert.kind.antibot-moved': 'Anti-bot: moved',
+      'alert.kind.antibot-attacked': 'Anti-bot: attack',
+      'alert.kind.info': 'Info',
+      'alert.kind.event': 'Event',
+      'sound.enabled': 'Alert sounds',
     },
     es: {
       'gate.disconnected': 'Desconectado',
@@ -404,6 +414,16 @@
       'eat.pausedAlert': 'Comer pausado — 3 intentos fallidos consecutivos.',
       'premium.required': 'Se requiere Premium — %modules% permanecen desactivados (REQ-22).',
       'alert.antibot': 'Anti-bot: %kind%',
+      // Audit: lista de alertas del panel + interruptor de sonido (state.js + app.js).
+      'alerts.title': 'Alertas',
+      'alerts.empty': 'Todavía no hay alertas.',
+      'alert.kind.cap-full': 'Tope de runas lleno',
+      'alert.kind.antibot-speak': 'Anti-bot: habla',
+      'alert.kind.antibot-moved': 'Anti-bot: movimiento',
+      'alert.kind.antibot-attacked': 'Anti-bot: ataque',
+      'alert.kind.info': 'Información',
+      'alert.kind.event': 'Evento',
+      'sound.enabled': 'Sonidos de alerta',
     },
   };
 
@@ -468,6 +488,7 @@
       // Slice 1a (REQ-26): product shell state.
       tab: 'heal',             // active tab id (TABS)
       lang: LANG_EN,           // 'en' | 'es' — default EN (REQ-26)
+      soundEnabled: true,      // alert sound toggle — default ON (persisted 'mb-panel-sound')
       tutorial: null,          // null | {step: number} — first-run stepper
       // Slice 1b (REQ-27/28): profile cross-load + spell picker state.
       profiles: [],            // character names with saved configs (REQ-27)
@@ -824,6 +845,14 @@
         // 'mb-panel-lang') so the panel restores the chosen language.
         const lang = action.lang === LANG_ES ? LANG_ES : LANG_EN;
         return { state: Object.assign({}, state, { lang }), effects: [{ type: 'lang-set', lang }] };
+      }
+
+      case 'SET_SOUND': {
+        // Audit: alert sound toggle — the sound-set effect persists it
+        // (app.js -> localStorage 'mb-panel-sound') so the choice survives
+        // reloads. Default ON; any non-true value turns the beep off.
+        const enabled = action.enabled === true || action.enabled === 'true';
+        return { state: Object.assign({}, state, { soundEnabled: enabled }), effects: [{ type: 'sound-set', enabled }] };
       }
 
       case 'TUTORIAL_START':
@@ -1491,6 +1520,11 @@
       + '<button type="button" class="lang-btn' + (state.lang === LANG_EN ? ' active' : '') + '" data-lang="en">EN</button>'
       + '<button type="button" class="lang-btn' + (state.lang === LANG_ES ? ' active' : '') + '" data-lang="es">ES</button>'
       + '</span>');
+    // Audit: alert sound toggle — checked = beep on ALERT (default ON); the
+    // reducer persists the choice (localStorage 'mb-panel-sound').
+    parts.push('<label class="sound-toggle"><input type="checkbox" id="sound-toggle"'
+      + (state.soundEnabled !== false ? ' checked' : '') + '> '
+      + escapeHtml(t(state, 'sound.enabled')) + '</label>');
     return '<div class="status-bar">' + parts.join(' ') + '</div>';
   }
 
@@ -2110,14 +2144,47 @@
       + '</div>';
   }
 
-  /** Full panel body render (status bar + tabs + config + live state + log
-   *  + tutorial overlay). */
+  /** Audit: localized severity/kind label for a panel alert. Unknown kinds
+   *  fall back to the raw kind id (never the key itself). */
+  function alertKindLabel(state, kind) {
+    const key = 'alert.kind.' + String(kind || 'event');
+    const label = t(state, key);
+    return label === key ? String(kind || 'event') : label;
+  }
+
+  /** Audit: visible panel alerts section — bounded to the last 8 entries,
+   *  HTML-escaped, with a localized kind label + timestamp (REQ-26 readable,
+   *  never raw JSON). Rendered from state.alerts (the reducer already caps
+   *  the list at 20; the render bounds the section to a readable window). */
+  function renderAlerts(state) {
+    const alerts = Array.isArray(state.alerts) ? state.alerts.slice(-8) : [];
+    const parts = ['<section class="panel-alerts">', '<h2>' + escapeHtml(t(state, 'alerts.title')) + '</h2>'];
+    if (alerts.length === 0) {
+      parts.push('<p class="alerts-empty">' + escapeHtml(t(state, 'alerts.empty')) + '</p>');
+    } else {
+      parts.push('<div class="alerts-list">' + alerts.map((a) => {
+        const when = Number.isFinite(Number(a.at))
+          ? new Date(Number(a.at)).toLocaleTimeString() : '--:--:--';
+        return '<div class="panel-alert" data-alert-kind="' + escapeHtml(String(a.kind || 'event')) + '">'
+          + '<span class="panel-alert-kind">' + escapeHtml(alertKindLabel(state, a.kind)) + '</span>'
+          + ' <span class="panel-alert-time">' + escapeHtml(when) + '</span>'
+          + ' <span class="panel-alert-message">' + escapeHtml(String(a.message || '')) + '</span>'
+          + '</div>';
+      }).join('') + '</div>');
+    }
+    parts.push('</section>');
+    return parts.join('');
+  }
+
+  /** Full panel body render (status bar + tabs + config + live state + alerts
+   *  + log + tutorial overlay). */
   function renderPanel(state) {
     return '<main id="panel-root">'
       + renderStatusBar(state)
       + renderModuleList(state)
       + renderConfigForm(state)
       + renderLiveState(state)
+      + renderAlerts(state)
       + renderLog(state)
       + renderTutorial(state)
       + '</main>';
@@ -2156,6 +2223,8 @@
     formatLogResult,
     renderOffer,
     renderAntibotAlert,
+    alertKindLabel,
+    renderAlerts,
     renderStatusBar,
     renderModuleList,
     renderProfileLoader,

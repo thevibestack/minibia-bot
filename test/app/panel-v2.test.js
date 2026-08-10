@@ -229,3 +229,57 @@ test('1.7: renderLiveState renders the stats line without raw JSON', () => {
   assert.ok(!html.includes('{'), 'no JSON braces');
   assert.ok(!html.includes('live-payload'), 'legacy JSON dump gone');
 });
+
+/* --------------------- audit: alerts + sound toggle --------------------- */
+
+test('audit: SET_SOUND toggles soundEnabled (default ON) with a persist effect', () => {
+  assert.equal(P.createInitialState().soundEnabled, true, 'sound defaults ON');
+  const off = run([{ type: 'SET_SOUND', enabled: false }]);
+  assert.equal(off.state.soundEnabled, false);
+  assert.deepEqual(off.effects, [{ type: 'sound-set', enabled: false }], 'persist effect emitted');
+  const on = run([{ type: 'SET_SOUND', enabled: true }]);
+  assert.equal(on.state.soundEnabled, true);
+  assert.deepEqual(on.effects, [{ type: 'sound-set', enabled: true }]);
+});
+
+test('audit: renderStatusBar renders the sound toggle checked/unchecked', () => {
+  const on = P.createInitialState();
+  const onHtml = P.renderStatusBar(on);
+  assert.match(onHtml, /id="sound-toggle" checked/, 'checked when soundEnabled');
+  assert.match(onHtml, /Alert sounds/, 'localized label (EN)');
+  const off = run([{ type: 'SET_SOUND', enabled: false }]).state;
+  assert.match(P.renderStatusBar(off), /id="sound-toggle"/);
+  assert.doesNotMatch(P.renderStatusBar(off), /id="sound-toggle" checked/, 'unchecked when muted');
+});
+
+test('audit: renderAlerts shows a bounded, escaped list with localized kind labels', () => {
+  const state = run([
+    { type: 'ALERT', kind: 'cap-full', message: 'Rune cap full — stopped', at: 1000 },
+    { type: 'ALERT', kind: 'antibot-speak', message: '<script>alert(1)</script>', at: 2000 },
+    { type: 'ALERT', kind: 'mystery', message: 'mystery event', at: 3000 },
+  ]).state;
+  assert.equal(state.alerts.length, 3, 'reducer keeps every alert (under the 20 cap)');
+  const html = P.renderAlerts(state);
+  assert.match(html, /Alerts/, 'section header');
+  assert.match(html, /Rune cap full/, 'localized cap-full kind label');
+  assert.match(html, /Anti-bot: speak/, 'localized antibot kind label');
+  assert.match(html, /mystery/, 'unknown kind falls back to the raw kind');
+  assert.match(html, /&lt;script&gt;/, 'messages HTML-escaped (XSS-safe)');
+  assert.doesNotMatch(html, /<script>/, 'never raw');
+  assert.equal(P.renderAlerts(P.createInitialState()).includes('No alerts yet.'), true, 'empty state');
+
+  // Bound: only the last 8 render even with more in state.
+  const many = run(Array.from({ length: 25 }, (_, i) => ({ type: 'ALERT', kind: 'info', message: 'm' + i, at: i }))).state;
+  assert.equal(many.alerts.length, 20, 'reducer caps at 20');
+  assert.equal((P.renderAlerts(many).match(/class="panel-alert"/g) || []).length, 8, 'render bounds to 8');
+});
+
+test('audit: ES renders the alerts section and sound label in Spanish', () => {
+  const state = run([
+    { type: 'SET_LANG', lang: 'es' },
+    { type: 'ALERT', kind: 'cap-full', message: 'Tope lleno', at: 1 },
+  ]).state;
+  assert.match(P.renderAlerts(state), /Tope de runas lleno/, 'kind label ES');
+  assert.match(P.renderAlerts(state), /Alertas/, 'section header ES');
+  assert.match(P.renderStatusBar(state), /Sonidos de alerta/, 'sound label ES');
+});

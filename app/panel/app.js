@@ -123,6 +123,14 @@
       } catch (e) { /* private mode / disabled storage: best-effort */ }
       return;
     }
+    // Audit: alert sound toggle persistence ('mb-panel-sound'); restored on
+    // boot below.
+    if (effect.type === 'sound-set') {
+      try {
+        window.localStorage.setItem('mb-panel-sound', effect.enabled === true ? '1' : '0');
+      } catch (e) { /* private mode / disabled storage: best-effort */ }
+      return;
+    }
     if (!fetchImpl) return; // tests without network: state machine only
     switch (effect.type) {
       case 'connect': {
@@ -242,7 +250,9 @@
     // REQ-26 (slice 1a): panel-level alerts ring the audio stub (feature-
     // detected; TRAINER/OTHERS slices route their module alerts through the
     // same ALERT action — the hook is live now, the sound arrives with them).
-    if (action && action.type === 'ALERT') beep();
+    // Audit: the sound toggle (state.soundEnabled) silences the beep; visual
+    // alerts still render.
+    if (action && action.type === 'ALERT' && state.soundEnabled !== false) beep();
     return state;
   }
 
@@ -340,6 +350,9 @@
     } else if (target && target.matches && target.matches('#attack-targeting')) {
       // REQ-35 (PR6): attack targeting select — pure UI value.
       dispatch({ type: 'UPDATE_ATTACK_INPUT', key: 'targeting', value: target.value });
+    } else if (target && target.matches && target.matches('#sound-toggle')) {
+      // Audit: alert sound toggle — change (not input): checkboxes fire change.
+      dispatch({ type: 'SET_SOUND', enabled: target.checked });
     }
   });
 
@@ -522,6 +535,14 @@
   try {
     if (window.localStorage && window.localStorage.getItem('mb-panel-lang') === 'es') {
       dispatch({ type: 'SET_LANG', lang: 'es' });
+    }
+  } catch (e) { /* private mode / disabled storage: best-effort */ }
+
+  // Audit: restore the alert-sound preference ('mb-panel-sound'); ON stays
+  // the default when nothing is stored.
+  try {
+    if (window.localStorage && window.localStorage.getItem('mb-panel-sound') === '0') {
+      dispatch({ type: 'SET_SOUND', enabled: false });
     }
   } catch (e) { /* private mode / disabled storage: best-effort */ }
 
