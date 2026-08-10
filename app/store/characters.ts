@@ -49,7 +49,7 @@ function defaultConfig(characterName) {
       // with a configurable fallback spell, per-module reserves, and
       // eat-with-magic defaults — the TRAINER slice wires the behavior.
       runes: { on: false, attackSlot: null, healSlot: null, reserve: 0,
-        capMode: 'strict', capFullThreshold: 1.0, fallbackSlot: null, fallbackSid: null, fallbackManaPct: 0.5 },
+        capMode: 'strict', capFullThreshold: 1.0, fallbackSlot: null, fallbackManaPct: 0.5 },
       training: { on: false, slot: null, word: null, sid: null, reserve: 0,
         eatWithMagic: { enabled: false, slot: null, sid: null } },
       eat: { on: false, everyCasts: null, warningWindowSec: 60, fallbackIntervalSec: 10 },

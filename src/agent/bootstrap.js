@@ -78,7 +78,7 @@ const DEFAULT_CONFIG = {
   healItems: { on: false, threshold: 50, slotCids: [] },
   healMagic: { on: false, threshold: 150, slot: null, sid: null, word: null, reserve: 0 },
   runes: { on: false, attackSlot: null, healSlot: null, healThreshold: null, reserve: 0,
-    capMode: 'strict', capFullThreshold: 1.0, fallbackSlot: null, fallbackSid: null, fallbackManaPct: 0.5 },
+    capMode: 'strict', capFullThreshold: 1.0, fallbackSlot: null, fallbackManaPct: 0.5 },
   training: { on: false, slot: null, sid: null, reserve: 0, word: null,
     eatWithMagic: { enabled: false, slot: null, sid: null } },
   eat: { on: false, everyCasts: 0, warningWindowSec: 60, fallbackIntervalSec: 10, slot: null, cids: [] },
@@ -145,7 +145,7 @@ function normalizeConfig(raw) {
     healItems: { on: false, threshold: 50, slotCids: [] },
     healMagic: { on: false, threshold: 150, slot: null, sid: null, word: null, reserve: 0 },
     runes: { on: false, attackSlot: null, healSlot: null, healThreshold: null, reserve: 0,
-      capMode: 'strict', capFullThreshold: 1.0, fallbackSlot: null, fallbackSid: null, fallbackManaPct: 0.5 },
+      capMode: 'strict', capFullThreshold: 1.0, fallbackSlot: null, fallbackManaPct: 0.5 },
     training: { on: false, slot: null, sid: null, reserve: 0, word: null,
       eatWithMagic: { enabled: false, slot: null, sid: null } },
     eat: { on: false, everyCasts: 0, warningWindowSec: 60, fallbackIntervalSec: 10, slot: null, cids: [] },
@@ -200,7 +200,10 @@ function normalizeConfig(raw) {
     cfg.runes.capFullThreshold = rn.capFullThreshold;
   }
   if (Number.isInteger(rn.fallbackSlot)) cfg.runes.fallbackSlot = rn.fallbackSlot;
-  if (Number.isInteger(rn.fallbackSid)) cfg.runes.fallbackSid = rn.fallbackSid;
+  // NOTE: fallbackSid was DROPPED (post-chain maintenance, obs 10502): the
+  // fallback fires SLOT-driven (fallbackSlot) like every other module; an
+  // sid never resolved a slot, so carrying one implied behavior that did not
+  // exist. Unknown keys are dropped by normalization anyway.
   if (Number.isFinite(rn.fallbackManaPct) && rn.fallbackManaPct >= 0 && rn.fallbackManaPct <= 1) {
     cfg.runes.fallbackManaPct = rn.fallbackManaPct;
   }

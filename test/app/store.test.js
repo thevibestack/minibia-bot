@@ -50,7 +50,6 @@ test('REQ-09: missing file -> defaults (first run), no warning', (t) => {
   assert.equal(config.modules.runes.capMode, 'strict', 'strict CAP default');
   assert.equal(config.modules.runes.capFullThreshold, 1.0);
   assert.equal(config.modules.runes.fallbackSlot, null);
-  assert.equal(config.modules.runes.fallbackSid, null);
   assert.equal(config.modules.runes.fallbackManaPct, 0.5);
   assert.equal(config.modules.runes.reserve, 0, 'runes reserve default');
   assert.deepEqual(config.modules.training.eatWithMagic, { enabled: false, slot: null, sid: null });

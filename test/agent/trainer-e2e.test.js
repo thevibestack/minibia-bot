@@ -95,7 +95,7 @@ function trainerConfig(overrides = {}) {
     healItems: { on: false, threshold: 50, slotCids: [] },
     healMagic: { on: false, threshold: 150, slot: null, sid: null, reserve: 0, word: null },
     runes: { on: false, attackSlot: null, healSlot: null, healThreshold: null, reserve: 0,
-      capMode: 'strict', capFullThreshold: 1.0, fallbackSlot: 3, fallbackSid: null, fallbackManaPct: 0.5 },
+      capMode: 'strict', capFullThreshold: 1.0, fallbackSlot: 3, fallbackManaPct: 0.5 },
     training: { on: true, slot: 7, sid: 7, reserve: 30, word: null,
       eatWithMagic: { enabled: false, slot: null, sid: null } },
     eat: { on: false, everyCasts: 0, warningWindowSec: 60, fallbackIntervalSec: 10, slot: null, cids: [] },

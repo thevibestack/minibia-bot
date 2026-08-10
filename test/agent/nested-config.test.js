@@ -39,7 +39,7 @@ function nestedStoreConfig(overrides = {}) {
       healItems: { on: true, threshold: 40, slotCids: [1, 2] },
       healMagic: { on: true, threshold: 120, slot: 2, word: 'exura', sid: 61, reserve: 10 },
       runes: { on: true, attackSlot: 3, healSlot: 4, healThreshold: 80, reserve: 30,
-        capMode: 'strict', capFullThreshold: 0.9, fallbackSlot: 5, fallbackSid: 77, fallbackManaPct: 0.6 },
+        capMode: 'strict', capFullThreshold: 0.9, fallbackSlot: 5, fallbackManaPct: 0.6 },
       training: { on: true, slot: 6, sid: 42, reserve: 20, word: 'utevo vis',
         eatWithMagic: { enabled: true, slot: 8, sid: 55 } },
       eat: { on: true, everyCasts: 5, warningWindowSec: 45, fallbackIntervalSec: 8, slot: 2, cids: [9, 10] },
@@ -72,7 +72,7 @@ test('REQ-08 fix: the NESTED store shape reaches EVERY module — on flags + key
     { on: true, threshold: 120, slot: 2, sid: 61, word: 'exura', reserve: 10 });
   assert.deepEqual(cfg.runes, {
     on: true, attackSlot: 3, healSlot: 4, healThreshold: 80, reserve: 30,
-    capMode: 'strict', capFullThreshold: 0.9, fallbackSlot: 5, fallbackSid: 77, fallbackManaPct: 0.6,
+    capMode: 'strict', capFullThreshold: 0.9, fallbackSlot: 5, fallbackManaPct: 0.6,
   });
   assert.deepEqual(cfg.training, {
     on: true, slot: 6, sid: 42, reserve: 20, word: 'utevo vis',
@@ -105,7 +105,7 @@ test('REQ-08 fix: the FLAT shape still normalizes identically (v1/v2 agent test 
     healItems: { on: true, threshold: 40, slotCids: [1, 2] },
     healMagic: { on: true, threshold: 120, slot: 2, word: 'exura', sid: 61, reserve: 10 },
     runes: { on: true, attackSlot: 3, healSlot: 4, healThreshold: 80, reserve: 30,
-      capMode: 'strict', capFullThreshold: 0.9, fallbackSlot: 5, fallbackSid: 77, fallbackManaPct: 0.6 },
+      capMode: 'strict', capFullThreshold: 0.9, fallbackSlot: 5, fallbackManaPct: 0.6 },
     training: { on: true, slot: 6, sid: 42, reserve: 20, word: 'utevo vis',
       eatWithMagic: { enabled: true, slot: 8, sid: 55 } },
     eat: { on: true, everyCasts: 5, warningWindowSec: 45, fallbackIntervalSec: 8, slot: 2, cids: [9, 10] },
@@ -172,7 +172,7 @@ test('REQ-08 fix: modules ABSENT -> flat only; module WITHOUT a nested entry -> 
     armed: true,
   });
   assert.deepEqual(flatOnly.runes, { on: true, attackSlot: 2, healSlot: null, healThreshold: null,
-    reserve: 0, capMode: 'strict', capFullThreshold: 1.0, fallbackSlot: null, fallbackSid: null,
+    reserve: 0, capMode: 'strict', capFullThreshold: 1.0, fallbackSlot: null,
     fallbackManaPct: 0.5 });
   assert.equal(flatOnly.routes.on, true);
 

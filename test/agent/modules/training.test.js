@@ -16,7 +16,7 @@ function moduleWith(overrides = {}, opts = {}) {
   const config = Object.assign({ on: true, slot: 7, sid: 50, reserve: 0, eatWithMagic: { enabled: false, slot: null, sid: null } }, overrides);
   return createTraining(Object.assign({
     config,
-    capConfig: { capMode: 'off', capFullThreshold: 1.0, fallbackSlot: null, fallbackSid: null, fallbackManaPct: 0.5 },
+    capConfig: { capMode: 'off', capFullThreshold: 1.0, fallbackSlot: null, fallbackManaPct: 0.5 },
     readCap: () => null,
     getSpellCost: () => 25,
     canCastSpell: () => true,
@@ -111,7 +111,6 @@ function capModule(overrides = {}, opts = {}) {
       capMode: 'strict',
       capFullThreshold: 1.0,
       fallbackSlot: 3,
-      fallbackSid: null,
       fallbackManaPct: 0.5,
     }, overrides.capConfig || {}),
     readCap: overrides.readCap || (() => ({ capacity: 400, maxCapacity: 400, ratio: 1, source: 'state' })),
@@ -186,6 +185,38 @@ test('REQ-30 (D3): cap-full fallback respects the global cooldown (no bypass)', 
   const d = m.decide({ mana: 400, maxMana: 500 });
   assert.equal(d.fire, false);
   assert.equal(d.reason, 'global-cooldown');
+});
+
+test('REQ-30 (D3): the fallback checks NO per-spell cooldown — slot-driven, global only (fallbackSid dropped)', () => {
+  // Post-chain maintenance (obs 10502): fallbackSid never resolved a slot and
+  // was dropped. The fallback passes a NULL sid to the cooldown reader — the
+  // adapter's null-sid contract returns NO per-spell cooldown (v1 precedent:
+  // null sid -> cd null), so an ACTIVE per-spell cooldown for any REAL sid
+  // must not block it; GLOBAL_COOLDOWN still gates. The queue's min-interval
+  // throttle + jitter keep the pacing (proven in queue.test.js +
+  // bootstrap.test.js e2e).
+  const m = capModule({}, {
+    // Models the real adapter: per-spell cooldown data exists ONLY for a
+    // concrete sid; a null sid yields none (never invented for the fallback).
+    readCooldown: (sid) => ({
+      cooldown: sid === null || sid === undefined ? null : { active: true },
+      globalCooldown: { active: false },
+    }),
+  });
+  const d = m.decide({ mana: 400, maxMana: 500 });
+  assert.equal(d.fire, true, 'the null-sid fallback verdict never consults a per-spell cooldown');
+  assert.equal(d.kind, 'fallback');
+  assert.equal(d.slot, 3);
+  assert.equal(d.reason, 'cap-full-fallback');
+
+  // Same adapter, GLOBAL_COOLDOWN active: the fallback defers (no bypass).
+  const m2 = capModule({}, {
+    readCooldown: (sid) => ({
+      cooldown: sid === null || sid === undefined ? null : { active: true },
+      globalCooldown: { active: true },
+    }),
+  });
+  assert.equal(m2.decide({ mana: 400, maxMana: 500 }).fire, false, 'global cooldown still gates the fallback');
 });
 
 test('REQ-31 (D2): per-module reserve — cost 200 + reserve 30 -> waits for mana >= 230', () => {

@@ -46,8 +46,9 @@ const FIRING_MOD = require('../../adapters/firing');
  *     eatWithMagic: {enabled, slot, sid} }
  * @param {object|null} [opts.capConfig] - the RUNES module's cap settings
  *   (D3, REQ-30): { capMode: 'strict'|'off', capFullThreshold: number,
- *     fallbackSlot: number|null, fallbackSid: number|null,
- *     fallbackManaPct: number } — the trainer absorbs the strict-CAP concern
+ *     fallbackSlot: number|null, fallbackManaPct: number } — the trainer
+ *     absorbs the strict-CAP concern (fallbackSid was DROPPED post-chain:
+ *     the fallback is slot-driven only, obs 10502)
  * @param {() => {capacity: number|null, maxCapacity: number|null,
  *   ratio: number|null}|null} [opts.readCap] - live cap reader
  *   (adapters/gameClient.readCap); null/ratio null = cap data absent (no
@@ -112,7 +113,7 @@ function createTraining(opts = {}) {
     const capFull = Number.isFinite(threshold) ? ratio >= threshold : ratio >= 1;
     if (!capFull) return { full: false };
 
-    // Cap full: fallback slot/sid cast when mana >= fallbackManaPct*maxMana
+    // Cap full: fallback slot cast when mana >= fallbackManaPct*maxMana
     // (ronda-1), else idle until mana recovers (REQ-30).
     const fallbackSlot = Number(cc.fallbackSlot);
     const pct = Number(cc.fallbackManaPct);
@@ -121,7 +122,13 @@ function createTraining(opts = {}) {
       && Number.isFinite(ctx.maxMana) && ctx.maxMana > 0
       && ctx.mana >= pct * ctx.maxMana;
     if (Number.isInteger(fallbackSlot) && fallbackSlot >= 1 && fallbackSlot <= 12 && manaOk) {
-      const cd = cooldownVerdict(cc.fallbackSid === null || cc.fallbackSid === undefined ? null : Number(cc.fallbackSid));
+      // Honest cooldown verdict for the fallback (fallbackSid dropped, obs
+      // 10502): the fallback fires SLOT-driven and never carried a resolvable
+      // sid, so there is NO per-spell cooldown check — null sid yields the
+      // v1 no-cooldown verdict. GLOBAL_COOLDOWN still gates (readCooldown
+      // carries it), and the queue's min-interval throttle + jitter hold at
+      // drain — the fallback never bypasses pacing.
+      const cd = cooldownVerdict(null);
       if (!cd.fire) {
         const reason = cd.reason === 'global-cooldown' ? 'global-cooldown' : 'cooldown';
         state.lastReason = reason;
