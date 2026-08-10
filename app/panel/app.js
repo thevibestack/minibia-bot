@@ -203,6 +203,22 @@
         });
         break;
       }
+      case 'cavebot-command': {
+        // REQ-36 (PR6): cavebot skeleton controls reach the in-page agent
+        // via the server RPC. The record-stop result carries the recorded
+        // waypoints — they land in state.cavebotRecorded so Save writes
+        // config.routes (REQ-36 "save = config.routes").
+        postJson('/api/cavebot', {
+          character: state.identity ? state.identity.name : null,
+          command: effect.command,
+        }).then(function (res) {
+          if (res && effect.command === 'record-stop'
+            && res.result && res.result.ok && Array.isArray(res.result.points)) {
+            dispatch({ type: 'CAVEBOT_RECORDED', points: res.result.points });
+          }
+        });
+        break;
+      }
       default:
         break;
     }
@@ -313,6 +329,9 @@
     } else if (target && target.matches && target.matches('#trainer-cap-mode')) {
       // REQ-30 (PR4): cap mode select — pure UI value (selects fire change).
       dispatch({ type: 'UPDATE_TRAINER_INPUT', key: 'capMode', value: target.value });
+    } else if (target && target.matches && target.matches('#attack-targeting')) {
+      // REQ-35 (PR6): attack targeting select — pure UI value.
+      dispatch({ type: 'UPDATE_ATTACK_INPUT', key: 'targeting', value: target.value });
     }
   });
 
@@ -352,6 +371,10 @@
         : target.matches('#others-every-casts') ? 'everyCasts'
           : target.matches('#others-loot-dest') ? 'lootDest' : 'antibotReplies';
       dispatch({ type: 'UPDATE_OTHERS_INPUT', key: othersKey, value: target.value });
+    } else if (target && target.matches && target.matches('#attack-rune-slot')) {
+      // REQ-35 (PR6): ATTACK settings form — pure UI value (the targeting
+      // select fires change above; the rune slot is a number input).
+      dispatch({ type: 'UPDATE_ATTACK_INPUT', key: 'runeSlot', value: target.value });
     }
   });
 
@@ -430,6 +453,17 @@
       // REQ-34 (PR5): confirm the pending anti-bot pattern — the effect
       // posts /api/antibot-confirm (server persists + RPC confirmAntibot).
       dispatch({ type: 'CONFIRM_ANTIBOT', pattern: target.getAttribute('data-antibot-confirm') || '' });
+    }
+    else if (target.matches('#attack-save-btn')) {
+      // REQ-35 (PR6): commit the ATTACK settings form (targeting choice +
+      // offensive rune slot) into the config.
+      dispatch({ type: 'SAVE_ATTACK_SETTINGS' });
+    }
+    else if (target.matches('[data-cavebot-command]')) {
+      // REQ-36 (PR6): cavebot skeleton controls — record/stop/save/pause/
+      // resume/start (the reducer emits the cavebot-command / push-config
+      // effects; the record-stop result carries the waypoints to save).
+      dispatch({ type: 'CAVEBOT_COMMAND', command: target.getAttribute('data-cavebot-command') });
     }
   });
 

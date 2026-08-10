@@ -31,7 +31,7 @@ test('1.3: initial state has 5 tabs, heal active, all 10 modules regrouped', () 
   const s = P.createInitialState();
   assert.deepEqual(P.TAB_IDS, ['heal', 'attack', 'trainer', 'cavebot', 'others']);
   assert.equal(s.tab, 'heal', 'heal tab active by default');
-  assert.equal(P.MODULE_IDS.length, 10, 'all 10 v1 module ids kept');
+  assert.equal(P.MODULE_IDS.length, 12, 'all 12 module ids (PR6: attack + cavebot)');
   const flat = P.TABS.flatMap((t) => t.modules).sort();
   assert.deepEqual(flat, P.MODULE_IDS.slice().sort(), 'every module lands in exactly one tab');
   // REQ-26 per-module On/Off: heal tab owns the heal modules; trainer owns runes/training.
@@ -47,10 +47,10 @@ test('1.3: SET_TAB switches the active tab; unknown ids ignored', () => {
   assert.equal(r2.effects.length, 0);
 });
 
-test('1.3: renderModuleList renders 5 tab buttons + 10 toggles, active panel visible only', () => {
+test('1.3: renderModuleList renders 5 tab buttons + 12 toggles, active panel visible only', () => {
   const html = P.renderModuleList(P.createInitialState());
   assert.equal((html.match(/class="tab-btn/g) || []).length, 5, '5 tab buttons');
-  assert.equal((html.match(/class="module-toggle"/g) || []).length, 10, 'all 10 toggles in the DOM');
+  assert.equal((html.match(/class="module-toggle"/g) || []).length, 12, 'all 12 toggles in the DOM');
   for (const tab of P.TABS) assert.match(html, new RegExp('data-tab="' + tab.id + '"'));
   assert.ok(html.includes('data-tab-panel="heal"') && !html.includes('data-tab-panel="heal" hidden'),
     'active panel not hidden');

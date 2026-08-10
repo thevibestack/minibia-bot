@@ -40,6 +40,7 @@ test('REQ-09: missing file -> defaults (first run), no warning', (t) => {
   assert.deepEqual(ids, [
     'healItems', 'healMagic', 'runes', 'training', 'eat',
     'trade', 'loot', 'spawns', 'huntStats', 'routes', 'learning', 'antibot',
+    'attack', 'cavebot', // PR6 (REQ-35/36): skeleton module shapes
   ]);
   for (const id of ids) assert.equal(config.modules[id].on, false, id + ' defaults off');
   // Slice-1b forward-compat defaults (D2/D3/D4/D9): reserves, strict CAP,

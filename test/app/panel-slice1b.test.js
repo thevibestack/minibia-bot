@@ -55,7 +55,7 @@ test('2.5: initial state carries the slice-1b shape (profiles/catalog/picker/pro
   assert.deepEqual(s.catalog, { spells: [], loaded: false, reason: null });
   assert.deepEqual(s.picker, { module: 'healMagic', query: '' });
   assert.equal(s.profileLoad, null);
-  assert.deepEqual(P.PICKER_MODULES, ['healMagic', 'training']);
+  assert.deepEqual(P.PICKER_MODULES, ['healMagic', 'training', 'attack'], 'PR6 (REQ-35): offensive spell picker');
 });
 
 test('2.5: PROFILES_LOADED stores the sorted profile names', () => {

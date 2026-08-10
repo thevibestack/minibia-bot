@@ -66,6 +66,12 @@ function defaultConfig(characterName) {
       // Slice-1b forward-compat (D9): anti-bot watcher + confirm-once chat
       // replies — shape only, the OTHERS slice wires the behavior.
       antibot: { on: false, replies: [] },
+      // Slice-7 forward-compat (D10, REQ-35/36): skeleton module shapes —
+      // attack targeting/pickers config and the cavebot pause flag. The
+      // ROUTE LIST itself lives at the config TOP LEVEL (`routes: []`,
+      // REQ-36 "save = config.routes").
+      attack: { on: false, targeting: 'lowest-hp', sid: null, runeSlot: null },
+      cavebot: { on: false, paused: false },
     },
     routes: [],
     session: { startedAt: null },

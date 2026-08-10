@@ -147,6 +147,8 @@ function readMana(payload) {
  * @param {() => Promise<unknown>} [opts.snapshot] - live state payload
  * @param {(x: number, y: number) => Promise<unknown>} [opts.walkTo] -
  *   REQ-23 in-page walkTo RPC (native autowalk, queue-dispatched)
+ * @param {(command: 'record-start'|'record-stop'|'start') => Promise<unknown>} [opts.cavebotRpc] -
+ *   REQ-36 in-page cavebot skeleton RPC dispatcher (record sampler + start)
  * @param {() => Promise<{spells: Array<object>, playerLevel: number|null,
  *   vocationLabel: string|null}|null>} [opts.spellCatalog] -
  *   REQ-28 in-page getSpellCatalog RPC (raw list + player context)
@@ -164,6 +166,8 @@ function createPanelServer(opts) {
   const confirmAntibotFn = typeof opts.confirmAntibot === 'function' ? opts.confirmAntibot : async () => null;
   const snapshotFn = typeof opts.snapshot === 'function' ? opts.snapshot : async () => null;
   const walkToFn = typeof opts.walkTo === 'function' ? opts.walkTo : async () => ({ ok: true });
+  const cavebotRpcFn = typeof opts.cavebotRpc === 'function'
+    ? opts.cavebotRpc : async () => ({ ok: false, reason: 'unavailable' });
   const spellCatalogFn = typeof opts.spellCatalog === 'function' ? opts.spellCatalog : async () => null;
   const store = opts.store;
   const host = opts.host || '127.0.0.1';
@@ -261,6 +265,27 @@ function createPanelServer(opts) {
         }
         const result = await walkToFn(x, y);
         sendJson(res, 200, { ok: true, x, y, result });
+        return;
+      }
+      if (req.method === 'POST' && url === '/api/cavebot') {
+        // REQ-36 (PR6): cavebot skeleton controls (record-start / record-stop
+        // / start) — the server RPCs the in-page cavebot surface. 409 while
+        // no character is connected; 400 on an unknown command. The
+        // record-stop result carries the waypoints the panel saves into
+        // config.routes.
+        const body = await readBody(req);
+        const name = typeof body.character === 'string' && body.character ? body.character : lastCharacter;
+        if (!name) {
+          sendJson(res, 409, { ok: false, reason: 'not connected' });
+          return;
+        }
+        const command = typeof body.command === 'string' ? body.command : '';
+        if (['record-start', 'record-stop', 'start'].indexOf(command) === -1) {
+          sendJson(res, 400, { ok: false, reason: 'unknown command' });
+          return;
+        }
+        const result = await cavebotRpcFn(command);
+        sendJson(res, 200, { ok: true, command, result });
         return;
       }
       if (req.method === 'POST' && url === '/api/connect') {

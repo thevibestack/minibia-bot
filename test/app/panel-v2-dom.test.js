@@ -56,7 +56,7 @@ const panelOf = (dom, id) => dom.window.document.querySelector('.tab-panel[data-
 
 /* ---------------------------------- tabs ---------------------------------- */
 
-test('1.6: shell renders 5 tabs, all 10 toggles in the DOM, heal panel active', async () => {
+test('1.6: shell renders 5 tabs, all 12 toggles in the DOM, heal panel active', async () => {
   const dom = makePanel();
   try {
     const doc = dom.window.document;
@@ -64,7 +64,7 @@ test('1.6: shell renders 5 tabs, all 10 toggles in the DOM, heal panel active', 
     for (const id of ['heal', 'attack', 'trainer', 'cavebot', 'others']) {
       assert.ok(doc.querySelector(tabBtn(id)), 'tab ' + id + ' rendered');
     }
-    assert.equal(doc.querySelectorAll('input[data-module]').length, 10, 'all 10 toggles present');
+    assert.equal(doc.querySelectorAll('input[data-module]').length, 12, 'all 12 toggles present');
     assert.equal(panelOf(dom, 'heal').hidden, false, 'heal panel visible by default');
     assert.equal(panelOf(dom, 'trainer').hidden, true, 'inactive panels hidden');
     assert.match(doc.querySelector('.tab-panel[data-tab-panel="attack"]').textContent, /Skeleton/);

@@ -45,20 +45,21 @@
 
   /**
    * Product tabs (design D7, REQ-26): HEAL/ATTACK/TRAINER/CAVEBOT/OTHERS.
-   * Each tab owns the module toggles that land there. ATTACK + CAVEBOT are
-   * skeleton tabs (their modules arrive with later slices — the shell
-   * reserves their space and discloses "skeleton — limited").
+   * Each tab owns the module toggles that land there. ATTACK + CAVEBOT host
+   * the PR6 skeleton modules (REQ-35/36) — their tabs disclose
+   * "skeleton — limited" (`skeleton: true`) while the full behaviors arrive
+   * with later updates.
    */
   const TABS = [
     { id: 'heal', modules: ['healItems', 'healMagic'] },
-    { id: 'attack', modules: [] },   // skeleton (slice 6: attack.js) — reserved
+    { id: 'attack', modules: ['attack'], skeleton: true },   // PR6 (REQ-35): skeleton module — disclosed
     { id: 'trainer', modules: ['runes', 'training'] },
-    { id: 'cavebot', modules: [] },  // skeleton (slice 6: cavebot.js) — reserved
+    { id: 'cavebot', modules: ['cavebot'], skeleton: true }, // PR6 (REQ-36): skeleton module — disclosed
     { id: 'others', modules: ['eat', 'trade', 'loot', 'spawns', 'huntStats', 'routes'] },
   ];
   const TAB_IDS = TABS.map((t) => t.id);
 
-  /** The 10 modules (design config "modules" map), regrouped per tab (REQ-26). */
+  /** The 12 modules (design config "modules" map), regrouped per tab (REQ-26). */
   const MODULE_DEFS = [
     { id: 'healItems', label: 'Heal with items', tab: 'heal' },
     { id: 'healMagic', label: 'Heal with magic', tab: 'heal' },
@@ -70,6 +71,10 @@
     { id: 'spawns', label: 'Spawn maps', tab: 'others' },
     { id: 'huntStats', label: 'Hunt stats', tab: 'others' },
     { id: 'routes', label: 'Routes', tab: 'others' },
+    // PR6 (REQ-35/36, D10): skeleton modules — state-only; the tabs disclose
+    // "skeleton — limited" until the full behaviors arrive.
+    { id: 'attack', label: 'Attack', tab: 'attack' },
+    { id: 'cavebot', label: 'Cavebot', tab: 'cavebot' },
   ];
   const MODULE_IDS = MODULE_DEFS.map((m) => m.id);
   const MODULE_BY_TAB = (function () {
@@ -81,7 +86,7 @@
 
   /* ----------------------- slice 1b (REQ-28, D5) ----------------------- */
   /** Modules whose spell sid the picker can choose (heal + training). */
-  const PICKER_MODULES = ['healMagic', 'training'];
+  const PICKER_MODULES = ['healMagic', 'training', 'attack']; // PR6 (REQ-35): offensive spell picker
 
   /* ------------------------------ i18n (REQ-26) ------------------------------ */
   /* Default EN; ES is a full translation. `t(state, key)` resolves the key
@@ -122,6 +127,9 @@
       'module.spawns': 'Spawn maps',
       'module.huntStats': 'Hunt stats',
       'module.routes': 'Routes',
+      'module.attack': 'Attack',
+      'module.cavebot': 'Cavebot',
+      'picker.module.attack': 'Attack spell',
       'tutorial.title': 'Welcome to the bot panel',
       'tutorial.body': 'This panel controls your bot, one tab per activity. This tour shows each tab — you can dismiss it at any time.',
       'tutorial.tab.heal': 'HEAL — set up healing: health threshold, potions or magic spells.',
@@ -188,6 +196,29 @@
       'others.alertSpeak': 'Speak',
       'others.alertMoved': 'Moved',
       'others.alertAttacked': 'Attack',
+      // Slice 7 (PR6, REQ-35/36): ATTACK + CAVEBOT skeleton forms.
+      'attack.formTitle': 'Attack settings (skeleton)',
+      'attack.skeletonNote': 'Combat logic is limited — full targeting arrives in a later update.',
+      'attack.targeting': 'Targeting',
+      'attack.targetingLowestHp': 'Lowest HP',
+      'attack.targetingNearest': 'Nearest',
+      'attack.runeSlot': 'Offensive rune slot',
+      'attack.spellHint': 'Offensive spell — pick it with the spell picker below.',
+      'attack.save': 'Save attack settings',
+      'cavebot.formTitle': 'Cavebot (skeleton)',
+      'cavebot.skeletonNote': 'Route walking is limited — the full cavebot arrives in a later update.',
+      'cavebot.record': 'Record route',
+      'cavebot.stopRecord': 'Stop & keep',
+      'cavebot.saveRoute': 'Save route',
+      'cavebot.pause': 'Pause',
+      'cavebot.resume': 'Resume',
+      'cavebot.start': 'Start (nearest waypoint)',
+      'cavebot.recording': 'Recording — %count% waypoints',
+      'cavebot.idle': 'Not recording',
+      'cavebot.savedRoute': 'Saved route: %count% waypoints',
+      'cavebot.noRoute': 'No saved route yet — record and save one.',
+      'cavebot.paused': 'Paused',
+      'cavebot.editingFuture': 'Route editing — FUTURE (out of scope in v1).',
     },
     es: {
       'gate.disconnected': 'Desconectado',
@@ -223,6 +254,9 @@
       'module.spawns': 'Mapas de spawns',
       'module.huntStats': 'Estadísticas de caza',
       'module.routes': 'Rutas',
+      'module.attack': 'Ataque',
+      'module.cavebot': 'Cavebot',
+      'picker.module.attack': 'Hechizo de ataque',
       'tutorial.title': 'Bienvenido al panel del bot',
       'tutorial.body': 'Este panel controla tu bot, una pestaña por actividad. Este recorrido muestra cada pestaña — podés omitirlo en cualquier momento.',
       'tutorial.tab.heal': 'CURAR — configurá la curación: umbral de vida, pociones o magia.',
@@ -289,6 +323,29 @@
       'others.alertSpeak': 'Habla',
       'others.alertMoved': 'Movimiento',
       'others.alertAttacked': 'Ataque',
+      // Slice 7 (PR6, REQ-35/36): formularios esqueleto de ATAQUE + CAVEBOT.
+      'attack.formTitle': 'Ajustes de ataque (esqueleto)',
+      'attack.skeletonNote': 'La lógica de combate es limitada — el targeting completo llega en una próxima actualización.',
+      'attack.targeting': 'Targeting',
+      'attack.targetingLowestHp': 'Menor vida',
+      'attack.targetingNearest': 'Más cercano',
+      'attack.runeSlot': 'Slot de runa ofensiva',
+      'attack.spellHint': 'Hechizo ofensivo — elegilo con el selector de magias de abajo.',
+      'attack.save': 'Guardar ataque',
+      'cavebot.formTitle': 'Cavebot (esqueleto)',
+      'cavebot.skeletonNote': 'El caminado de rutas es limitado — el cavebot completo llega en una próxima actualización.',
+      'cavebot.record': 'Grabar ruta',
+      'cavebot.stopRecord': 'Parar y conservar',
+      'cavebot.saveRoute': 'Guardar ruta',
+      'cavebot.pause': 'Pausar',
+      'cavebot.resume': 'Reanudar',
+      'cavebot.start': 'Iniciar (waypoint más cercano)',
+      'cavebot.recording': 'Grabando — %count% waypoints',
+      'cavebot.idle': 'Sin grabar',
+      'cavebot.savedRoute': 'Ruta guardada: %count% waypoints',
+      'cavebot.noRoute': 'Todavía no hay ruta guardada — grabá una y guardala.',
+      'cavebot.paused': 'Pausado',
+      'cavebot.editingFuture': 'Edición de rutas — FUTURO (fuera de alcance en v1).',
     },
   };
 
@@ -374,6 +431,12 @@
       // replies as `pattern => reply` lines) that survive re-renders;
       // SAVE_OTHERS_SETTINGS parses + commits them into the config.
       othersForm: { foodSlot: '', everyCasts: '', lootDest: '', antibotReplies: '' },
+      // Slice 7 (PR6, REQ-35/36): ATTACK settings form raw values (pure UI
+      // strings that survive re-renders — targeting select + rune slot; the
+      // spell sid comes from the picker) + the cavebot recorded-route result
+      // (CAVEBOT_RECORDED -> Save writes config.routes, REQ-36).
+      attackForm: { targeting: '', runeSlot: '' },
+      cavebotRecorded: null, // {points: Array<{x,y}>, at} | null — last stopped recording
     };
   }
 
@@ -482,6 +545,24 @@
       entries.push({ pattern, reply });
     }
     return { error: null, entries };
+  }
+
+  /**
+   * Slice 7 (PR6, REQ-35): derive the ATTACK form values from the saved
+   * config — targeting choice (lowest-hp/nearest, default lowest-hp) and
+   * the offensive rune slot. The spell sid is chosen with the picker
+   * (PICK_SPELL writes config.modules.attack.sid), not this form.
+   * @param {object} state
+   * @returns {{targeting: string, runeSlot: string}}
+   */
+  function attackFormFromConfig(state) {
+    const cfg = state.config && state.config.modules || {};
+    const attack = cfg.attack || {};
+    return {
+      targeting: attack.targeting === 'nearest' ? 'nearest' : 'lowest-hp',
+      runeSlot: attack.runeSlot !== null && attack.runeSlot !== undefined
+        ? String(attack.runeSlot) : '',
+    };
   }
 
   /** Refusal factory — the shared "not connected" gate reason. */
@@ -1099,6 +1180,111 @@
       case 'RESET':
         return { state: reset(), effects: [] };
 
+      /* ------------------- slice 7 (PR6, REQ-35/36): skeletons ------------------- */
+
+      case 'UPDATE_ATTACK_INPUT': {
+        // REQ-35: pure UI state — the ATTACK form values survive re-renders
+        // (healForm/trainerForm precedent). No gate: typing pre-Connect is
+        // harmless.
+        const key = String(action.key || '');
+        if (key !== 'targeting' && key !== 'runeSlot') return { state, effects: [] };
+        const attackForm = Object.assign({}, state.attackForm || { targeting: '', runeSlot: '' });
+        attackForm[key] = String(action.value === null || action.value === undefined ? '' : action.value);
+        return { state: Object.assign({}, state, { attackForm }), effects: [] };
+      }
+
+      case 'SAVE_ATTACK_SETTINGS': {
+        // REQ-35 (PR6): commit the ATTACK form into config.modules.attack —
+        // the targeting choice (lowest-hp/nearest) + the offensive rune
+        // slot; the offensive SPELL sid comes from the picker (PICK_SPELL).
+        // Invalid values are refused with a visible reason — never silently
+        // dropped. The push-config effect carries the change to the agent.
+        if (state.gate !== GATE_ARMED) return { state: refuse(state, action), effects: [] };
+        const form = state.attackForm || {};
+        const at = Date.now();
+        const rawTargeting = String(form.targeting || '').trim() || 'lowest-hp';
+        const rawSlot = String(form.runeSlot || '').trim();
+        if (rawTargeting !== 'lowest-hp' && rawTargeting !== 'nearest') {
+          return {
+            state: Object.assign({}, state, {
+              refusal: { action: 'SAVE_ATTACK_SETTINGS', module: 'attack', reason: 'invalid attack settings — targeting must be lowest-hp or nearest', at },
+            }),
+            effects: [],
+          };
+        }
+        const runeSlot = rawSlot === '' ? null : Number(rawSlot);
+        if (runeSlot !== null && (!Number.isInteger(runeSlot) || runeSlot < 1 || runeSlot > 12)) {
+          return {
+            state: Object.assign({}, state, {
+              refusal: { action: 'SAVE_ATTACK_SETTINGS', module: 'attack', reason: 'invalid attack settings — rune slot must be 1-12 or empty', at },
+            }),
+            effects: [],
+          };
+        }
+        const config = JSON.parse(JSON.stringify(state.config || {}));
+        if (!config.modules || typeof config.modules !== 'object') config.modules = {};
+        if (!config.modules.attack || typeof config.modules.attack !== 'object') config.modules.attack = {};
+        config.modules.attack.targeting = rawTargeting;
+        config.modules.attack.runeSlot = runeSlot;
+        return {
+          state: Object.assign({}, state, {
+            config,
+            attackForm: { targeting: rawTargeting, runeSlot: runeSlot === null ? '' : String(runeSlot) },
+            refusal: null,
+          }),
+          effects: [{ type: 'push-config' }],
+        };
+      }
+
+      case 'CAVEBOT_COMMAND': {
+        // REQ-36 (PR6): cavebot skeleton controls — armed-gated like every
+        // action. 'record'/'stop'/'start' emit the cavebot-command effect
+        // (server -> in-page RPC); 'save' writes the LAST stopped recording
+        // into config.routes (REQ-36 "save = config.routes") and pushes;
+        // 'pause'/'resume' toggle config.modules.cavebot.paused and push.
+        if (state.gate !== GATE_ARMED) return { state: refuse(state, action), effects: [] };
+        const command = String(action.command || '');
+        if (command === 'record' || command === 'start') {
+          return {
+            state,
+            effects: [{ type: 'cavebot-command', command: command === 'record' ? 'record-start' : 'start' }],
+          };
+        }
+        if (command === 'stop') {
+          return { state, effects: [{ type: 'cavebot-command', command: 'record-stop' }] };
+        }
+        if (command === 'save') {
+          const recorded = state.cavebotRecorded;
+          if (!recorded || !Array.isArray(recorded.points) || recorded.points.length === 0) {
+            return { state, effects: [] }; // nothing recorded yet — no-op
+          }
+          const config = JSON.parse(JSON.stringify(state.config || {}));
+          config.routes = recorded.points;
+          return { state: Object.assign({}, state, { config }), effects: [{ type: 'push-config' }] };
+        }
+        if (command === 'pause' || command === 'resume') {
+          const config = JSON.parse(JSON.stringify(state.config || {}));
+          if (!config.modules || typeof config.modules !== 'object') config.modules = {};
+          if (!config.modules.cavebot || typeof config.modules.cavebot !== 'object') config.modules.cavebot = {};
+          config.modules.cavebot.paused = command === 'pause';
+          return { state: Object.assign({}, state, { config }), effects: [{ type: 'push-config' }] };
+        }
+        return { state, effects: [] };
+      }
+
+      case 'CAVEBOT_RECORDED':
+        // REQ-36 (PR6): the record-stop RPC result — the recorded waypoints
+        // land here so the Save action can write config.routes.
+        return {
+          state: Object.assign({}, state, {
+            cavebotRecorded: {
+              points: Array.isArray(action.points) ? action.points : [],
+              at: Date.now(),
+            },
+          }),
+          effects: [],
+        };
+
       default:
         return { state, effects: [] };
     }
@@ -1172,6 +1358,29 @@
     return m && typeof m === 'object' ? m : null;
   }
 
+  /**
+   * PR5 (REQ-33/34): anti-bot module state carried by the live snapshot
+   * (agent state modules.antibot). Pure — null when absent.
+   * @param {object|null} snapshot - SNAPSHOT payload
+   * @returns {object|null}
+   */
+  function snapshotAntibot(snapshot) {
+    const m = snapshot && snapshot.agent && snapshot.agent.modules
+      && snapshot.agent.modules.antibot;
+    return m && typeof m === 'object' ? m : null;
+  }
+
+  /**
+   * PR6 (REQ-36): cavebot module state carried by the live snapshot (agent
+   * state modules.cavebot). Pure — null when absent.
+   * @param {object|null} snapshot - SNAPSHOT payload
+   * @returns {object|null}
+   */
+  function snapshotCavebot(snapshot) {
+    const m = snapshot && snapshot.agent && snapshot.agent.modules
+      && snapshot.agent.modules.cavebot;
+    return m && typeof m === 'object' ? m : null;
+  }
   /** PR5 (REQ-33): one readable anti-bot alert row (never raw JSON). */
   function renderAntibotAlert(alert, state) {
     const kindLabel = alert && alert.kind === 'speak' ? t(state, 'others.alertSpeak')
@@ -1264,6 +1473,11 @@
           return '<label class="module-toggle"><input type="checkbox" data-module="' + def.id + '"'
             + (checked ? ' checked' : '') + disabled + '> ' + escapeHtml(moduleLabel(state, def)) + '</label>';
         }).join('');
+        // PR6 (REQ-35/36): skeleton tabs keep the "skeleton — limited"
+        // disclosure visible under their toggles.
+        if (tab.skeleton) {
+          body += '<div class="tab-skeleton">' + escapeHtml(t(state, 'skeleton.note')) + '</div>';
+        }
       }
       return '<section class="tab-panel" data-tab-panel="' + tab.id + '" role="tabpanel"' + hidden + '>'
         + body + '</section>';
@@ -1472,6 +1686,76 @@
       + '</div>';
   }
 
+  /**
+   * ATTACK settings form (PR6, REQ-35): targeting choice (lowest HP /
+   * nearest) + the offensive rune slot + a Save button, with the
+   * "skeleton — limited" disclosure. The offensive SPELL is chosen with the
+   * spell picker (picker module 'attack'); the module toggle lives in the
+   * ATTACK tab module list.
+   * @param {object} state
+   * @returns {string}
+   */
+  function renderAttackForm(state) {
+    const form = state.attackForm || { targeting: '', runeSlot: '' };
+    const derived = attackFormFromConfig(state);
+    const val = (key) => (form[key] !== '' && form[key] !== undefined ? form[key] : derived[key]);
+    const targeting = val('targeting');
+    return '<div class="attack-form">'
+      + '<h3>' + escapeHtml(t(state, 'attack.formTitle')) + '</h3>'
+      + '<p class="skeleton-note">' + escapeHtml(t(state, 'attack.skeletonNote')) + '</p>'
+      + '<label class="attack-field">' + escapeHtml(t(state, 'attack.targeting'))
+      + ' <select id="attack-targeting">'
+      + '<option value="lowest-hp"' + (targeting === 'lowest-hp' ? ' selected' : '') + '>'
+      + escapeHtml(t(state, 'attack.targetingLowestHp')) + '</option>'
+      + '<option value="nearest"' + (targeting === 'nearest' ? ' selected' : '') + '>'
+      + escapeHtml(t(state, 'attack.targetingNearest')) + '</option>'
+      + '</select></label>'
+      + '<label class="attack-field">' + escapeHtml(t(state, 'attack.runeSlot'))
+      + ' <input type="number" id="attack-rune-slot" min="1" max="12" step="1" value="' + escapeHtml(val('runeSlot')) + '"></label>'
+      + '<p class="attack-spell-hint">' + escapeHtml(t(state, 'attack.spellHint')) + '</p>'
+      + '<button type="button" id="attack-save-btn">' + escapeHtml(t(state, 'attack.save')) + '</button>'
+      + '</div>';
+  }
+
+  /**
+   * CAVEBOT skeleton form (PR6, REQ-36): record / stop & keep / save /
+   * pause / resume / start controls + honest status lines (recording state,
+   * saved-route count, pause) read from the live snapshot module state; the
+   * "route editing — FUTURE" disclosure stands below the controls.
+   * @param {object} state
+   * @returns {string}
+   */
+  function renderCavebotForm(state) {
+    const live = snapshotCavebot(state.snapshot);
+    const parts = ['<div class="cavebot-form">', '<h3>' + escapeHtml(t(state, 'cavebot.formTitle')) + '</h3>'];
+    parts.push('<p class="skeleton-note">' + escapeHtml(t(state, 'cavebot.skeletonNote')) + '</p>');
+    if (live) {
+      if (live.recording && live.recording.active === true) {
+        parts.push('<p class="cavebot-status recording">'
+          + escapeHtml(tVar(state, 'cavebot.recording', { count: live.recording.points })) + '</p>');
+      } else {
+        parts.push('<p class="cavebot-status">' + escapeHtml(t(state, 'cavebot.idle')) + '</p>');
+      }
+      parts.push('<p class="cavebot-status">' + (live.savedRoute && live.savedRoute.count > 0
+        ? escapeHtml(tVar(state, 'cavebot.savedRoute', { count: live.savedRoute.count }))
+        : escapeHtml(t(state, 'cavebot.noRoute'))) + '</p>');
+      if (live.paused === true) {
+        parts.push('<p class="cavebot-status paused">' + escapeHtml(t(state, 'cavebot.paused')) + '</p>');
+      }
+    }
+    parts.push('<div class="cavebot-controls">'
+      + '<button type="button" class="cavebot-btn" data-cavebot-command="record">' + escapeHtml(t(state, 'cavebot.record')) + '</button>'
+      + '<button type="button" class="cavebot-btn" data-cavebot-command="stop">' + escapeHtml(t(state, 'cavebot.stopRecord')) + '</button>'
+      + '<button type="button" class="cavebot-btn" data-cavebot-command="save">' + escapeHtml(t(state, 'cavebot.saveRoute')) + '</button>'
+      + '<button type="button" class="cavebot-btn" data-cavebot-command="pause">' + escapeHtml(t(state, 'cavebot.pause')) + '</button>'
+      + '<button type="button" class="cavebot-btn" data-cavebot-command="resume">' + escapeHtml(t(state, 'cavebot.resume')) + '</button>'
+      + '<button type="button" class="cavebot-btn primary" data-cavebot-command="start">' + escapeHtml(t(state, 'cavebot.start')) + '</button>'
+      + '</div>');
+    parts.push('<p class="cavebot-future">' + escapeHtml(t(state, 'cavebot.editingFuture')) + '</p>');
+    parts.push('</div>');
+    return parts.join('');
+  }
+
   /** Config form: module settings shell + the Routes v1 walk-to form
    *  (REQ-23, slice 6) + the slice-1b profile loader and spell picker.
    *  Route RECORDING is explicitly marked FUTURE — out of v1 scope per the
@@ -1483,6 +1767,7 @@
     if (state.gate === GATE_ARMED) {
       const wt = state.walkTo || { x: '', y: '' };
       body = renderHealForm(state) + renderTrainerForm(state) + renderOthersForm(state)
+        + renderAttackForm(state) + renderCavebotForm(state)
         + renderProfileLoader(state)
         + renderSpellPicker(state)
         + '<div class="routes-form">'
@@ -1626,6 +1911,31 @@
         }
         parts.push('<div class="routes-state">' + escapeHtml(line) + '</div>');
       }
+      // PR6 (REQ-35/36): skeleton module lines — the attack targeting +
+      // picker config and the cavebot recording/saved-route/pause status
+      // ride the snapshot like every other module line.
+      if (modules && modules.attack) {
+        const a = modules.attack;
+        let line = 'Attack: ' + (a.on === true ? 'on' : 'off')
+          + ' — ' + (a.targeting || 'lowest-hp');
+        if (a.on === true) {
+          if (a.spell && a.spell.sid !== null && a.spell.sid !== undefined) line += ' — spell sid ' + a.spell.sid;
+          if (a.rune && a.rune.slot !== null && a.rune.slot !== undefined) line += ' — rune slot ' + a.rune.slot;
+        }
+        line += ' (skeleton)';
+        parts.push('<div class="attack-state">' + escapeHtml(line) + '</div>');
+      }
+      const cavebot = snapshotCavebot(state.snapshot);
+      if (cavebot) {
+        let line = 'Cavebot: ' + (cavebot.on === true ? 'on' : 'off') + ' — ';
+        line += cavebot.recording && cavebot.recording.active === true
+          ? 'recording ' + cavebot.recording.points + ' waypoints' : 'not recording';
+        if (cavebot.savedRoute && cavebot.savedRoute.count > 0) {
+          line += ' — saved route ' + cavebot.savedRoute.count + ' waypoints';
+        }
+        if (cavebot.paused === true) line += ' — PAUSED';
+        parts.push('<div class="cavebot-state">' + escapeHtml(line) + '</div>');
+      }
       body = parts.join('');
     }
     return '<section class="live-state">' + head + body + '</section>';
@@ -1764,6 +2074,7 @@
     premiumBlockedModules,
     snapshotOffers,
     snapshotAntibot,
+    snapshotCavebot,
     snapshotStats,
     formatLogResult,
     renderOffer,
@@ -1780,6 +2091,9 @@
     othersFormFromConfig,
     parseRepliesText,
     renderOthersForm,
+    attackFormFromConfig,
+    renderAttackForm,
+    renderCavebotForm,
     renderLiveState,
     renderLog,
     renderTutorial,

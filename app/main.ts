@@ -235,6 +235,18 @@ async function runMain(opts) {
         session,
         'window.__mbAgent && window.__mbAgent.walkTo(' + JSON.stringify(x) + ',' + JSON.stringify(y) + ')',
       ),
+      // REQ-36 (PR6): cavebot skeleton controls -> in-page cavebot RPCs
+      // (startRouteRecording / stopRouteRecording / cavebotStart), each
+      // armed-gated and queue-dispatched inside the agent.
+      cavebotRpc: (command) => bridge.evaluate(
+        session,
+        '(function (c) { var a = window.__mbAgent; if (!a) return null;'
+          + ' if (c === "record-start") return a.startRouteRecording();'
+          + ' if (c === "record-stop") return a.stopRouteRecording();'
+          + ' if (c === "start") return a.cavebotStart();'
+          + ' return { ok: false, reason: "unknown command" }; })('
+          + JSON.stringify(command) + ')',
+      ),
       // REQ-28 (slice 1b): client spell catalog RPC — the server filters the
       // raw list by the current character's vocation + level (design D5).
       spellCatalog: () => bridge.evaluate(
