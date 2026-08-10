@@ -223,6 +223,12 @@ async function runMain(opts) {
         session,
         'window.__mbAgent && window.__mbAgent.respondOffer(' + JSON.stringify(action) + ',' + JSON.stringify(word) + ')',
       ),
+      // REQ-34 (PR5): anti-bot pattern confirmation reaches the in-page
+      // watcher via RPC (session-confirmed -> later occurrences auto-reply).
+      confirmAntibot: (pattern) => bridge.evaluate(
+        session,
+        'window.__mbAgent && window.__mbAgent.confirmAntibot(' + JSON.stringify(pattern) + ')',
+      ),
       // REQ-23 (slice 6): panel walk-to -> in-page walkTo RPC -> Action Queue
       // -> the game's native autowalk primitive (never synthetic input).
       walkTo: (x, y) => bridge.evaluate(

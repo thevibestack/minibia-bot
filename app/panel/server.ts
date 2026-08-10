@@ -142,6 +142,8 @@ function readMana(payload) {
  * @param {(config: object) => Promise<unknown>} opts.applyConfig - push to the in-page agent
  * @param {(action: 'confirm'|'decline', word: string) => Promise<unknown>} [opts.respondOffer] -
  *   REQ-25 agent RPC for offer decisions (decline = session-silent)
+ * @param {(pattern: string) => Promise<unknown>} [opts.confirmAntibot] -
+ *   REQ-34 in-page confirmAntibot RPC (session-confirmed -> auto-replies)
  * @param {() => Promise<unknown>} [opts.snapshot] - live state payload
  * @param {(x: number, y: number) => Promise<unknown>} [opts.walkTo] -
  *   REQ-23 in-page walkTo RPC (native autowalk, queue-dispatched)
@@ -159,6 +161,7 @@ function createPanelServer(opts) {
   const identityFn = opts.identity;
   const applyConfigFn = opts.applyConfig;
   const respondOfferFn = typeof opts.respondOffer === 'function' ? opts.respondOffer : async () => null;
+  const confirmAntibotFn = typeof opts.confirmAntibot === 'function' ? opts.confirmAntibot : async () => null;
   const snapshotFn = typeof opts.snapshot === 'function' ? opts.snapshot : async () => null;
   const walkToFn = typeof opts.walkTo === 'function' ? opts.walkTo : async () => ({ ok: true });
   const spellCatalogFn = typeof opts.spellCatalog === 'function' ? opts.spellCatalog : async () => null;
@@ -438,6 +441,38 @@ function createPanelServer(opts) {
           return;
         }
         sendJson(res, 400, { ok: false, reason: 'action must be confirm or decline' });
+        return;
+      }
+      if (req.method === 'POST' && url === '/api/antibot-confirm') {
+        // REQ-34 (PR5): user confirmed a pending anti-bot pattern. The
+        // confirmation PERSISTS per character (config.modules.antibot
+        // .confirmed — additive shape; the agent itself keeps the
+        // session-scoped set in state.timers, REQ-34 "per session") and the
+        // in-page confirmAntibot RPC enables auto-replies for the session.
+        const body = await readBody(req);
+        const name = typeof body.character === 'string' && body.character ? body.character : lastCharacter;
+        if (!name) {
+          sendJson(res, 409, { ok: false, reason: 'not connected' });
+          return;
+        }
+        const pattern = typeof body.pattern === 'string' ? body.pattern.trim() : '';
+        if (!pattern) {
+          sendJson(res, 400, { ok: false, reason: 'pattern required' });
+          return;
+        }
+        const { config } = store.loadCharacter({ name });
+        config.character = name;
+        if (!config.modules.antibot || typeof config.modules.antibot !== 'object') {
+          config.modules.antibot = { on: false, replies: [] };
+        }
+        const confirmed = config.modules.antibot.confirmed || [];
+        if (confirmed.indexOf(pattern) === -1) confirmed.push(pattern);
+        config.modules.antibot.confirmed = confirmed;
+        config.connected = true;
+        await confirmAntibotFn(pattern); // in-page session confirmation (REQ-34)
+        store.saveCharacter({ name, config });
+        lastCharacter = name;
+        sendJson(res, 200, { ok: true, pattern, confirmed });
         return;
       }
 
