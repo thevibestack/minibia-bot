@@ -242,3 +242,30 @@ test('REQ-42 (B, jsdom): the TRAINER form renders as a 2-column grid with the ke
     await teardown(dom);
   }
 });
+
+test('REQ-43 (B, jsdom): the bars render values, percent and fill width from the snapshot', async () => {
+  const routes = Object.assign({}, ROUTES, {
+    '/api/snapshot': () => ({
+      stats: { health: 100, mana: 400, maxMana: 500, maxHealth: 200 },
+      agent: { modules: { training: { on: true, cap: { capacity: 400, maxCapacity: 500, ratio: 0.8 } } } },
+    }),
+  });
+  const { dom } = makePanel(routes);
+  try {
+    await connect(dom);
+    await new Promise((r) => setTimeout(r, 600)); // a snapshot poll lands the stats + cap
+    const doc = dom.window.document;
+    const manaBar = doc.querySelector('.bar.mana-bar');
+    assert.ok(manaBar, 'mana bar rendered');
+    assert.match(manaBar.textContent, /80%/, 'mana percent shown');
+    assert.match(manaBar.textContent, /400 \/ 500/, 'mana cur/max shown');
+    assert.match(manaBar.querySelector('.bar-fill').getAttribute('style'), /width:80%/, 'mana fill width');
+    const capBar = doc.querySelector('.bar.cap-bar');
+    assert.ok(capBar, 'cap bar rendered');
+    assert.match(capBar.textContent, /80%/, 'cap percent shown');
+    assert.match(capBar.textContent, /400 \/ 500/, 'cap cur/max shown');
+    assert.match(capBar.querySelector('.bar-fill').getAttribute('style'), /width:80%/, 'cap fill width');
+  } finally {
+    await teardown(dom);
+  }
+});

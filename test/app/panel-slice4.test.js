@@ -245,6 +245,34 @@ test('REQ-42 (B): the 2-col TRAINER form localizes every new label in Spanish', 
   assert.match(html, /Detener el bot por completo/, 'ES stop botting toggle');
 });
 
+test('REQ-43 (B): snapshotCap reads the training module cap snapshot', () => {
+  assert.deepEqual(P.snapshotCap({
+    agent: { modules: { training: { cap: { capacity: 400, maxCapacity: 500, ratio: 0.8 } } } },
+  }), { capacity: 400, maxCapacity: 500, ratio: 0.8 });
+  assert.equal(P.snapshotCap(null), null);
+  assert.equal(P.snapshotCap({ agent: { modules: { training: { cap: null } } } }), null);
+  assert.equal(P.snapshotCap({ agent: { modules: { training: {} } } }), null, 'missing cap degrades to null');
+});
+
+test('REQ-43 (B): the mana and CAP bars render values, percent and fill width from the snapshot', () => {
+  let state = armedState();
+  state = Object.assign({}, state, {
+    snapshot: {
+      stats: { health: 100, mana: 400, maxMana: 500, maxHealth: 200 },
+      agent: { modules: { training: { on: true, cap: { capacity: 400, maxCapacity: 500, ratio: 0.8 } } } },
+    },
+  });
+  const html = P.renderConfigForm(state);
+  const manaBar = html.match(/<div class="bar mana-bar"[\s\S]*?<\/div><\/div><\/div>/)[0];
+  assert.match(manaBar, /Your mana: <strong>80%<\/strong>/, 'mana percent shown');
+  assert.match(manaBar, /400 \/ 500/, 'mana cur/max shown');
+  assert.match(manaBar, /style="width:80%"/, 'mana fill width');
+  const capBar = html.match(/<div class="bar cap-bar"[\s\S]*?<\/div><\/div><\/div>/)[0];
+  assert.match(capBar, /Current cap: <strong>80%<\/strong>/, 'cap percent shown');
+  assert.match(capBar, /400 \/ 500/, 'cap cur/max shown');
+  assert.match(capBar, /style="width:80%"/, 'cap fill width');
+});
+
 test('REQ-42 (B): the form derives the rune sid, hotkeys and toggles from the saved config', () => {
   let state = armedState();
   state = P.panelReducer(state, {

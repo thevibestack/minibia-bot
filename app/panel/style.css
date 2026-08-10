@@ -412,3 +412,20 @@ body {
 .trainer-field.trainer-check { display: flex; align-items: center; gap: 8px; color: var(--text); cursor: pointer; }
 .trainer-field.trainer-check input[type="checkbox"] { accent-color: var(--accent); width: 15px; height: 15px; }
 #trainer-save-btn.trainer-save { margin-top: 12px; padding: 7px 18px; }
+
+/* Slice B (REQ-43, D-B5): mana + CAP gradient bars. */
+.bar { margin: 8px 0; }
+.bar-label { font-weight: 600; font-size: 13px; color: var(--text); }
+.bar-label strong { color: var(--accent); }
+.bar-values { color: var(--muted); font-weight: 400; }
+.bar-track {
+  margin-top: 4px;
+  height: 10px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.bar-fill { height: 100%; border-radius: 6px; transition: width 0.3s ease; }
+.bar.mana-bar .bar-fill { background: linear-gradient(90deg, #3fbf6f, #4f9cf7); }
+.bar.cap-bar .bar-fill { background: linear-gradient(90deg, #e8b64c, #e0655f); }
