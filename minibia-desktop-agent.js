@@ -5153,6 +5153,428 @@ module.exports = { createRoutesModule, normalizeCoords, resolveWalkToMethod };
 return module.exports;
 })();
 
+__mbModules['agent/modules/attack'] = (function () {
+'use strict';
+const module = { exports: {} };
+const exports = module.exports;
+const require = __mbRequire;
+'use strict';
+
+/**
+ * Attack skeleton (REQ-35, design D10, task 6.1).
+ *
+ * ATTACK is a STATE-ONLY SKELETON in this slice:
+ *  - Targeting choice (lowest HP / nearest; native ACTIONS) and offensive
+ *    spell/rune pickers are CONFIG — the panel renders them, the config
+ *    shape carries them (forward-compat with the full combat slice).
+ *  - `skeleton: true` + disclosure "skeleton — limited": the module performs
+ *    NO full combat loop (no tree node, no queue dispatch, no game calls —
+ *    D10: "no tree loop"). The combat behavior slice lands later and wires
+ *    the targeting decision into the tree.
+ *
+ * Pure node-testable: all normalization is local and exported for reuse by
+ * the future combat slice.
+ */
+
+/** Targeting choices (REQ-35: "lowest HP / nearest"; native ACTIONS). */
+const TARGETING_OPTIONS = ['lowest-hp', 'nearest'];
+
+/** Default targeting when the config value is absent/invalid. */
+const DEFAULT_TARGETING = 'lowest-hp';
+
+/**
+ * Normalize the targeting choice: only the known options pass through,
+ * anything else (including undefined/null) falls back to the default —
+ * a bad config never crashes the module.
+ * @param {unknown} value
+ * @returns {string} 'lowest-hp' | 'nearest'
+ */
+function normalizeTargeting(value) {
+  return TARGETING_OPTIONS.indexOf(value) !== -1 ? value : DEFAULT_TARGETING;
+}
+
+/**
+ * Normalize an offensive spell sid: non-negative integer only; anything
+ * else (absent, string junk, negative) becomes null (no spell configured).
+ * @param {unknown} value
+ * @returns {number|null}
+ */
+function normalizeSid(value) {
+  // Empty strings would Number() to 0 — a missing input must NOT become
+  // "spell 0" (routes.js normalizeCoords guards the same trap).
+  if (value === null || value === undefined) return null;
+  if (typeof value === 'string' && value.trim() === '') return null;
+  const n = Number(value);
+  return Number.isInteger(n) && n >= 0 ? n : null;
+}
+
+/**
+ * Normalize an offensive rune hotbar slot: integer 1-12 only; anything else
+ * becomes null (no rune slot configured).
+ * @param {unknown} value
+ * @returns {number|null}
+ */
+function normalizeSlot(value) {
+  if (value === null || value === undefined) return null;
+  if (typeof value === 'string' && value.trim() === '') return null;
+  const n = Number(value);
+  return Number.isInteger(n) && n >= 1 && n <= 12 ? n : null;
+}
+
+/**
+ * Create the attack skeleton module.
+ *
+ * @param {object} opts
+ * @param {object} [opts.config] - normalized attack config
+ *   { on: boolean, targeting: string, sid: number|null, runeSlot: number|null }
+ * @returns {{
+ *   getState: () => object,
+ *   isEnabled: () => boolean,
+ * }}
+ */
+function createAttackModule(opts = {}) {
+  const config = opts.config && typeof opts.config === 'object' ? opts.config : {};
+
+  /**
+   * Honest module state (snapshot -> panel live state, REQ-35).
+   * `skeleton: true` + disclosure disclose the limited functionality;
+   * `combatLoop: false` states plainly that no full combat loop runs.
+   * @returns {object}
+   */
+  function getState() {
+    return {
+      skeleton: true,
+      disclosure: 'skeleton — limited',
+      on: config.on === true,
+      targeting: normalizeTargeting(config.targeting),
+      spell: { sid: normalizeSid(config.sid) },
+      rune: { slot: normalizeSlot(config.runeSlot) },
+      combatLoop: false, // REQ-35: no full combat loop in the skeleton
+    };
+  }
+
+  /** @returns {boolean} whether the module is configured ON */
+  function isEnabled() {
+    return config.on === true;
+  }
+
+  return { getState, isEnabled };
+}
+
+module.exports = {
+  createAttackModule,
+  normalizeTargeting,
+  normalizeSid,
+  normalizeSlot,
+  TARGETING_OPTIONS,
+  DEFAULT_TARGETING,
+};
+
+return module.exports;
+})();
+
+__mbModules['agent/modules/cavebot'] = (function () {
+'use strict';
+const module = { exports: {} };
+const exports = module.exports;
+const require = __mbRequire;
+'use strict';
+
+/**
+ * Cavebot skeleton (REQ-36, design D10, task 6.2).
+ *
+ * CAVEBOT is a STATE-ONLY SKELETON in this slice:
+ *  - RECORD: throttled position snapshots into a SESSION-scoped buffer
+ *    (state.timers — survives config rebuilds, resets on agent restart).
+ *    The bootstrap recording loop calls record() on a cadence; the module
+ *    enforces the throttle (min gap between points) + dedupe + a cap.
+ *  - SAVE: the recorded waypoints land in `config.routes` (the character
+ *    config's top-level route list) via the panel save flow.
+ *  - PAUSE: `config.paused` flag (panel-pushed) — a paused bot refuses
+ *    start.
+ *  - START: from the NEAREST recorded waypoint (euclidean min, pure
+ *    helper below) via the game's NATIVE autowalk primitive — the
+ *    bootstrap enqueues the walk (REQ-12 no-bypass), never synthetic input.
+ *  - OBJECT DETECT: feature-detected reader (injected); when the game
+ *    surface is absent the module reports honest "no object surface"
+ *    state — the walk-to-object action stays a no-op state (open probe).
+ *  - EDITING: explicitly FUTURE (REQ-36: full route editing is not v1).
+ *  - `skeleton: true` + disclosure "skeleton — limited": no tree loop, no
+ *    continuous auto-walking (D10: state only).
+ *
+ * Pure node-testable: the position/object readers are injected; all
+ * normalization + the nearest-waypoint math are local.
+ */
+
+/** Recorded waypoint cap (oldest dropped first — bounded session memory). */
+const MAX_ROUTE_POINTS = 500;
+
+/** Default minimum gap between recorded snapshots (ms). */
+const DEFAULT_RECORD_INTERVAL_MS = 1000;
+
+/**
+ * Normalize a position/waypoint: finite numbers only. null/undefined and
+ * empty strings are rejected (Number(null) === 0 and Number('') === 0 would
+ * otherwise turn a missing input into the origin — same trap routes.js
+ * guards in normalizeCoords).
+ * @param {unknown} p
+ * @returns {{x: number, y: number}|null}
+ */
+function normalizePoint(p) {
+  if (!p || typeof p !== 'object') return null;
+  const { x, y } = p;
+  if (x === null || x === undefined || y === null || y === undefined) return null;
+  if (typeof x === 'string' && x.trim() === '') return null;
+  if (typeof y === 'string' && y.trim() === '') return null;
+  const nx = Number(x);
+  const ny = Number(y);
+  return Number.isFinite(nx) && Number.isFinite(ny) ? { x: nx, y: ny } : null;
+}
+
+/**
+ * Sanitize a saved route list: every entry normalizes to a finite {x, y}
+ * point; junk entries are dropped (never crash, never a bogus waypoint).
+ * @param {unknown} list
+ * @returns {Array<{x: number, y: number}>}
+ */
+function sanitizeRouteList(list) {
+  if (!Array.isArray(list)) return [];
+  const out = [];
+  for (const entry of list) {
+    const p = normalizePoint(entry);
+    if (p) out.push(p);
+    if (out.length >= MAX_ROUTE_POINTS) break;
+  }
+  return out;
+}
+
+/**
+ * Euclidean distance between two points.
+ * @param {{x: number, y: number}} a
+ * @param {{x: number, y: number}} b
+ * @returns {number}
+ */
+function euclideanDistance(a, b) {
+  return Math.sqrt((a.x - b.x) * (a.x - b.x) + (a.y - b.y) * (a.y - b.y));
+}
+
+/**
+ * Nearest waypoint to a position (REQ-36: "start from the nearest recorded
+ * waypoint" — euclidean min). Tie-breaks to the FIRST nearest waypoint
+ * (stable). Empty/unusable inputs -> null.
+ * @param {{x: number, y: number}|null} position
+ * @param {Array<{x: number, y: number}>} waypoints
+ * @returns {{index: number, waypoint: {x: number, y: number}, distance: number}|null}
+ */
+function nearestWaypoint(position, waypoints) {
+  const pos = normalizePoint(position);
+  if (!pos || !Array.isArray(waypoints) || waypoints.length === 0) return null;
+  let best = null;
+  for (let i = 0; i < waypoints.length; i += 1) {
+    const wp = normalizePoint(waypoints[i]);
+    if (!wp) continue;
+    const d = euclideanDistance(pos, wp);
+    if (best === null || d < best.distance) best = { index: i, waypoint: wp, distance: d };
+  }
+  return best;
+}
+
+/**
+ * Create the cavebot skeleton module.
+ *
+ * @param {object} opts
+ * @param {object} [opts.config] - normalized cavebot config
+ *   { on: boolean, paused: boolean, route: Array<{x,y}> }
+ *   (route = the saved route list; panel-saved into config.routes)
+ * @param {() => {x: number, y: number}|null} [opts.readPosition] - live
+ *   player position reader (feature-detected; null when absent)
+ * @param {() => Array<object>|null} [opts.readObjects] - live ground-object
+ *   list reader (open probe: object-walk stays a no-op state)
+ * @param {object} [opts.timers] - session-scoped state container (survives
+ *   config rebuilds; the recording buffer lives here)
+ * @param {() => number} [opts.now=Date.now] - injectable clock
+ * @param {number} [opts.recordIntervalMs=1000] - min gap between snapshots
+ * @param {{error?: Function, warn?: Function}} [opts.log] - log sinks
+ * @returns {{
+ *   startRecording: () => object,
+ *   stopRecording: () => object,
+ *   isRecording: () => boolean,
+ *   record: (point: unknown) => object,
+ *   decideStart: () => object,
+ *   getState: () => object,
+ *   isEnabled: () => boolean,
+ * }}
+ */
+function createCavebotModule(opts = {}) {
+  const config = opts.config && typeof opts.config === 'object' ? opts.config : {};
+  const readPosition = typeof opts.readPosition === 'function' ? opts.readPosition : null;
+  const readObjects = typeof opts.readObjects === 'function' ? opts.readObjects : null;
+  const timers = opts.timers && typeof opts.timers === 'object' ? opts.timers : {};
+  const now = typeof opts.now === 'function' ? opts.now : Date.now;
+  const recordIntervalMs = Number.isFinite(Number(opts.recordIntervalMs))
+    ? Math.max(0, Number(opts.recordIntervalMs))
+    : DEFAULT_RECORD_INTERVAL_MS;
+  const warn = typeof opts.log === 'object' && typeof opts.log.warn === 'function'
+    ? opts.log.warn : () => {};
+
+  // Session-scoped recording state (survives config rebuilds within the
+  // session; agent restart = new session = fresh route buffer).
+  if (!timers.cavebotRoute || typeof timers.cavebotRoute !== 'object') {
+    timers.cavebotRoute = { recording: false, startedAt: null, points: [] };
+  }
+  const session = timers.cavebotRoute;
+
+  /** Saved route (normalized waypoint list from the config). */
+  function savedRoute() {
+    return sanitizeRouteList(config.route);
+  }
+
+  /**
+   * Start route recording. The bootstrap arms the recording loop on ok.
+   * @returns {{ok: boolean, reason?: string}}
+   */
+  function startRecording() {
+    if (session.recording) return { ok: false, reason: 'already-recording' };
+    session.recording = true;
+    session.startedAt = now();
+    return { ok: true, startedAt: session.startedAt };
+  }
+
+  /** @returns {boolean} whether the recording loop should keep running */
+  function isRecording() {
+    return session.recording === true;
+  }
+
+  /**
+   * Stop route recording and return the recorded waypoints (plain {x,y}
+   * entries — the shape that saves into config.routes). The buffer resets
+   * for the next recording session.
+   * @returns {{ok: boolean, reason?: string, points?: Array<{x: number, y: number}>}}
+   */
+  function stopRecording() {
+    if (!session.recording) return { ok: false, reason: 'not-recording' };
+    session.recording = false;
+    const points = session.points.map((p) => ({ x: p.x, y: p.y }));
+    session.points = [];
+    session.startedAt = null;
+    return { ok: true, points, count: points.length };
+  }
+
+  /**
+   * Record one position snapshot (called by the bootstrap recording loop).
+   * The throttle: a point lands only when it differs from the last one AND
+   * the min gap (recordIntervalMs) has passed — position snapshots are
+   * throttled, never a raw firehose (REQ-36 "throttled position snapshots").
+   * @param {unknown} point
+   * @returns {{recorded: boolean, reason: string, count?: number}}
+   */
+  function record(point) {
+    if (!session.recording) return { recorded: false, reason: 'not-recording' };
+    const p = normalizePoint(point);
+    if (!p) return { recorded: false, reason: 'invalid-point' };
+    const t = now();
+    const last = session.points[session.points.length - 1];
+    if (last && last.x === p.x && last.y === p.y) return { recorded: false, reason: 'duplicate' };
+    if (last && t - last.ts < recordIntervalMs) return { recorded: false, reason: 'throttled' };
+    session.points.push({ x: p.x, y: p.y, ts: t });
+    if (session.points.length > MAX_ROUTE_POINTS) session.points.shift();
+    return { recorded: true, count: session.points.length };
+  }
+
+  /**
+   * Decide the cavebot start: nearest recorded waypoint to the current
+   * position (euclidean min). The walk itself is issued by the bootstrap
+   * through the game's NATIVE autowalk primitive (queue-dispatched).
+   * @returns {{fire: boolean, reason: string, x?: number, y?: number, index?: number, distance?: number}}
+   */
+  function decideStart() {
+    if (config.on !== true) return { fire: false, reason: 'off' };
+    if (config.paused === true) return { fire: false, reason: 'paused' };
+    const route = savedRoute();
+    if (route.length === 0) return { fire: false, reason: 'no-route' };
+    let position = null;
+    if (readPosition) {
+      try { position = readPosition(); } catch (e) { position = null; }
+    }
+    if (!position) return { fire: false, reason: 'no-position' };
+    const nw = nearestWaypoint(position, route);
+    if (!nw) return { fire: false, reason: 'no-route' };
+    return {
+      fire: true,
+      reason: 'nearest-waypoint',
+      x: nw.waypoint.x,
+      y: nw.waypoint.y,
+      index: nw.index,
+      distance: nw.distance,
+    };
+  }
+
+  /** @returns {boolean} whether the module is configured ON */
+  function isEnabled() {
+    return config.on === true;
+  }
+
+  /**
+   * Honest module state (snapshot -> panel live state, REQ-36): skeleton
+   * disclosure, recording status, saved route summary, pause flag, start
+   * availability and the feature-detected object-walk surface. `editing:
+   * 'future'` states plainly that route editing is out of v1 scope.
+   * @returns {object}
+   */
+  function getState() {
+    const route = savedRoute();
+    let objects = null;
+    if (readObjects) {
+      try { objects = readObjects(); } catch (e) { objects = null; }
+    }
+    const objectList = Array.isArray(objects) ? objects : null;
+    return {
+      skeleton: true,
+      disclosure: 'skeleton — limited',
+      on: config.on === true,
+      recording: {
+        active: session.recording === true,
+        points: session.points.length,
+        startedAt: session.startedAt,
+      },
+      savedRoute: {
+        count: route.length,
+        first: route.length > 0 ? route[0] : null,
+        last: route.length > 0 ? route[route.length - 1] : null,
+      },
+      paused: config.paused === true,
+      start: {
+        available: config.on === true && config.paused !== true && route.length > 0,
+        reason: config.on !== true ? 'off'
+          : config.paused === true ? 'paused'
+            : route.length === 0 ? 'no-route' : 'ok',
+      },
+      objectWalk: {
+        available: objectList !== null,
+        reason: objectList === null ? 'no object surface' : 'ok',
+        count: objectList === null ? null : objectList.length,
+      },
+      // REQ-36: full route editing is explicitly FUTURE (not v1).
+      editing: 'future',
+    };
+  }
+
+  return { startRecording, stopRecording, isRecording, record, decideStart, getState, isEnabled };
+}
+
+module.exports = {
+  createCavebotModule,
+  normalizePoint,
+  sanitizeRouteList,
+  euclideanDistance,
+  nearestWaypoint,
+  MAX_ROUTE_POINTS,
+  DEFAULT_RECORD_INTERVAL_MS,
+};
+
+return module.exports;
+})();
+
 __mbModules['agent/bootstrap'] = (function () {
 'use strict';
 const module = { exports: {} };
@@ -5221,6 +5643,10 @@ const LEARNING_MOD = require('agent/modules/learning');
 const ANTIBOT_MOD = require('agent/modules/antibot');
 // Slice-6 module (REQ-23): native autowalk state read + walk-to (routes v1).
 const ROUTES_MOD = require('agent/modules/routes');
+// PR6 (REQ-35/36, D10): state-only skeleton modules — attack targeting +
+// pickers config and cavebot route record/save/pause/start; NO tree nodes.
+const ATTACK_MOD = require('agent/modules/attack');
+const CAVEBOT_MOD = require('agent/modules/cavebot');
 
 /** Minimal slice-2 config shape (per-character store lands in slice 3). */
 const DEFAULT_CONFIG = {
@@ -5248,6 +5674,13 @@ const DEFAULT_CONFIG = {
   learning: { knownWords: [] },       // REQ-25: observation always runs while armed
   antibot: { on: false, replies: [] }, // PR5 (D9): anti-bot watcher + confirm-once replies (REQ-33/34)
   routes: { on: false },               // REQ-23 (slice 6): native autowalk read + walk-to; recording = FUTURE
+  // PR6 (REQ-35/36, D10): state-only skeleton modules — ALL OFF by default
+  // (opt-in). attack: targeting choice (lowest-hp/nearest) + offensive
+  // spell/rune pickers; cavebot: pause flag + the saved route list (the
+  // route lands here from the TOP-LEVEL `routes` array of the per-character
+  // config — REQ-36 "save = config.routes").
+  attack: { on: false, targeting: 'lowest-hp', sid: null, runeSlot: null },
+  cavebot: { on: false, paused: false, route: [] },
   armed: false,                                      // interconnection gate (REQ-02, slice 3)
 };
 
@@ -5277,6 +5710,8 @@ function normalizeConfig(raw) {
     learning: { knownWords: [] },
     antibot: { on: false, replies: [] },
     routes: { on: false },
+    attack: { on: false, targeting: 'lowest-hp', sid: null, runeSlot: null },
+    cavebot: { on: false, paused: false, route: [] },
     armed: false,
   };
   if (Number.isFinite(src.queue && src.queue.minIntervalMs) && src.queue.minIntervalMs >= 0) {
@@ -5378,8 +5813,24 @@ function normalizeConfig(raw) {
         && typeof r.reply === 'string' && r.reply.trim())
       .map((r) => ({ pattern: r.pattern.trim(), reply: r.reply.trim() }));
   }
-  const rt = src.routes && typeof src.routes === 'object' ? src.routes : {};
+  const rt = src.routes && typeof src.routes === 'object' && !Array.isArray(src.routes) ? src.routes : {};
   if (typeof rt.on === 'boolean') cfg.routes.on = rt.on;
+  // PR6 (REQ-35/36, D10): skeleton module configs — attack targeting +
+  // pickers; cavebot pause + saved route. The SAVED ROUTE LIST travels on
+  // the per-character config at the TOP LEVEL (`routes: [...]` — the store
+  // shape, REQ-36 "save = config.routes"); the flat agent/test shape may
+  // also carry it as `cavebot.route`. Both normalize into cfg.cavebot.route
+  // (sanitized: finite {x,y} waypoints only, junk dropped).
+  const at = src.attack && typeof src.attack === 'object' ? src.attack : {};
+  if (typeof at.on === 'boolean') cfg.attack.on = at.on;
+  cfg.attack.targeting = ATTACK_MOD.normalizeTargeting(at.targeting);
+  cfg.attack.sid = ATTACK_MOD.normalizeSid(at.sid);
+  cfg.attack.runeSlot = ATTACK_MOD.normalizeSlot(at.runeSlot);
+  const cv = src.cavebot && typeof src.cavebot === 'object' ? src.cavebot : {};
+  if (typeof cv.on === 'boolean') cfg.cavebot.on = cv.on;
+  if (typeof cv.paused === 'boolean') cfg.cavebot.paused = cv.paused;
+  if (Array.isArray(cv.route)) cfg.cavebot.route = CAVEBOT_MOD.sanitizeRouteList(cv.route);
+  if (Array.isArray(src.routes)) cfg.cavebot.route = CAVEBOT_MOD.sanitizeRouteList(src.routes);
   cfg.armed = src.armed === true; // REQ-02: only an explicit true arms
   return cfg;
 }
@@ -5703,6 +6154,42 @@ function createAgent(opts = {}) {
     } catch (e) { return { position: null, teleported: null, health: null, damageTint: null }; }
   }
 
+  /** Player position reader (PR6, REQ-36): player.state.__position /
+   *  p.__position over the live-probed locations (same surface the anti-bot
+   *  context reads) — feature-detected; null when absent (the cavebot start
+   *  degrades with 'no-position', never an invented location). */
+  function readPosition() {
+    try {
+      const p = state.gameClient && state.gameClient.player;
+      if (!p) return null;
+      const st = p.state && typeof p.state === 'object' ? p.state : {};
+      const rawPos = st.__position || p.__position;
+      if (!rawPos || typeof rawPos !== 'object') return null;
+      const x = Number(rawPos.x);
+      const y = Number(rawPos.y);
+      if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+      return { x, y };
+    } catch (e) { return null; }
+  }
+
+  /** Ground-object list reader (PR6, REQ-36 open probe): feature-detected
+   *  candidates over the live game surfaces; null when absent ("no object
+   *  surface" — the walk-to-object action stays a no-op state, never an
+   *  invented source). */
+  function readObjects() {
+    try {
+      const gc = state.gameClient;
+      const world = gc && gc.world;
+      const cands = [world && world.objects, gc && gc.objects,
+        world && world.groundObjects, gc && gc.groundObjects,
+        gc && gc.interface && gc.interface.objects];
+      for (const c of cands) {
+        if (Array.isArray(c)) return c;
+      }
+      return null;
+    } catch (e) { return null; }
+  }
+
   /** Loot-command surface (REQ-19): feature-detected game function
    *  (monster, destination) => void; null = unavailable (degrade). */
   function readLootCommand() {
@@ -5982,10 +6469,25 @@ function createAgent(opts = {}) {
       now: nowFn,
       log,
     });
+    // REQ-35/36 (PR6, D10): state-only skeleton modules — attack targeting
+    // + pickers config and the cavebot route recorder. NOT tree nodes: no
+    // combat loop, no continuous auto-walking (getState discloses the
+    // skeleton; the app-driven RPCs below drive record/start). The cavebot
+    // recording buffer lives in state.timers (survives rebuilds).
+    const attack = ATTACK_MOD.createAttackModule({ config: cfg.attack });
+    const cavebot = CAVEBOT_MOD.createCavebotModule({
+      config: cfg.cavebot,
+      readPosition: readPosition,
+      readObjects: readObjects,
+      timers: state.timers,
+      now: nowFn,
+      recordIntervalMs: 100, // snapshot-loop cadence; the module throttles + dedupes
+      log,
+    });
     state.modules = {
       healItems: healItems, healMagic: healMagic, runes: runes, training: training, eat: eat,
       trade: trade, loot: loot, spawns: spawns, huntStats: huntStats, echo: echo, learning: learning,
-      antibot: antibot, routes: routes,
+      antibot: antibot, routes: routes, attack: attack, cavebot: cavebot,
     };
 
     /* -------- tree nodes: survival > combat > training > eat > loot (REQ-11) -------- */
@@ -6406,6 +6908,32 @@ function createAgent(opts = {}) {
     }
   }
 
+  /* ------------------ PR6 cavebot recording loop (REQ-36) ------------------ */
+
+  /** Passive route-recording sampler: while the cavebot module records, read
+   *  the player position on a cadence and let the module throttle/dedupe the
+   *  snapshots (REQ-36 "throttled position snapshots"). NOT a tree action and
+   *  NOT a game call — a pure read loop. Session-scoped: the timer survives
+   *  config rebuilds (the module state lives in state.timers) and is
+   *  disarmed on stop/destroy (agent restart = new session). */
+  let recordTimer = null;
+
+  function armRecordLoop() {
+    if (recordTimer !== null || !setIntervalFn) return;
+    recordTimer = setIntervalFn(function () {
+      const m = state.modules && state.modules.cavebot;
+      if (!m || !m.isRecording()) { disarmRecordLoop(); return; }
+      m.record(readPosition());
+    }, 750);
+  }
+
+  function disarmRecordLoop() {
+    if (recordTimer !== null) {
+      clearIntervalFn(recordTimer);
+      recordTimer = null;
+    }
+  }
+
   /* ------------------------------ __mbAgent surface ------------------------ */
 
   function readPlayerInfo() {
@@ -6525,6 +7053,58 @@ function createAgent(opts = {}) {
         };
       },
       getPlayerInfo: readPlayerInfo,
+      startRouteRecording: function () {
+        // REQ-36 (PR6): begin cavebot route recording — the passive position
+        // sampler loop arms here (REQ-12 untouched: this loop never touches
+        // game handlers). REQ-02 gate like every RPC.
+        if (!state.armed) return { ok: false, reason: 'not connected' };
+        const m = state.modules && state.modules.cavebot;
+        if (!m) return { ok: false, reason: 'not ready' };
+        const res = m.startRecording();
+        if (res.ok) armRecordLoop();
+        return res;
+      },
+      stopRouteRecording: function () {
+        // REQ-36 (PR6): stop recording and return the recorded waypoints
+        // (plain {x,y} — the panel saves them into config.routes).
+        if (!state.armed) return { ok: false, reason: 'not connected' };
+        const m = state.modules && state.modules.cavebot;
+        if (!m) return { ok: false, reason: 'not ready' };
+        const res = m.stopRecording();
+        if (res.ok) disarmRecordLoop();
+        return res;
+      },
+      cavebotStart: function () {
+        // REQ-36 (PR6): start from the NEAREST recorded waypoint (euclidean
+        // min) via the game's NATIVE autowalk primitive only (REQ-23 surface,
+        // never synthetic per-step input). REQ-02 gate + REQ-12 no-bypass:
+        // the native call happens ONLY inside a queue-dispatched closure.
+        if (!state.armed) return { ok: false, reason: 'not connected' };
+        const m = state.modules && state.modules.cavebot;
+        if (!m) return { ok: false, reason: 'not ready' };
+        const d = m.decideStart();
+        if (!d.fire) return { ok: false, reason: d.reason };
+        const pf = readPathfinder();
+        const method = pf ? ROUTES_MOD.resolveWalkToMethod(pf) : null;
+        if (!pf || !method) return { ok: false, reason: 'no walk-to method' };
+        state.queue.enqueue(function () {
+          try {
+            method.call(pf, d.x, d.y);
+            logEvent('cavebot', 'start', 'waypoint ' + d.index + ' (' + d.x + ',' + d.y + ')');
+          } catch (e) {
+            log.warn('cavebot: start walk failed: ' + (e && e.message ? e.message : e));
+          }
+        }, { kind: 'cavebot-start' });
+        return {
+          ok: true,
+          waypoint: d.index,
+          x: d.x,
+          y: d.y,
+          distance: d.distance,
+          method: method.name || 'native-autowalk',
+          queued: true,
+        };
+      },
       getSpellCatalog: function () {
         // REQ-28 (slice 1b, design D5): client spell catalog RPC — enumerates
         // interface.getSpell(sid) until 30 consecutive unknown sids and
@@ -6557,6 +7137,7 @@ function createAgent(opts = {}) {
     state.destroyed = true;
     if (state.pollTimer !== null) clearIntervalFn(state.pollTimer);
     if (state.ticker) state.ticker.stop();
+    disarmRecordLoop(); // PR6 (REQ-36): the route sampler is session-scoped
   }
 
   function getState() {
@@ -6585,6 +7166,10 @@ function createAgent(opts = {}) {
         learning: modules.learning ? modules.learning.getState() : null,
         antibot: modules.antibot ? modules.antibot.getState() : null, // PR5 (REQ-33/34): alerts + pending confirm
         routes: modules.routes ? modules.routes.getState() : null,
+        // PR6 (REQ-35/36): state-only skeleton flags — attack targeting +
+        // pickers; cavebot recording/saved-route/pause/start + object walk.
+        attack: modules.attack ? modules.attack.getState() : null,
+        cavebot: modules.cavebot ? modules.cavebot.getState() : null,
       },
       warnings: state.warnings.slice(),
       errors: state.errors.slice(),

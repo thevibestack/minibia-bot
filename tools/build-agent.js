@@ -73,6 +73,8 @@ const AGENT_MODULES = [
   ['agent/modules/learning', 'src/agent/modules/learning.js'],
   ['agent/modules/antibot', 'src/agent/modules/antibot.js'], // D9 (REQ-33/34): anti-bot watcher + confirm-once
   ['agent/modules/routes', 'src/agent/modules/routes.js'],
+  ['agent/modules/attack', 'src/agent/modules/attack.js'], // D10 (REQ-35): attack skeleton (state-only)
+  ['agent/modules/cavebot', 'src/agent/modules/cavebot.js'], // D10 (REQ-36): cavebot skeleton (state-only)
   ['agent/bootstrap', 'src/agent/bootstrap.js'],
 ];
 

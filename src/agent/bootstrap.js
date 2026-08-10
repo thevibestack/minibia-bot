@@ -61,6 +61,10 @@ const LEARNING_MOD = require('./modules/learning');
 const ANTIBOT_MOD = require('./modules/antibot');
 // Slice-6 module (REQ-23): native autowalk state read + walk-to (routes v1).
 const ROUTES_MOD = require('./modules/routes');
+// PR6 (REQ-35/36, D10): state-only skeleton modules — attack targeting +
+// pickers config and cavebot route record/save/pause/start; NO tree nodes.
+const ATTACK_MOD = require('./modules/attack');
+const CAVEBOT_MOD = require('./modules/cavebot');
 
 /** Minimal slice-2 config shape (per-character store lands in slice 3). */
 const DEFAULT_CONFIG = {
@@ -88,6 +92,13 @@ const DEFAULT_CONFIG = {
   learning: { knownWords: [] },       // REQ-25: observation always runs while armed
   antibot: { on: false, replies: [] }, // PR5 (D9): anti-bot watcher + confirm-once replies (REQ-33/34)
   routes: { on: false },               // REQ-23 (slice 6): native autowalk read + walk-to; recording = FUTURE
+  // PR6 (REQ-35/36, D10): state-only skeleton modules — ALL OFF by default
+  // (opt-in). attack: targeting choice (lowest-hp/nearest) + offensive
+  // spell/rune pickers; cavebot: pause flag + the saved route list (the
+  // route lands here from the TOP-LEVEL `routes` array of the per-character
+  // config — REQ-36 "save = config.routes").
+  attack: { on: false, targeting: 'lowest-hp', sid: null, runeSlot: null },
+  cavebot: { on: false, paused: false, route: [] },
   armed: false,                                      // interconnection gate (REQ-02, slice 3)
 };
 
@@ -117,6 +128,8 @@ function normalizeConfig(raw) {
     learning: { knownWords: [] },
     antibot: { on: false, replies: [] },
     routes: { on: false },
+    attack: { on: false, targeting: 'lowest-hp', sid: null, runeSlot: null },
+    cavebot: { on: false, paused: false, route: [] },
     armed: false,
   };
   if (Number.isFinite(src.queue && src.queue.minIntervalMs) && src.queue.minIntervalMs >= 0) {
@@ -218,8 +231,24 @@ function normalizeConfig(raw) {
         && typeof r.reply === 'string' && r.reply.trim())
       .map((r) => ({ pattern: r.pattern.trim(), reply: r.reply.trim() }));
   }
-  const rt = src.routes && typeof src.routes === 'object' ? src.routes : {};
+  const rt = src.routes && typeof src.routes === 'object' && !Array.isArray(src.routes) ? src.routes : {};
   if (typeof rt.on === 'boolean') cfg.routes.on = rt.on;
+  // PR6 (REQ-35/36, D10): skeleton module configs — attack targeting +
+  // pickers; cavebot pause + saved route. The SAVED ROUTE LIST travels on
+  // the per-character config at the TOP LEVEL (`routes: [...]` — the store
+  // shape, REQ-36 "save = config.routes"); the flat agent/test shape may
+  // also carry it as `cavebot.route`. Both normalize into cfg.cavebot.route
+  // (sanitized: finite {x,y} waypoints only, junk dropped).
+  const at = src.attack && typeof src.attack === 'object' ? src.attack : {};
+  if (typeof at.on === 'boolean') cfg.attack.on = at.on;
+  cfg.attack.targeting = ATTACK_MOD.normalizeTargeting(at.targeting);
+  cfg.attack.sid = ATTACK_MOD.normalizeSid(at.sid);
+  cfg.attack.runeSlot = ATTACK_MOD.normalizeSlot(at.runeSlot);
+  const cv = src.cavebot && typeof src.cavebot === 'object' ? src.cavebot : {};
+  if (typeof cv.on === 'boolean') cfg.cavebot.on = cv.on;
+  if (typeof cv.paused === 'boolean') cfg.cavebot.paused = cv.paused;
+  if (Array.isArray(cv.route)) cfg.cavebot.route = CAVEBOT_MOD.sanitizeRouteList(cv.route);
+  if (Array.isArray(src.routes)) cfg.cavebot.route = CAVEBOT_MOD.sanitizeRouteList(src.routes);
   cfg.armed = src.armed === true; // REQ-02: only an explicit true arms
   return cfg;
 }
@@ -543,6 +572,42 @@ function createAgent(opts = {}) {
     } catch (e) { return { position: null, teleported: null, health: null, damageTint: null }; }
   }
 
+  /** Player position reader (PR6, REQ-36): player.state.__position /
+   *  p.__position over the live-probed locations (same surface the anti-bot
+   *  context reads) — feature-detected; null when absent (the cavebot start
+   *  degrades with 'no-position', never an invented location). */
+  function readPosition() {
+    try {
+      const p = state.gameClient && state.gameClient.player;
+      if (!p) return null;
+      const st = p.state && typeof p.state === 'object' ? p.state : {};
+      const rawPos = st.__position || p.__position;
+      if (!rawPos || typeof rawPos !== 'object') return null;
+      const x = Number(rawPos.x);
+      const y = Number(rawPos.y);
+      if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+      return { x, y };
+    } catch (e) { return null; }
+  }
+
+  /** Ground-object list reader (PR6, REQ-36 open probe): feature-detected
+   *  candidates over the live game surfaces; null when absent ("no object
+   *  surface" — the walk-to-object action stays a no-op state, never an
+   *  invented source). */
+  function readObjects() {
+    try {
+      const gc = state.gameClient;
+      const world = gc && gc.world;
+      const cands = [world && world.objects, gc && gc.objects,
+        world && world.groundObjects, gc && gc.groundObjects,
+        gc && gc.interface && gc.interface.objects];
+      for (const c of cands) {
+        if (Array.isArray(c)) return c;
+      }
+      return null;
+    } catch (e) { return null; }
+  }
+
   /** Loot-command surface (REQ-19): feature-detected game function
    *  (monster, destination) => void; null = unavailable (degrade). */
   function readLootCommand() {
@@ -822,10 +887,25 @@ function createAgent(opts = {}) {
       now: nowFn,
       log,
     });
+    // REQ-35/36 (PR6, D10): state-only skeleton modules — attack targeting
+    // + pickers config and the cavebot route recorder. NOT tree nodes: no
+    // combat loop, no continuous auto-walking (getState discloses the
+    // skeleton; the app-driven RPCs below drive record/start). The cavebot
+    // recording buffer lives in state.timers (survives rebuilds).
+    const attack = ATTACK_MOD.createAttackModule({ config: cfg.attack });
+    const cavebot = CAVEBOT_MOD.createCavebotModule({
+      config: cfg.cavebot,
+      readPosition: readPosition,
+      readObjects: readObjects,
+      timers: state.timers,
+      now: nowFn,
+      recordIntervalMs: 100, // snapshot-loop cadence; the module throttles + dedupes
+      log,
+    });
     state.modules = {
       healItems: healItems, healMagic: healMagic, runes: runes, training: training, eat: eat,
       trade: trade, loot: loot, spawns: spawns, huntStats: huntStats, echo: echo, learning: learning,
-      antibot: antibot, routes: routes,
+      antibot: antibot, routes: routes, attack: attack, cavebot: cavebot,
     };
 
     /* -------- tree nodes: survival > combat > training > eat > loot (REQ-11) -------- */
@@ -1246,6 +1326,32 @@ function createAgent(opts = {}) {
     }
   }
 
+  /* ------------------ PR6 cavebot recording loop (REQ-36) ------------------ */
+
+  /** Passive route-recording sampler: while the cavebot module records, read
+   *  the player position on a cadence and let the module throttle/dedupe the
+   *  snapshots (REQ-36 "throttled position snapshots"). NOT a tree action and
+   *  NOT a game call — a pure read loop. Session-scoped: the timer survives
+   *  config rebuilds (the module state lives in state.timers) and is
+   *  disarmed on stop/destroy (agent restart = new session). */
+  let recordTimer = null;
+
+  function armRecordLoop() {
+    if (recordTimer !== null || !setIntervalFn) return;
+    recordTimer = setIntervalFn(function () {
+      const m = state.modules && state.modules.cavebot;
+      if (!m || !m.isRecording()) { disarmRecordLoop(); return; }
+      m.record(readPosition());
+    }, 750);
+  }
+
+  function disarmRecordLoop() {
+    if (recordTimer !== null) {
+      clearIntervalFn(recordTimer);
+      recordTimer = null;
+    }
+  }
+
   /* ------------------------------ __mbAgent surface ------------------------ */
 
   function readPlayerInfo() {
@@ -1365,6 +1471,58 @@ function createAgent(opts = {}) {
         };
       },
       getPlayerInfo: readPlayerInfo,
+      startRouteRecording: function () {
+        // REQ-36 (PR6): begin cavebot route recording — the passive position
+        // sampler loop arms here (REQ-12 untouched: this loop never touches
+        // game handlers). REQ-02 gate like every RPC.
+        if (!state.armed) return { ok: false, reason: 'not connected' };
+        const m = state.modules && state.modules.cavebot;
+        if (!m) return { ok: false, reason: 'not ready' };
+        const res = m.startRecording();
+        if (res.ok) armRecordLoop();
+        return res;
+      },
+      stopRouteRecording: function () {
+        // REQ-36 (PR6): stop recording and return the recorded waypoints
+        // (plain {x,y} — the panel saves them into config.routes).
+        if (!state.armed) return { ok: false, reason: 'not connected' };
+        const m = state.modules && state.modules.cavebot;
+        if (!m) return { ok: false, reason: 'not ready' };
+        const res = m.stopRecording();
+        if (res.ok) disarmRecordLoop();
+        return res;
+      },
+      cavebotStart: function () {
+        // REQ-36 (PR6): start from the NEAREST recorded waypoint (euclidean
+        // min) via the game's NATIVE autowalk primitive only (REQ-23 surface,
+        // never synthetic per-step input). REQ-02 gate + REQ-12 no-bypass:
+        // the native call happens ONLY inside a queue-dispatched closure.
+        if (!state.armed) return { ok: false, reason: 'not connected' };
+        const m = state.modules && state.modules.cavebot;
+        if (!m) return { ok: false, reason: 'not ready' };
+        const d = m.decideStart();
+        if (!d.fire) return { ok: false, reason: d.reason };
+        const pf = readPathfinder();
+        const method = pf ? ROUTES_MOD.resolveWalkToMethod(pf) : null;
+        if (!pf || !method) return { ok: false, reason: 'no walk-to method' };
+        state.queue.enqueue(function () {
+          try {
+            method.call(pf, d.x, d.y);
+            logEvent('cavebot', 'start', 'waypoint ' + d.index + ' (' + d.x + ',' + d.y + ')');
+          } catch (e) {
+            log.warn('cavebot: start walk failed: ' + (e && e.message ? e.message : e));
+          }
+        }, { kind: 'cavebot-start' });
+        return {
+          ok: true,
+          waypoint: d.index,
+          x: d.x,
+          y: d.y,
+          distance: d.distance,
+          method: method.name || 'native-autowalk',
+          queued: true,
+        };
+      },
       getSpellCatalog: function () {
         // REQ-28 (slice 1b, design D5): client spell catalog RPC — enumerates
         // interface.getSpell(sid) until 30 consecutive unknown sids and
@@ -1397,6 +1555,7 @@ function createAgent(opts = {}) {
     state.destroyed = true;
     if (state.pollTimer !== null) clearIntervalFn(state.pollTimer);
     if (state.ticker) state.ticker.stop();
+    disarmRecordLoop(); // PR6 (REQ-36): the route sampler is session-scoped
   }
 
   function getState() {
@@ -1425,6 +1584,10 @@ function createAgent(opts = {}) {
         learning: modules.learning ? modules.learning.getState() : null,
         antibot: modules.antibot ? modules.antibot.getState() : null, // PR5 (REQ-33/34): alerts + pending confirm
         routes: modules.routes ? modules.routes.getState() : null,
+        // PR6 (REQ-35/36): state-only skeleton flags — attack targeting +
+        // pickers; cavebot recording/saved-route/pause/start + object walk.
+        attack: modules.attack ? modules.attack.getState() : null,
+        cavebot: modules.cavebot ? modules.cavebot.getState() : null,
       },
       warnings: state.warnings.slice(),
       errors: state.errors.slice(),
