@@ -1359,18 +1359,6 @@
   }
 
   /**
-   * PR5 (REQ-33/34): anti-bot module state carried by the live snapshot
-   * (agent state modules.antibot). Pure — null when absent.
-   * @param {object|null} snapshot - SNAPSHOT payload
-   * @returns {object|null}
-   */
-  function snapshotAntibot(snapshot) {
-    const m = snapshot && snapshot.agent && snapshot.agent.modules
-      && snapshot.agent.modules.antibot;
-    return m && typeof m === 'object' ? m : null;
-  }
-
-  /**
    * PR6 (REQ-36): cavebot module state carried by the live snapshot (agent
    * state modules.cavebot). Pure — null when absent.
    * @param {object|null} snapshot - SNAPSHOT payload
