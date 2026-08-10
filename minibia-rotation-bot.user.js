@@ -1572,12 +1572,16 @@ const require = __mbRequire;
  * Fully injectable: `ctx = { gameClient, document }`.
  */
 
-/** Normalize one channel entry to the canonical read shape. */
+/** Normalize one channel entry to the canonical read shape. `type` is the
+ *  raw speak-type field when the game exposes it (PR5/REQ-33: speak types 0
+ *  and 2); null when absent (the anti-bot watcher treats a null type as a
+ *  speak event — feature-detect, never block on unknown). */
 function fromChannelEntry(entry) {
   return {
     name: entry?.name ?? null,
     message: entry?.message ?? '',
     time: entry?.__time ?? null,
+    type: entry?.type ?? null,
     source: 'channel',
   };
 }
@@ -1592,9 +1596,9 @@ function fromDomArea(area) {
     if (!line) continue;
     const match = line.match(/^([^:]{1,24}):\s*(.+)$/);
     if (match) {
-      entries.push({ name: match[1], message: match[2], time: null, source: 'dom' });
+      entries.push({ name: match[1], message: match[2], time: null, type: null, source: 'dom' });
     } else {
-      entries.push({ name: null, message: line, time: null, source: 'dom' });
+      entries.push({ name: null, message: line, time: null, type: null, source: 'dom' });
     }
   }
   return entries;

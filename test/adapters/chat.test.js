@@ -29,8 +29,23 @@ test('REQ-09: reads Default channel __contents as primary source', () => {
   };
   const entries = getRecentMessages(ctx);
   assert.equal(entries.length, 2);
-  assert.deepEqual(entries[0], { name: 'Flamamex', message: 'adori', time: 123, source: 'channel' });
-  assert.deepEqual(entries[1], { name: 'Otto', message: 'hi', time: 456, source: 'channel' });
+  assert.deepEqual(entries[0], { name: 'Flamamex', message: 'adori', time: 123, type: null, source: 'channel' });
+  assert.deepEqual(entries[1], { name: 'Otto', message: 'hi', time: 456, type: null, source: 'channel' });
+});
+
+test('REQ-33 (PR5): the raw speak type passes through when the game exposes it', () => {
+  const ctx = {
+    gameClient: makeGameClient([
+      { name: 'GM-Test', message: 'stop botting', __time: 1, type: 0 },
+      { name: 'Otto', message: 'hi', __time: 2, type: 2 },
+      { name: 'Sys', message: 'msg', __time: 3, type: 6 },
+    ]),
+  };
+  const entries = getRecentMessages(ctx);
+  assert.equal(entries[0].type, 0, 'type 0 passthrough (speak)');
+  assert.equal(entries[1].type, 2, 'type 2 passthrough (speak)');
+  assert.equal(entries[2].type, 6, 'non-speak type preserved for the watcher');
+  assert.equal(entries[0].source, 'channel');
 });
 
 test('REQ-09: empty channel contents -> empty list', () => {
@@ -52,8 +67,8 @@ test('REQ-09: no channel -> #chat-text-area fallback parsed per line', () => {
   const dom = makeDom('<div id="chat-text-area">Flamamex: adori\nOtto: hello there</div>');
   const entries = getRecentMessages({ document: dom.window.document });
   assert.deepEqual(entries, [
-    { name: 'Flamamex', message: 'adori', time: null, source: 'dom' },
-    { name: 'Otto', message: 'hello there', time: null, source: 'dom' },
+    { name: 'Flamamex', message: 'adori', time: null, type: null, source: 'dom' },
+    { name: 'Otto', message: 'hello there', time: null, type: null, source: 'dom' },
   ]);
 });
 
@@ -70,7 +85,7 @@ test('REQ-09: DOM fallback is re-queried per read (chat is rebuilt wholesale)', 
 test('chat fallback: line without "name:" prefix -> name null, raw message kept', () => {
   const dom = makeDom('<div id="chat-text-area">  \njust some system text\n</div>');
   const entries = getRecentMessages({ document: dom.window.document });
-  assert.deepEqual(entries, [{ name: null, message: 'just some system text', time: null, source: 'dom' }]);
+  assert.deepEqual(entries, [{ name: null, message: 'just some system text', time: null, type: null, source: 'dom' }]);
 });
 
 test('chat: getChannel not a function -> DOM fallback', () => {

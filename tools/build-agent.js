@@ -71,6 +71,7 @@ const AGENT_MODULES = [
   ['agent/modules/huntStats', 'src/agent/modules/huntStats.js'],
   ['agent/modules/echo', 'src/agent/modules/echo.js'],
   ['agent/modules/learning', 'src/agent/modules/learning.js'],
+  ['agent/modules/antibot', 'src/agent/modules/antibot.js'], // D9 (REQ-33/34): anti-bot watcher + confirm-once
   ['agent/modules/routes', 'src/agent/modules/routes.js'],
   ['agent/bootstrap', 'src/agent/bootstrap.js'],
 ];
