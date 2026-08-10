@@ -1292,6 +1292,22 @@
         if (ewEnabled && eatSlot === null) {
           return invalid('invalid trainer settings — eat with magic needs a magic food slot');
         }
+        // Slice B (REQ-42, D-B2): the inline rune select — a non-empty sid
+        // MUST resolve to a catalog spell (PICK_SPELL pattern, REQ-28). An
+        // unknown/non-numeric sid refuses the save with a visible reason —
+        // never silently dropped. Empty = no rune chosen (allowed).
+        const runeSid = String(form.runeSid || '').trim();
+        if (runeSid !== '') {
+          const sid = Number(runeSid);
+          if (!Number.isInteger(sid)) {
+            return invalid('invalid trainer settings — rune spell id must be a number');
+          }
+          const spells = (state.catalog && state.catalog.spells) || [];
+          if (spells.filter((s) => Number(s.sid) === sid).length === 0) {
+            const label = (state.identity && state.identity.vocationLabel) || 'current vocation';
+            return invalid('invalid trainer settings — rune spell not available for ' + label);
+          }
+        }
         const config = JSON.parse(JSON.stringify(state.config || {}));
         if (!config.modules || typeof config.modules !== 'object') config.modules = {};
         if (!config.modules.runes || typeof config.modules.runes !== 'object') config.modules.runes = {};

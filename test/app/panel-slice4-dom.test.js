@@ -269,3 +269,29 @@ test('REQ-43 (B, jsdom): the bars render values, percent and fill width from the
     await teardown(dom);
   }
 });
+
+test('REQ-42 (B, jsdom): the inline rune select lists only rune spells from the catalog', async () => {
+  const routes = Object.assign({}, ROUTES, {
+    '/api/spell-catalog': () => ({
+      ok: true,
+      catalog: [
+        { sid: 1, name: 'Blank Rune', words: 'adori vita', mana: 100, level: 1, vocations: [] },
+        { sid: 2, name: 'Sudden Death Rune', words: 'adori tera', mana: 120, level: 2, vocations: [] },
+        { sid: 3, name: 'Light Heal', words: 'exura', mana: 20, level: 1, vocations: [] },
+      ],
+      total: 3, playerLevel: 20, vocationLabel: 'druid',
+    }),
+  });
+  const { dom } = makePanel(routes);
+  try {
+    await connect(dom);
+    await new Promise((r) => setTimeout(r, 100)); // the connect fetches the catalog
+    const select = dom.window.document.getElementById('trainer-rune-select');
+    assert.ok(select, 'rune select rendered');
+    const options = Array.from(select.options).map((o) => o.value);
+    assert.deepEqual(options, ['1', '2'], 'only rune spells listed (Light Heal excluded)');
+    assert.ok(!dom.window.document.querySelector('.trainer-note'), 'no fallback note when runes matched');
+  } finally {
+    await teardown(dom);
+  }
+});

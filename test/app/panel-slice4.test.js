@@ -273,6 +273,47 @@ test('REQ-43 (B): the mana and CAP bars render values, percent and fill width fr
   assert.match(capBar, /style="width:80%"/, 'cap fill width');
 });
 
+test('REQ-42 (B): the inline rune catalog filter matches /rune/i on name or words with a full-list fallback', () => {
+  const catalog = {
+    spells: [
+      { sid: 1, name: 'Blank Rune', words: 'adori vita' },
+      { sid: 2, name: 'Sudden Death Rune', words: 'adori tera' },
+      { sid: 3, name: 'Light Heal', words: 'exura' },
+      { sid: 4, name: 'Great Light', words: 'exura gran rune' }, // words carry 'rune'
+    ],
+  };
+  const r = P.filterRuneCatalog({ catalog });
+  assert.deepEqual(r.runes.map((s) => s.sid), [1, 2, 4], 'name OR words match');
+  assert.equal(r.fallback, false);
+  assert.deepEqual(r.list.map((s) => s.sid), [1, 2, 4]);
+  const noRune = P.filterRuneCatalog({ catalog: { spells: [{ sid: 9, name: 'Haste', words: 'utevo hur' }] } });
+  assert.equal(noRune.runes.length, 0);
+  assert.equal(noRune.fallback, true, 'full-list fallback when no rune matches');
+  assert.deepEqual(noRune.list.map((s) => s.sid), [9], 'full list when no rune matches');
+  assert.deepEqual(P.filterRuneCatalog({}), { runes: [], list: [], fallback: false }, 'no catalog -> empty');
+});
+
+test('REQ-42 (B): SAVE_TRAINER_SETTINGS refuses a rune sid outside the catalog (PICK_SPELL pattern)', () => {
+  const spells = [
+    { sid: 42, name: 'Blank Rune', words: 'adori vita', mana: 100, level: 1, vocations: [] },
+  ];
+  const state = P.panelReducer(armedState(), { type: 'SPELL_CATALOG', spells }).state;
+  const saveWithRune = (runeSid) => {
+    const committed = saveTrainer(state, VALID_FORM).state;
+    const trainerForm = Object.assign({}, committed.trainerForm, { runeSid: String(runeSid) });
+    return P.panelReducer(Object.assign({}, committed, { trainerForm }), { type: 'SAVE_TRAINER_SETTINGS' });
+  };
+  const bad = saveWithRune(999);
+  assert.equal(bad.effects.length, 0, 'no push for an unknown rune sid');
+  assert.match(bad.state.refusal.reason, /rune spell not available for druid/, 'visible refusal (vocation label)');
+  const nonNumeric = saveWithRune('abc');
+  assert.equal(nonNumeric.effects.length, 0);
+  assert.match(nonNumeric.state.refusal.reason, /rune spell id must be a number/, 'non-numeric refused');
+  const ok = saveWithRune(42);
+  assert.deepEqual(ok.effects, [{ type: 'push-config' }], 'a catalog sid passes');
+  assert.equal(ok.state.refusal, null);
+});
+
 test('REQ-42 (B): the form derives the rune sid, hotkeys and toggles from the saved config', () => {
   let state = armedState();
   state = P.panelReducer(state, {
