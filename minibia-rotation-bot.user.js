@@ -988,6 +988,45 @@ function readStats(ctx = {}) {
 }
 
 /**
+ * Read the player's rune CAP state (design D3, REQ-30): the rune-making
+ * capacity vs its maximum. Feature-detects over the probed locations (open
+ * probe: `player.state.__state.capacity` reads 209 while `maxCapacity` reads
+ * 400 — the fields may sit at DIFFERENT locations), so each field is read
+ * from both candidate locations and the first finite value wins:
+ *   capacity:    state.__state.capacity | state.capacity
+ *   maxCapacity: state.__state.maxCapacity | state.maxCapacity | player.maxCapacity
+ *
+ * ratio = capacity / maxCapacity, ratio-guarded (maxCapacity must be finite
+ * and > 0). Absent or uncomputable data returns ratio null with an honest
+ * source ('none' when nothing was read, 'partial' when only one side is
+ * known) — callers degrade, never invent a ratio.
+ *
+ * @param {object} [ctx] - injected context
+ * @param {object} [ctx.gameClient] - page gameClient (player.state read here)
+ * @returns {{capacity: number|null, maxCapacity: number|null, ratio: number|null,
+ *   source: 'state'|'partial'|'none'}}
+ */
+function readCap(ctx = {}) {
+  const player = ctx.gameClient && ctx.gameClient.player;
+  const state = player && player.state;
+  if (!state || typeof state !== 'object') {
+    return { capacity: null, maxCapacity: null, ratio: null, source: 'none' };
+  }
+  const sub = state.__state;
+  const capacity = num(sub && sub.capacity) ?? num(state.capacity);
+  const maxCapacity = num(sub && sub.maxCapacity)
+    ?? num(state.maxCapacity)
+    ?? num(player.maxCapacity);
+  if (capacity === null && maxCapacity === null) {
+    return { capacity: null, maxCapacity: null, ratio: null, source: 'none' };
+  }
+  if (capacity === null || maxCapacity === null || maxCapacity <= 0) {
+    return { capacity, maxCapacity, ratio: null, source: 'partial' };
+  }
+  return { capacity, maxCapacity, ratio: capacity / maxCapacity, source: 'state' };
+}
+
+/**
  * Normalize a single cooldown bucket entry into {active, seconds}.
  * Supports {active, seconds}, a bare seconds number, and a seconds string.
  * @param {*} entry
@@ -1166,6 +1205,7 @@ function spellValidationError(spell, ctx = {}) {
 module.exports = {
   readStats,
   readCooldown,
+  readCap,
   enumerateSpellCatalog,
   filterCatalogByVocation,
   spellValidationError,

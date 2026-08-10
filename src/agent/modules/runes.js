@@ -29,6 +29,7 @@
  */
 
 const FIRING_MOD = require('../../adapters/firing');
+const FEAS_MOD = require('../../core/feasibility'); // D2 (REQ-31): reserve gate
 
 /** Coerce a timer value to epoch ms (number | Date | numeric string). */
 function toMs(value) {
@@ -44,12 +45,15 @@ function toMs(value) {
  * @param {object} opts
  * @param {object} opts.config - normalized runes config
  *   { on: boolean, attackSlot: number|null, healSlot: number|null,
- *     healThreshold: number|null }
+ *     healThreshold: number|null, reserve: number }
  * @param {() => {attackUntil: number|null, healUntil: number|null}|null}
  *   [opts.readRuneTimers] - native rune window reader; null = feature absent
  * @param {() => {active: boolean, seconds?: number}|null} [opts.readGlobalCooldown]
  * @param {() => number} [opts.readAfterFireWait] - post-fire wait ms
  *   (effective rune cooldown / attackSlowness); feature-detected, default 0
+ * @param {(slot: number) => number|null} [opts.getSpellCost] - rune spell
+ *   cost resolver for the fired slot (D2, REQ-31: reserve gate); null/absent
+ *   cost = gate skipped, never blocks
  * @param {() => number} [opts.now=Date.now] - injectable clock
  * @param {{error?: Function, warn?: Function}} [opts.log] - log sinks
  * @returns {{
@@ -60,10 +64,44 @@ function toMs(value) {
  * }}
  */
 function createRunes(opts = {}) {
-  const { config, readRuneTimers = null, readGlobalCooldown = null, readAfterFireWait = null, now = Date.now, log = {} } = opts;
+  const { config, readRuneTimers = null, readGlobalCooldown = null, readAfterFireWait = null, getSpellCost = null, now = Date.now, log = {} } = opts;
   const error = typeof log.error === 'function' ? log.error : () => {};
+  const warn = typeof log.warn === 'function' ? log.warn : () => {};
+  const warned = new Set();
 
   const state = { lastFireAt: 0, available: true, reason: 'ok' };
+
+  /**
+   * Per-module mana reserve gate (D2, REQ-31): a rune cast must not fire
+   * below `cost + config.reserve`. Only enforced when reserve > 0 AND the
+   * rune spell cost resolves from the client AND mana is known — any unknown
+   * side skips the gate (feature-detect, never blocks on absent data).
+   * @param {object} ctx - tick context { mana, maxMana }
+   * @param {number} slot - the slot the rune would fire on
+   * @returns {string|null} 'rune-reserve' | 'rune-insufficient' when the cast
+   *   is blocked, null when it may proceed (or the gate cannot prove
+   *   infeasibility)
+   */
+  function manaFeasible(ctx, slot) {
+    const reserve = Number(config.reserve) || 0;
+    if (reserve <= 0) return null;
+    if (ctx.mana === null || ctx.mana === undefined || !Number.isFinite(Number(ctx.mana))) return null;
+    let cost = null;
+    if (typeof getSpellCost === 'function') {
+      try { cost = getSpellCost(slot); } catch (e) { cost = null; }
+    }
+    if (cost === null || !Number.isFinite(cost)) return null; // cost unknown -> skip
+    const feas = FEAS_MOD.canCast({
+      mana: Number(ctx.mana),
+      cost,
+      reserve,
+      maxMana: ctx.maxMana,
+      key: 'runes-slot-' + slot,
+      warned,
+      onWarn: warn,
+    });
+    return feas.fire ? null : (feas.reason === 'reserve' ? 'rune-reserve' : 'rune-insufficient');
+  }
 
   /**
    * Pure decision (REQ-15).
@@ -116,9 +154,23 @@ function createRunes(opts = {}) {
       && ctx.health !== null
       && ctx.health !== undefined
       && ctx.health <= healThreshold;
-    if (wantHeal) return { fire: true, reason: 'heal-window-expired', slot: healSlot, kind: 'rune-heal' };
+    if (wantHeal) {
+      const block = manaFeasible(ctx, healSlot);
+      if (block !== null) {
+        state.reason = block;
+        return { fire: false, reason: block };
+      }
+      return { fire: true, reason: 'heal-window-expired', slot: healSlot, kind: 'rune-heal' };
+    }
 
-    if (attackSlot) return { fire: true, reason: 'attack-window-expired', slot: attackSlot, kind: 'rune-attack' };
+    if (attackSlot) {
+      const block = manaFeasible(ctx, attackSlot);
+      if (block !== null) {
+        state.reason = block;
+        return { fire: false, reason: block };
+      }
+      return { fire: true, reason: 'attack-window-expired', slot: attackSlot, kind: 'rune-attack' };
+    }
 
     return { fire: false, reason: 'no-candidate' };
   }

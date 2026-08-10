@@ -1749,6 +1749,45 @@ function readStats(ctx = {}) {
 }
 
 /**
+ * Read the player's rune CAP state (design D3, REQ-30): the rune-making
+ * capacity vs its maximum. Feature-detects over the probed locations (open
+ * probe: `player.state.__state.capacity` reads 209 while `maxCapacity` reads
+ * 400 — the fields may sit at DIFFERENT locations), so each field is read
+ * from both candidate locations and the first finite value wins:
+ *   capacity:    state.__state.capacity | state.capacity
+ *   maxCapacity: state.__state.maxCapacity | state.maxCapacity | player.maxCapacity
+ *
+ * ratio = capacity / maxCapacity, ratio-guarded (maxCapacity must be finite
+ * and > 0). Absent or uncomputable data returns ratio null with an honest
+ * source ('none' when nothing was read, 'partial' when only one side is
+ * known) — callers degrade, never invent a ratio.
+ *
+ * @param {object} [ctx] - injected context
+ * @param {object} [ctx.gameClient] - page gameClient (player.state read here)
+ * @returns {{capacity: number|null, maxCapacity: number|null, ratio: number|null,
+ *   source: 'state'|'partial'|'none'}}
+ */
+function readCap(ctx = {}) {
+  const player = ctx.gameClient && ctx.gameClient.player;
+  const state = player && player.state;
+  if (!state || typeof state !== 'object') {
+    return { capacity: null, maxCapacity: null, ratio: null, source: 'none' };
+  }
+  const sub = state.__state;
+  const capacity = num(sub && sub.capacity) ?? num(state.capacity);
+  const maxCapacity = num(sub && sub.maxCapacity)
+    ?? num(state.maxCapacity)
+    ?? num(player.maxCapacity);
+  if (capacity === null && maxCapacity === null) {
+    return { capacity: null, maxCapacity: null, ratio: null, source: 'none' };
+  }
+  if (capacity === null || maxCapacity === null || maxCapacity <= 0) {
+    return { capacity, maxCapacity, ratio: null, source: 'partial' };
+  }
+  return { capacity, maxCapacity, ratio: capacity / maxCapacity, source: 'state' };
+}
+
+/**
  * Normalize a single cooldown bucket entry into {active, seconds}.
  * Supports {active, seconds}, a bare seconds number, and a seconds string.
  * @param {*} entry
@@ -1927,6 +1966,7 @@ function spellValidationError(spell, ctx = {}) {
 module.exports = {
   readStats,
   readCooldown,
+  readCap,
   enumerateSpellCatalog,
   filterCatalogByVocation,
   spellValidationError,
@@ -2819,6 +2859,7 @@ const require = __mbRequire;
  */
 
 const FIRING_MOD = require('adapters/firing');
+const FEAS_MOD = require('core/feasibility'); // D2 (REQ-31): reserve gate
 
 /** Coerce a timer value to epoch ms (number | Date | numeric string). */
 function toMs(value) {
@@ -2834,12 +2875,15 @@ function toMs(value) {
  * @param {object} opts
  * @param {object} opts.config - normalized runes config
  *   { on: boolean, attackSlot: number|null, healSlot: number|null,
- *     healThreshold: number|null }
+ *     healThreshold: number|null, reserve: number }
  * @param {() => {attackUntil: number|null, healUntil: number|null}|null}
  *   [opts.readRuneTimers] - native rune window reader; null = feature absent
  * @param {() => {active: boolean, seconds?: number}|null} [opts.readGlobalCooldown]
  * @param {() => number} [opts.readAfterFireWait] - post-fire wait ms
  *   (effective rune cooldown / attackSlowness); feature-detected, default 0
+ * @param {(slot: number) => number|null} [opts.getSpellCost] - rune spell
+ *   cost resolver for the fired slot (D2, REQ-31: reserve gate); null/absent
+ *   cost = gate skipped, never blocks
  * @param {() => number} [opts.now=Date.now] - injectable clock
  * @param {{error?: Function, warn?: Function}} [opts.log] - log sinks
  * @returns {{
@@ -2850,10 +2894,44 @@ function toMs(value) {
  * }}
  */
 function createRunes(opts = {}) {
-  const { config, readRuneTimers = null, readGlobalCooldown = null, readAfterFireWait = null, now = Date.now, log = {} } = opts;
+  const { config, readRuneTimers = null, readGlobalCooldown = null, readAfterFireWait = null, getSpellCost = null, now = Date.now, log = {} } = opts;
   const error = typeof log.error === 'function' ? log.error : () => {};
+  const warn = typeof log.warn === 'function' ? log.warn : () => {};
+  const warned = new Set();
 
   const state = { lastFireAt: 0, available: true, reason: 'ok' };
+
+  /**
+   * Per-module mana reserve gate (D2, REQ-31): a rune cast must not fire
+   * below `cost + config.reserve`. Only enforced when reserve > 0 AND the
+   * rune spell cost resolves from the client AND mana is known — any unknown
+   * side skips the gate (feature-detect, never blocks on absent data).
+   * @param {object} ctx - tick context { mana, maxMana }
+   * @param {number} slot - the slot the rune would fire on
+   * @returns {string|null} 'rune-reserve' | 'rune-insufficient' when the cast
+   *   is blocked, null when it may proceed (or the gate cannot prove
+   *   infeasibility)
+   */
+  function manaFeasible(ctx, slot) {
+    const reserve = Number(config.reserve) || 0;
+    if (reserve <= 0) return null;
+    if (ctx.mana === null || ctx.mana === undefined || !Number.isFinite(Number(ctx.mana))) return null;
+    let cost = null;
+    if (typeof getSpellCost === 'function') {
+      try { cost = getSpellCost(slot); } catch (e) { cost = null; }
+    }
+    if (cost === null || !Number.isFinite(cost)) return null; // cost unknown -> skip
+    const feas = FEAS_MOD.canCast({
+      mana: Number(ctx.mana),
+      cost,
+      reserve,
+      maxMana: ctx.maxMana,
+      key: 'runes-slot-' + slot,
+      warned,
+      onWarn: warn,
+    });
+    return feas.fire ? null : (feas.reason === 'reserve' ? 'rune-reserve' : 'rune-insufficient');
+  }
 
   /**
    * Pure decision (REQ-15).
@@ -2906,9 +2984,23 @@ function createRunes(opts = {}) {
       && ctx.health !== null
       && ctx.health !== undefined
       && ctx.health <= healThreshold;
-    if (wantHeal) return { fire: true, reason: 'heal-window-expired', slot: healSlot, kind: 'rune-heal' };
+    if (wantHeal) {
+      const block = manaFeasible(ctx, healSlot);
+      if (block !== null) {
+        state.reason = block;
+        return { fire: false, reason: block };
+      }
+      return { fire: true, reason: 'heal-window-expired', slot: healSlot, kind: 'rune-heal' };
+    }
 
-    if (attackSlot) return { fire: true, reason: 'attack-window-expired', slot: attackSlot, kind: 'rune-attack' };
+    if (attackSlot) {
+      const block = manaFeasible(ctx, attackSlot);
+      if (block !== null) {
+        state.reason = block;
+        return { fire: false, reason: block };
+      }
+      return { fire: true, reason: 'attack-window-expired', slot: attackSlot, kind: 'rune-attack' };
+    }
 
     return { fire: false, reason: 'no-candidate' };
   }
@@ -2964,17 +3056,28 @@ const require = __mbRequire;
 'use strict';
 
 /**
- * Magic training module (REQ-16, design "Training" row).
+ * Magic training module (REQ-16, design "Training" row) — the TRAINER module:
+ * REQ-16 training casts PLUS the strict rune CAP with fallback (REQ-30, D3).
  *
  * Optional, user-activated. Repeats casts of the configured training spell at
  * the safe cadence imposed by the Action Queue + jitter (REQ-12/16 — one cast
  * per queue slot, never faster). Gates (in evaluation order):
+ *   0. Strict rune CAP (REQ-30, design D3): when the RUNES cap config says
+ *      `capMode:'strict'` and the live-probed capacity/maxCapacity ratio
+ *      (adapters/gameClient.readCap) reaches `capFullThreshold` (1.0 =
+ *      100%), rune-making STOPS: the trainer casts the configured fallback
+ *      spell (slot) when `mana >= fallbackManaPct * maxMana`, otherwise it
+ *      IDLES until mana recovers. Cap data absent => no cap enforcement
+ *      (feature-detect degrade, never an invented ratio). `state.capFull`
+ *      flows into the snapshot so the panel raises the ALERT + beep (D3).
  *   1. Vocation gate: live-probed `hotbarManager.__canPlayerCastSpell(sid)`
  *      (obs 10320). Feature-absent (null) => gate skipped, never blocks.
  *   2. Mana feasibility: cost resolved from the client (spellbook first, then
  *      the live-probed `interface.getSpell(sid)` — obs 10320: spellbook is
  *      empty). Unknown cost => pause ('no-cost', safe). Below cost+reserve =>
- *      pause until mana recovers (REQ-16).
+ *      pause until mana recovers (REQ-16/31). When eat-with-magic is
+ *      configured (REQ-32, D4) the trainer enqueues the magic-food slot
+ *      instead of waiting; when disabled it waits.
  *   3. Cooldowns: per-spell + GLOBAL_COOLDOWN via core/cooldown.
  * Echo validation is deliberately NOT applied to training casts (REQ-16: echo
  * "MAY be disabled for training" — disabled here; the __handleClick path
@@ -2994,7 +3097,16 @@ const FIRING_MOD = require('adapters/firing');
  *
  * @param {object} opts
  * @param {object} opts.config - normalized training config
- *   { on: boolean, slot: number|null, sid: number|null, reserve: number }
+ *   { on: boolean, slot: number|null, sid: number|null, reserve: number,
+ *     eatWithMagic: {enabled, slot, sid} }
+ * @param {object|null} [opts.capConfig] - the RUNES module's cap settings
+ *   (D3, REQ-30): { capMode: 'strict'|'off', capFullThreshold: number,
+ *     fallbackSlot: number|null, fallbackSid: number|null,
+ *     fallbackManaPct: number } — the trainer absorbs the strict-CAP concern
+ * @param {() => {capacity: number|null, maxCapacity: number|null,
+ *   ratio: number|null}|null} [opts.readCap] - live cap reader
+ *   (adapters/gameClient.readCap); null/ratio null = cap data absent (no
+ *   enforcement)
  * @param {(sid: number|null) => number|null} [opts.getSpellCost] - cost
  *   resolver; null = unknown (pause)
  * @param {(sid: number|null) => boolean|null} [opts.canCastSpell] - live
@@ -3004,27 +3116,89 @@ const FIRING_MOD = require('adapters/firing');
  * @param {() => number} [opts.now=Date.now] - injectable clock
  * @param {{error?: Function, warn?: Function}} [opts.log] - log sinks
  * @returns {{
- *   decide: (ctx: object) => {fire: boolean, reason: string, slot?: number},
+ *   decide: (ctx: object) => {fire: boolean, reason: string, slot?: number,
+ *     kind?: 'training'|'fallback'|'eat-magic'},
  *   fire: (decision: object, deps: object) => boolean,
  *   getState: () => object,
  *   isEnabled: () => boolean,
  * }}
  */
 function createTraining(opts = {}) {
-  const { config, getSpellCost = null, canCastSpell = null, readCooldown = null, now = Date.now, log = {} } = opts;
+  const { config, capConfig = null, readCap = null, getSpellCost = null, canCastSpell = null, readCooldown = null, now = Date.now, log = {} } = opts;
   const warn = typeof log.warn === 'function' ? log.warn : () => {};
   const warned = new Set();
 
-  const state = { lastFiredAt: 0, lastReason: null };
+  const state = { lastFiredAt: 0, lastReason: null, capFull: false, cap: null };
+
+  /** Client cooldown verdict for a spell (per-spell + GLOBAL_COOLDOWN). */
+  function cooldownVerdict(sid) {
+    if (typeof readCooldown !== 'function') return { fire: true };
+    const cd = readCooldown(sid) || {};
+    return CD_MOD.canFire({
+      cooldown: cd.cooldown,
+      globalCooldown: cd.globalCooldown,
+      cooldownMs: 0,
+      lastFiredAt: null,
+      now: now(),
+      onGapLog: null,
+    });
+  }
 
   /**
-   * Pure decision (REQ-16): cast while the vocation gate passes and mana
-   * feasibility holds; pause below cost+reserve.
+   * Strict rune CAP evaluation (REQ-30, design D3). Cap data absent (no
+   * capConfig / capMode not 'strict' / readCap absent / ratio null) => NOT
+   * full — never block on unknown. Full => the fallback cast when configured
+   * AND mana >= fallbackManaPct * maxMana, else idle.
    * @param {object} ctx - tick context { mana, maxMana }
-   * @returns {{fire: boolean, reason: string, slot?: number}}
+   * @returns {{full: boolean, decision?: {fire: boolean, reason: string, slot?: number, kind?: string}}}
+   */
+  function evaluateCap(ctx) {
+    const cc = capConfig && typeof capConfig === 'object' ? capConfig : {};
+    state.cap = null;
+    if (cc.capMode !== 'strict') return { full: false };
+    let cap = null;
+    if (typeof readCap === 'function') {
+      try { cap = readCap(); } catch (e) { cap = null; }
+    }
+    state.cap = cap && typeof cap === 'object' ? cap : null;
+    const ratio = state.cap ? state.cap.ratio : null;
+    if (ratio === null || !Number.isFinite(ratio)) return { full: false }; // degrade
+    const threshold = Number(cc.capFullThreshold);
+    const capFull = Number.isFinite(threshold) ? ratio >= threshold : ratio >= 1;
+    if (!capFull) return { full: false };
+
+    // Cap full: fallback slot/sid cast when mana >= fallbackManaPct*maxMana
+    // (ronda-1), else idle until mana recovers (REQ-30).
+    const fallbackSlot = Number(cc.fallbackSlot);
+    const pct = Number(cc.fallbackManaPct);
+    const manaOk = Number.isFinite(pct)
+      && ctx.mana !== null && ctx.mana !== undefined
+      && Number.isFinite(ctx.maxMana) && ctx.maxMana > 0
+      && ctx.mana >= pct * ctx.maxMana;
+    if (Number.isInteger(fallbackSlot) && fallbackSlot >= 1 && fallbackSlot <= 12 && manaOk) {
+      const cd = cooldownVerdict(cc.fallbackSid === null || cc.fallbackSid === undefined ? null : Number(cc.fallbackSid));
+      if (!cd.fire) {
+        const reason = cd.reason === 'global-cooldown' ? 'global-cooldown' : 'cooldown';
+        state.lastReason = reason;
+        return { full: true, decision: { fire: false, reason } };
+      }
+      state.lastReason = 'cap-full-fallback';
+      return { full: true, decision: { fire: true, kind: 'fallback', slot: fallbackSlot, reason: 'cap-full-fallback' } };
+    }
+    state.lastReason = 'cap-full-idle';
+    return { full: true, decision: { fire: false, reason: 'cap-full-idle' } };
+  }
+
+  /**
+   * Pure decision (REQ-16/30/32): cast while the vocation gate passes and
+   * mana feasibility holds; pause below cost+reserve; strict-CAP stops
+   * rune-making with the fallback/idle split; eat-with-magic recovers mana.
+   * @param {object} ctx - tick context { mana, maxMana }
+   * @returns {{fire: boolean, reason: string, slot?: number, kind?: string}}
    */
   function decide(ctx = {}) {
     state.lastReason = null;
+    state.capFull = false; // recomputed below — never stale across ticks
     if (!config || config.on !== true) return { fire: false, reason: 'off' };
     const slot = Number(config.slot);
     if (!Number.isInteger(slot) || slot < 1 || slot > 12) return { fire: false, reason: 'no-slot' };
@@ -3036,7 +3210,15 @@ function createTraining(opts = {}) {
       } catch (e) { /* gate read failure => skip the gate, never block */ }
     }
 
-    // Mana feasibility: pause below cost+reserve (REQ-16).
+    // REQ-30 (D3): strict rune CAP stops rune-making at the cap threshold —
+    // the fallback spell casts when mana allows, otherwise the trainer idles.
+    const cap = evaluateCap(ctx);
+    if (cap.full) {
+      state.capFull = true;
+      return cap.decision;
+    }
+
+    // Mana feasibility: pause below cost+reserve (REQ-16, REQ-31/D2).
     const cost = typeof getSpellCost === 'function' ? getSpellCost(config.sid) : null;
     if (cost === null) return { fire: false, reason: 'no-cost' };
     const feas = FEAS_MOD.canCast({
@@ -3049,30 +3231,35 @@ function createTraining(opts = {}) {
       onWarn: warn,
     });
     if (!feas.fire) {
+      // REQ-32 (D4): eat-with-magic — when mana is low and configured, an
+      // eat action (magic-food slot) enqueues INSTEAD of casting; the trainer
+      // waits when disabled. Never triggers on unknown cost (no-cost above).
+      const ew = config.eatWithMagic && typeof config.eatWithMagic === 'object' ? config.eatWithMagic : {};
+      const eatSlot = Number(ew.slot);
+      if (ew.enabled === true && Number.isInteger(eatSlot) && eatSlot >= 1 && eatSlot <= 12) {
+        const cd = cooldownVerdict(ew.sid === null || ew.sid === undefined ? null : Number(ew.sid));
+        if (!cd.fire) {
+          return { fire: false, reason: cd.reason === 'global-cooldown' ? 'global-cooldown' : 'cooldown' };
+        }
+        state.lastReason = 'eat-magic';
+        return { fire: true, kind: 'eat-magic', slot: eatSlot, reason: 'eat-magic' };
+      }
       return { fire: false, reason: feas.reason === 'reserve' ? 'reserve' : 'insufficient' };
     }
 
-    if (typeof readCooldown === 'function') {
-      const cd = readCooldown(config.sid) || {};
-      const verdict = CD_MOD.canFire({
-        cooldown: cd.cooldown,
-        globalCooldown: cd.globalCooldown,
-        cooldownMs: 0,
-        lastFiredAt: null,
-        now: now(),
-        onGapLog: null,
-      });
-      if (!verdict.fire) {
-        return { fire: false, reason: verdict.reason === 'global-cooldown' ? 'global-cooldown' : 'cooldown' };
-      }
+    const cd = cooldownVerdict(config.sid);
+    if (!cd.fire) {
+      return { fire: false, reason: cd.reason === 'global-cooldown' ? 'global-cooldown' : 'cooldown' };
     }
 
     state.lastReason = 'train';
-    return { fire: true, reason: 'train', slot };
+    return { fire: true, kind: 'training', reason: 'train', slot };
   }
 
   /**
-   * Execute the training cast (QUEUE-DISPATCHED ONLY, REQ-12).
+   * Execute the training cast (QUEUE-DISPATCHED ONLY, REQ-12). Fires the
+   * decided slot — the training spell, the fallback spell, or the magic-food
+   * slot for eat-with-magic (D4) — through the proven firing adapter.
    * @param {{slot: number}} decision - decided slot
    * @param {object} deps - { gameClient, document } for the firing adapter
    * @returns {boolean} true when __handleClick executed
@@ -3095,6 +3282,14 @@ function createTraining(opts = {}) {
       on: Boolean(config && config.on === true),
       lastFiredAt: state.lastFiredAt,
       lastReason: state.lastReason,
+      // REQ-30 (D3): capFull flows to the snapshot -> panel ALERT + beep.
+      capFull: Boolean(state.capFull),
+      cap: state.cap ? {
+        capacity: state.cap.capacity,
+        maxCapacity: state.cap.maxCapacity,
+        ratio: state.cap.ratio,
+        source: state.cap.source,
+      } : null,
     };
   }
 
@@ -4663,8 +4858,10 @@ const DEFAULT_CONFIG = {
   // settings: runes.healThreshold, eat.slot, eat.cids (design extensions).
   healItems: { on: false, threshold: 50, slotCids: [] },
   healMagic: { on: false, threshold: 150, slot: null, sid: null, word: null, reserve: 0 },
-  runes: { on: false, attackSlot: null, healSlot: null, healThreshold: null },
-  training: { on: false, slot: null, sid: null, reserve: 0, word: null },
+  runes: { on: false, attackSlot: null, healSlot: null, healThreshold: null, reserve: 0,
+    capMode: 'strict', capFullThreshold: 1.0, fallbackSlot: null, fallbackSid: null, fallbackManaPct: 0.5 },
+  training: { on: false, slot: null, sid: null, reserve: 0, word: null,
+    eatWithMagic: { enabled: false, slot: null, sid: null } },
   eat: { on: false, everyCasts: 0, warningWindowSec: 60, fallbackIntervalSec: 10, slot: null, cids: [] },
   // Slice-5 modules — ALL OFF by default (opt-in). Shapes match
   // app/store/characters.ts defaultConfig + additive: healMagic/training word
@@ -4692,8 +4889,10 @@ function normalizeConfig(raw) {
     rotation: { spells: [] },
     healItems: { on: false, threshold: 50, slotCids: [] },
     healMagic: { on: false, threshold: 150, slot: null, sid: null, word: null, reserve: 0 },
-    runes: { on: false, attackSlot: null, healSlot: null, healThreshold: null },
-    training: { on: false, slot: null, sid: null, reserve: 0, word: null },
+    runes: { on: false, attackSlot: null, healSlot: null, healThreshold: null, reserve: 0,
+      capMode: 'strict', capFullThreshold: 1.0, fallbackSlot: null, fallbackSid: null, fallbackManaPct: 0.5 },
+    training: { on: false, slot: null, sid: null, reserve: 0, word: null,
+      eatWithMagic: { enabled: false, slot: null, sid: null } },
     eat: { on: false, everyCasts: 0, warningWindowSec: 60, fallbackIntervalSec: 10, slot: null, cids: [] },
     trade: { on: false, message: '', intervalMs: 180000 },
     loot: { on: false, defaultDest: null, perMonster: {} },
@@ -4735,11 +4934,27 @@ function normalizeConfig(raw) {
   if (Number.isInteger(rn.attackSlot)) cfg.runes.attackSlot = rn.attackSlot;
   if (Number.isInteger(rn.healSlot)) cfg.runes.healSlot = rn.healSlot;
   if (Number.isFinite(rn.healThreshold)) cfg.runes.healThreshold = rn.healThreshold;
+  if (Number.isFinite(rn.reserve) && rn.reserve >= 0) cfg.runes.reserve = rn.reserve; // D2 (REQ-31)
+  // Strict rune CAP + fallback (D3, REQ-30 — PR4): the trainer absorbs these
+  // runes-module settings; invalid values fall back to the defaults.
+  if (rn.capMode === 'strict' || rn.capMode === 'off') cfg.runes.capMode = rn.capMode;
+  if (Number.isFinite(rn.capFullThreshold) && rn.capFullThreshold > 0 && rn.capFullThreshold <= 1) {
+    cfg.runes.capFullThreshold = rn.capFullThreshold;
+  }
+  if (Number.isInteger(rn.fallbackSlot)) cfg.runes.fallbackSlot = rn.fallbackSlot;
+  if (Number.isInteger(rn.fallbackSid)) cfg.runes.fallbackSid = rn.fallbackSid;
+  if (Number.isFinite(rn.fallbackManaPct) && rn.fallbackManaPct >= 0 && rn.fallbackManaPct <= 1) {
+    cfg.runes.fallbackManaPct = rn.fallbackManaPct;
+  }
   const tr = src.training && typeof src.training === 'object' ? src.training : {};
   if (typeof tr.on === 'boolean') cfg.training.on = tr.on;
   if (Number.isInteger(tr.slot)) cfg.training.slot = tr.slot;
   if (Number.isInteger(tr.sid)) cfg.training.sid = tr.sid;
   if (Number.isFinite(tr.reserve) && tr.reserve >= 0) cfg.training.reserve = tr.reserve;
+  const ew = tr.eatWithMagic && typeof tr.eatWithMagic === 'object' ? tr.eatWithMagic : {};
+  if (typeof ew.enabled === 'boolean') cfg.training.eatWithMagic.enabled = ew.enabled; // D4 (REQ-32)
+  if (Number.isInteger(ew.slot)) cfg.training.eatWithMagic.slot = ew.slot;
+  if (Number.isInteger(ew.sid)) cfg.training.eatWithMagic.sid = ew.sid;
   const ea = src.eat && typeof src.eat === 'object' ? src.eat : {};
   if (typeof ea.on === 'boolean') cfg.eat.on = ea.on;
   if (Number.isFinite(ea.everyCasts) && ea.everyCasts >= 0) cfg.eat.everyCasts = Math.floor(ea.everyCasts);
@@ -4917,6 +5132,27 @@ function createAgent(opts = {}) {
       }
     } catch (e) { /* gate read failure => unknown */ }
     return null;
+  }
+
+  /** Live rune-CAP read (design D3, REQ-30): adapters/gameClient.readCap over
+   *  the probed `player.state.__state.capacity`/`maxCapacity` locations —
+   *  feature-detected, ratio-guarded (see readCap). */
+  function readCap() {
+    return GC_MOD.readCap({ gameClient: state.gameClient });
+  }
+
+  /** Rune spell cost for a hotbar slot (D2, REQ-31 runes reserve): resolves
+   *  slot -> spell sid -> client cost (spellbook first, interface fallback).
+   *  Returns null when any link is absent (gate skipped, never blocks). */
+  function readRuneCost(slot) {
+    try {
+      const hb = readHotbar();
+      if (!hb || !Array.isArray(hb.slots)) return null;
+      const entry = hb.slots[Number(slot) - 1];
+      const sid = entry && entry.spell;
+      if (sid === null || sid === undefined) return null;
+      return readSpellCost({ sid: sid });
+    } catch (e) { return null; }
   }
 
   /** Live-probed native rune windows: hotbarManager.__runeAttackUntil /
@@ -5174,11 +5410,16 @@ function createAgent(opts = {}) {
       readRuneTimers: readRuneTimers,
       readGlobalCooldown: function () { return GC_MOD.readCooldown(null, { gameClient: state.gameClient }).globalCooldown; },
       readAfterFireWait: readRuneAfterFireWait,
+      getSpellCost: readRuneCost, // D2 (REQ-31): runes.reserve via canCast
       now: nowFn,
       log,
     });
     const training = TRAINING_MOD.createTraining({
       config: cfg.training,
+      // D3 (REQ-30): the trainer absorbs the strict-CAP settings — the cap
+      // fields live in the runes config shape (characters.ts defaults).
+      capConfig: cfg.runes,
+      readCap: readCap,
       getSpellCost: function (sid) { return readSpellCost({ sid: sid }); },
       canCastSpell: canCastSpell,
       readCooldown: function (sid) { return GC_MOD.readCooldown(sid, { gameClient: state.gameClient }); },
@@ -5420,8 +5661,13 @@ function createAgent(opts = {}) {
       },
     };
 
-    // REQ-16: training — cast-to-train cadence via the queue; a training cast
-    // advances the every-N-casts food cadence (ctx.castsSinceFood).
+    // REQ-16/30/32: training — cast-to-train cadence via the queue; a
+    // training cast advances the every-N-casts food cadence (ctx.castsSinceFood).
+    // The TRAINER decision may carry kind 'fallback' (REQ-30 cap-full) or
+    // 'eat-magic' (REQ-32, D4) — each gets its own queue kind so re-arm
+    // guards and the activity log stay distinct (normal eat is untouched).
+    const trainingKind = (d) => (d.kind === 'eat-magic' ? 'eat-magic'
+      : d.kind === 'fallback' ? 'training-fallback' : 'training-cast');
     const trainingNode = {
       type: 'sequence',
       id: 'training',
@@ -5433,7 +5679,7 @@ function createAgent(opts = {}) {
             if (!cfg.training.on) return false;
             const d = training.decide(ctx);
             if (!d.fire) return false;
-            return !state.queue.hasPending(function (e) { return e.kind === 'training-cast'; });
+            return !state.queue.hasPending(function (e) { return e.kind === trainingKind(d); });
           },
         },
         {
@@ -5442,15 +5688,20 @@ function createAgent(opts = {}) {
           run: function (ctx) {
             const d = training.decide(ctx);
             if (!d.fire) return false;
+            const kind = trainingKind(d);
             state.queue.enqueue(function () {
               training.fire(d, { gameClient: state.gameClient, document: doc });
-              // REQ-24 echo validation: only when a training word is configured.
-              if (cfg.training && typeof cfg.training.word === 'string' && cfg.training.word.trim()) {
+              // REQ-24 echo validation: only when a training word is configured
+              // AND the action is a real training cast (fallback/eat-magic are
+              // direct slot fires — no echo path).
+              if (d.kind === 'training'
+                && cfg.training && typeof cfg.training.word === 'string' && cfg.training.word.trim()) {
                 echo.startForFire('training', cfg.training.word);
               }
-              logEvent('training', 'cast', d.reason || null);
-            }, { kind: 'training-cast' });
-            ctx.castsSinceFood = (ctx.castsSinceFood || 0) + 1; // every-N-casts counts training casts
+              logEvent('training', kind, d.reason || null);
+            }, { kind: kind });
+            // The every-N-casts food cadence counts REAL training casts only.
+            if (d.kind === 'training') ctx.castsSinceFood = (ctx.castsSinceFood || 0) + 1;
             return true;
           },
         },
@@ -5800,6 +6051,9 @@ function createAgent(opts = {}) {
       castsSinceFood: state.ctx.castsSinceFood || 0,
       modules: {
         runes: modules.runes ? modules.runes.getState() : null,
+        // REQ-30 (D3): the trainer's cap state (capFull) rides the snapshot
+        // so the panel raises the ALERT + beep on the rising edge.
+        training: modules.training ? modules.training.getState() : null,
         eat: modules.eat ? modules.eat.getState() : null,
         trade: modules.trade ? modules.trade.getState() : null,
         loot: modules.loot ? modules.loot.getState() : null,

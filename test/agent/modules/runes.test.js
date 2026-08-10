@@ -13,13 +13,14 @@ const assert = require('node:assert/strict');
 const { createRunes, toMs } = require('../../../src/agent/modules/runes');
 
 function moduleWith(overrides = {}, opts = {}) {
-  const config = Object.assign({ on: true, attackSlot: 4, healSlot: null, healThreshold: null }, overrides);
+  const config = Object.assign({ on: true, attackSlot: 4, healSlot: null, healThreshold: null, reserve: 0 }, overrides);
   let nowMs = 100000;
   return createRunes(Object.assign({
     config,
     readRuneTimers: () => ({ attackUntil: null, healUntil: null }),
     readGlobalCooldown: () => ({ active: false }),
     readAfterFireWait: () => 0,
+    getSpellCost: () => null,
     now: () => nowMs,
   }, opts));
 }
@@ -129,4 +130,35 @@ test('toMs: coerces numbers, Dates and numeric strings; null stays null', () => 
   assert.equal(toMs(null), null);
   assert.equal(toMs(undefined), null);
   assert.equal(toMs('nope'), null);
+});
+
+/* ------------------------- PR 4 (REQ-31, D2): per-module reserve ------------------------- */
+
+test('REQ-31 (D2): rune cast honors the per-module reserve — cost 200 + reserve 30 -> wait for mana >= 230', () => {
+  const m = moduleWith({ reserve: 30 }, { getSpellCost: () => 200 });
+  const d = m.decide({ health: 100, mana: 210, maxMana: 300 });
+  assert.equal(d.fire, false, '210 < 200 + 30 -> rune defers (REQ-31 scenario)');
+  assert.equal(d.reason, 'rune-reserve');
+  assert.equal(m.getState().reason, 'rune-reserve', 'state surfaces the reserve gate');
+  const d2 = m.decide({ health: 100, mana: 230, maxMana: 300 });
+  assert.equal(d2.fire, true, '230 >= 200 + 30 -> fires');
+  assert.equal(d2.kind, 'rune-attack');
+});
+
+test('REQ-31 (D2): rune reserve gate degrades — cost or mana unknown never blocks', () => {
+  // Cost unresolvable (getSpellCost null) -> the gate is skipped.
+  const noCost = moduleWith({ reserve: 30 });
+  assert.equal(noCost.decide({ health: 100, mana: 1 }).fire, true, 'unknown cost -> skip the gate');
+  // Mana unknown -> skipped too.
+  const costKnown = moduleWith({ reserve: 30 }, { getSpellCost: () => 200 });
+  assert.equal(costKnown.decide({ health: 100 }).fire, true, 'unknown mana -> skip the gate');
+  // reserve 0 -> no gate at all (default behavior untouched).
+  const noReserve = moduleWith({}, { getSpellCost: () => 200 });
+  assert.equal(noReserve.decide({ health: 100, mana: 1, maxMana: 300 }).fire, true, 'reserve 0 -> plain fire');
+});
+
+test('REQ-31 (D2): the heal rune honors the reserve before firing', () => {
+  const m = moduleWith({ attackSlot: null, healSlot: 3, healThreshold: 40, reserve: 30 }, { getSpellCost: () => 200 });
+  assert.equal(m.decide({ health: 20, mana: 210, maxMana: 300 }).fire, false, 'heal rune due but below cost+reserve');
+  assert.equal(m.decide({ health: 20, mana: 230, maxMana: 300 }).fire, true);
 });

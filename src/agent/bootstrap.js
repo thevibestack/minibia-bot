@@ -70,8 +70,10 @@ const DEFAULT_CONFIG = {
   // settings: runes.healThreshold, eat.slot, eat.cids (design extensions).
   healItems: { on: false, threshold: 50, slotCids: [] },
   healMagic: { on: false, threshold: 150, slot: null, sid: null, word: null, reserve: 0 },
-  runes: { on: false, attackSlot: null, healSlot: null, healThreshold: null },
-  training: { on: false, slot: null, sid: null, reserve: 0, word: null },
+  runes: { on: false, attackSlot: null, healSlot: null, healThreshold: null, reserve: 0,
+    capMode: 'strict', capFullThreshold: 1.0, fallbackSlot: null, fallbackSid: null, fallbackManaPct: 0.5 },
+  training: { on: false, slot: null, sid: null, reserve: 0, word: null,
+    eatWithMagic: { enabled: false, slot: null, sid: null } },
   eat: { on: false, everyCasts: 0, warningWindowSec: 60, fallbackIntervalSec: 10, slot: null, cids: [] },
   // Slice-5 modules — ALL OFF by default (opt-in). Shapes match
   // app/store/characters.ts defaultConfig + additive: healMagic/training word
@@ -99,8 +101,10 @@ function normalizeConfig(raw) {
     rotation: { spells: [] },
     healItems: { on: false, threshold: 50, slotCids: [] },
     healMagic: { on: false, threshold: 150, slot: null, sid: null, word: null, reserve: 0 },
-    runes: { on: false, attackSlot: null, healSlot: null, healThreshold: null },
-    training: { on: false, slot: null, sid: null, reserve: 0, word: null },
+    runes: { on: false, attackSlot: null, healSlot: null, healThreshold: null, reserve: 0,
+      capMode: 'strict', capFullThreshold: 1.0, fallbackSlot: null, fallbackSid: null, fallbackManaPct: 0.5 },
+    training: { on: false, slot: null, sid: null, reserve: 0, word: null,
+      eatWithMagic: { enabled: false, slot: null, sid: null } },
     eat: { on: false, everyCasts: 0, warningWindowSec: 60, fallbackIntervalSec: 10, slot: null, cids: [] },
     trade: { on: false, message: '', intervalMs: 180000 },
     loot: { on: false, defaultDest: null, perMonster: {} },
@@ -142,11 +146,27 @@ function normalizeConfig(raw) {
   if (Number.isInteger(rn.attackSlot)) cfg.runes.attackSlot = rn.attackSlot;
   if (Number.isInteger(rn.healSlot)) cfg.runes.healSlot = rn.healSlot;
   if (Number.isFinite(rn.healThreshold)) cfg.runes.healThreshold = rn.healThreshold;
+  if (Number.isFinite(rn.reserve) && rn.reserve >= 0) cfg.runes.reserve = rn.reserve; // D2 (REQ-31)
+  // Strict rune CAP + fallback (D3, REQ-30 — PR4): the trainer absorbs these
+  // runes-module settings; invalid values fall back to the defaults.
+  if (rn.capMode === 'strict' || rn.capMode === 'off') cfg.runes.capMode = rn.capMode;
+  if (Number.isFinite(rn.capFullThreshold) && rn.capFullThreshold > 0 && rn.capFullThreshold <= 1) {
+    cfg.runes.capFullThreshold = rn.capFullThreshold;
+  }
+  if (Number.isInteger(rn.fallbackSlot)) cfg.runes.fallbackSlot = rn.fallbackSlot;
+  if (Number.isInteger(rn.fallbackSid)) cfg.runes.fallbackSid = rn.fallbackSid;
+  if (Number.isFinite(rn.fallbackManaPct) && rn.fallbackManaPct >= 0 && rn.fallbackManaPct <= 1) {
+    cfg.runes.fallbackManaPct = rn.fallbackManaPct;
+  }
   const tr = src.training && typeof src.training === 'object' ? src.training : {};
   if (typeof tr.on === 'boolean') cfg.training.on = tr.on;
   if (Number.isInteger(tr.slot)) cfg.training.slot = tr.slot;
   if (Number.isInteger(tr.sid)) cfg.training.sid = tr.sid;
   if (Number.isFinite(tr.reserve) && tr.reserve >= 0) cfg.training.reserve = tr.reserve;
+  const ew = tr.eatWithMagic && typeof tr.eatWithMagic === 'object' ? tr.eatWithMagic : {};
+  if (typeof ew.enabled === 'boolean') cfg.training.eatWithMagic.enabled = ew.enabled; // D4 (REQ-32)
+  if (Number.isInteger(ew.slot)) cfg.training.eatWithMagic.slot = ew.slot;
+  if (Number.isInteger(ew.sid)) cfg.training.eatWithMagic.sid = ew.sid;
   const ea = src.eat && typeof src.eat === 'object' ? src.eat : {};
   if (typeof ea.on === 'boolean') cfg.eat.on = ea.on;
   if (Number.isFinite(ea.everyCasts) && ea.everyCasts >= 0) cfg.eat.everyCasts = Math.floor(ea.everyCasts);
@@ -324,6 +344,27 @@ function createAgent(opts = {}) {
       }
     } catch (e) { /* gate read failure => unknown */ }
     return null;
+  }
+
+  /** Live rune-CAP read (design D3, REQ-30): adapters/gameClient.readCap over
+   *  the probed `player.state.__state.capacity`/`maxCapacity` locations —
+   *  feature-detected, ratio-guarded (see readCap). */
+  function readCap() {
+    return GC_MOD.readCap({ gameClient: state.gameClient });
+  }
+
+  /** Rune spell cost for a hotbar slot (D2, REQ-31 runes reserve): resolves
+   *  slot -> spell sid -> client cost (spellbook first, interface fallback).
+   *  Returns null when any link is absent (gate skipped, never blocks). */
+  function readRuneCost(slot) {
+    try {
+      const hb = readHotbar();
+      if (!hb || !Array.isArray(hb.slots)) return null;
+      const entry = hb.slots[Number(slot) - 1];
+      const sid = entry && entry.spell;
+      if (sid === null || sid === undefined) return null;
+      return readSpellCost({ sid: sid });
+    } catch (e) { return null; }
   }
 
   /** Live-probed native rune windows: hotbarManager.__runeAttackUntil /
@@ -581,11 +622,16 @@ function createAgent(opts = {}) {
       readRuneTimers: readRuneTimers,
       readGlobalCooldown: function () { return GC_MOD.readCooldown(null, { gameClient: state.gameClient }).globalCooldown; },
       readAfterFireWait: readRuneAfterFireWait,
+      getSpellCost: readRuneCost, // D2 (REQ-31): runes.reserve via canCast
       now: nowFn,
       log,
     });
     const training = TRAINING_MOD.createTraining({
       config: cfg.training,
+      // D3 (REQ-30): the trainer absorbs the strict-CAP settings — the cap
+      // fields live in the runes config shape (characters.ts defaults).
+      capConfig: cfg.runes,
+      readCap: readCap,
       getSpellCost: function (sid) { return readSpellCost({ sid: sid }); },
       canCastSpell: canCastSpell,
       readCooldown: function (sid) { return GC_MOD.readCooldown(sid, { gameClient: state.gameClient }); },
@@ -827,8 +873,13 @@ function createAgent(opts = {}) {
       },
     };
 
-    // REQ-16: training — cast-to-train cadence via the queue; a training cast
-    // advances the every-N-casts food cadence (ctx.castsSinceFood).
+    // REQ-16/30/32: training — cast-to-train cadence via the queue; a
+    // training cast advances the every-N-casts food cadence (ctx.castsSinceFood).
+    // The TRAINER decision may carry kind 'fallback' (REQ-30 cap-full) or
+    // 'eat-magic' (REQ-32, D4) — each gets its own queue kind so re-arm
+    // guards and the activity log stay distinct (normal eat is untouched).
+    const trainingKind = (d) => (d.kind === 'eat-magic' ? 'eat-magic'
+      : d.kind === 'fallback' ? 'training-fallback' : 'training-cast');
     const trainingNode = {
       type: 'sequence',
       id: 'training',
@@ -840,7 +891,7 @@ function createAgent(opts = {}) {
             if (!cfg.training.on) return false;
             const d = training.decide(ctx);
             if (!d.fire) return false;
-            return !state.queue.hasPending(function (e) { return e.kind === 'training-cast'; });
+            return !state.queue.hasPending(function (e) { return e.kind === trainingKind(d); });
           },
         },
         {
@@ -849,15 +900,20 @@ function createAgent(opts = {}) {
           run: function (ctx) {
             const d = training.decide(ctx);
             if (!d.fire) return false;
+            const kind = trainingKind(d);
             state.queue.enqueue(function () {
               training.fire(d, { gameClient: state.gameClient, document: doc });
-              // REQ-24 echo validation: only when a training word is configured.
-              if (cfg.training && typeof cfg.training.word === 'string' && cfg.training.word.trim()) {
+              // REQ-24 echo validation: only when a training word is configured
+              // AND the action is a real training cast (fallback/eat-magic are
+              // direct slot fires — no echo path).
+              if (d.kind === 'training'
+                && cfg.training && typeof cfg.training.word === 'string' && cfg.training.word.trim()) {
                 echo.startForFire('training', cfg.training.word);
               }
-              logEvent('training', 'cast', d.reason || null);
-            }, { kind: 'training-cast' });
-            ctx.castsSinceFood = (ctx.castsSinceFood || 0) + 1; // every-N-casts counts training casts
+              logEvent('training', kind, d.reason || null);
+            }, { kind: kind });
+            // The every-N-casts food cadence counts REAL training casts only.
+            if (d.kind === 'training') ctx.castsSinceFood = (ctx.castsSinceFood || 0) + 1;
             return true;
           },
         },
@@ -1207,6 +1263,9 @@ function createAgent(opts = {}) {
       castsSinceFood: state.ctx.castsSinceFood || 0,
       modules: {
         runes: modules.runes ? modules.runes.getState() : null,
+        // REQ-30 (D3): the trainer's cap state (capFull) rides the snapshot
+        // so the panel raises the ALERT + beep on the rising edge.
+        training: modules.training ? modules.training.getState() : null,
         eat: modules.eat ? modules.eat.getState() : null,
         trade: modules.trade ? modules.trade.getState() : null,
         loot: modules.loot ? modules.loot.getState() : null,
