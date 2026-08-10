@@ -61,7 +61,9 @@ const VERIFY_WORDING = /human|verify|click|select|countdown/i;
  *
  * @param {object} opts
  * @param {object} opts.config - normalized antibot config
- *   { on: boolean, replies: Array<{pattern: string, reply: string}> }
+ *   { on: boolean, replies: Array<{pattern: string, reply: string}>,
+ *     domRuneCheck?: boolean } — domRuneCheck (REQ-39) gates the DOM overlay
+ *   scan; absent/false = chat-only detection (default)
  * @param {() => string|null} [opts.playerName] - current player name accessor
  * @param {object|null} [opts.gameClient] - page gameClient (chat reads)
  * @param {Document|null} [opts.document] - page DOM (chat DOM fallback)
@@ -267,6 +269,45 @@ function createAntibotModule(opts = {}) {
   }
 
   /**
+   * DOM overlay scan (REQ-39, D-A2, belt-and-braces): config-gated
+   * (`antibot.domRuneCheck`, default OFF — ships chat-only until the live
+   * capture probe finalizes the overlay selectors). Criteria: >= 6 imgs AND
+   * verification wording AND countdown digits; the World-Map overlay (76
+   * imgs / 499 btns live probe) is suppressed by the imgs > 40 AND btns >
+   * 300 rule. A match runs the SAME single runecheck event path (alert +
+   * state); while already active only lastSeenAt refreshes (no double-count
+   * across surfaces). A DOM read failure degrades to no-op — never crashes.
+   * @returns {boolean} true when a runecheck event is (or stays) active
+   */
+  function scanDomRuneCheck() {
+    if (!doc || typeof doc.querySelectorAll !== 'function') return false;
+    if (!config || config.domRuneCheck !== true) return false; // default OFF
+    let imgs = 0;
+    let btns = 0;
+    let text = '';
+    try {
+      imgs = doc.querySelectorAll('img').length;
+      btns = doc.querySelectorAll('button').length;
+      const body = doc.body;
+      text = body && typeof body.textContent === 'string' ? body.textContent : '';
+    } catch (e) {
+      return false; // DOM read failed — the watcher never crashes on it
+    }
+    if (imgs > 40 && btns > 300) return false; // World-Map suppression
+    if (imgs < 6) return false;
+    if (!VERIFY_WORDING.test(text)) return false;
+    if (!/\d/.test(text)) return false; // countdown digits
+    if (state.runeCheck && state.runeCheck.active === true) {
+      state.runeCheck.lastSeenAt = now(); // keep the cooldown fresh — no re-alert
+      return true;
+    }
+    state.runeCheck = { active: true, at: now(), kind: 'dom', lastSeenAt: now() };
+    pushAlert('runecheck', 'Rune check detected — botting paused (solve the check to resume)');
+    info('antibot: rune check detected (DOM overlay) — botting paused (REQ-39)');
+    return true;
+  }
+
+  /**
    * Move/attack detection (REQ-33): edge-driven on the live player context —
    * position delta / teleported rising edge => moved; health drop / damage
    * tint rising edge => attacked. Steady state never re-alerts.
@@ -331,6 +372,9 @@ function createAntibotModule(opts = {}) {
     }
     observeChat(entries);
     observeContext();
+    // REQ-39 (D-A2): config-gated DOM overlay scan (default OFF) — the same
+    // single runecheck event path; chat-only detection ships regardless.
+    scanDomRuneCheck();
     return { alerts: state.alerts.slice() };
   }
 

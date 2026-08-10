@@ -4681,7 +4681,9 @@ const VERIFY_WORDING = /human|verify|click|select|countdown/i;
  *
  * @param {object} opts
  * @param {object} opts.config - normalized antibot config
- *   { on: boolean, replies: Array<{pattern: string, reply: string}> }
+ *   { on: boolean, replies: Array<{pattern: string, reply: string}>,
+ *     domRuneCheck?: boolean } — domRuneCheck (REQ-39) gates the DOM overlay
+ *   scan; absent/false = chat-only detection (default)
  * @param {() => string|null} [opts.playerName] - current player name accessor
  * @param {object|null} [opts.gameClient] - page gameClient (chat reads)
  * @param {Document|null} [opts.document] - page DOM (chat DOM fallback)
@@ -4887,6 +4889,45 @@ function createAntibotModule(opts = {}) {
   }
 
   /**
+   * DOM overlay scan (REQ-39, D-A2, belt-and-braces): config-gated
+   * (`antibot.domRuneCheck`, default OFF — ships chat-only until the live
+   * capture probe finalizes the overlay selectors). Criteria: >= 6 imgs AND
+   * verification wording AND countdown digits; the World-Map overlay (76
+   * imgs / 499 btns live probe) is suppressed by the imgs > 40 AND btns >
+   * 300 rule. A match runs the SAME single runecheck event path (alert +
+   * state); while already active only lastSeenAt refreshes (no double-count
+   * across surfaces). A DOM read failure degrades to no-op — never crashes.
+   * @returns {boolean} true when a runecheck event is (or stays) active
+   */
+  function scanDomRuneCheck() {
+    if (!doc || typeof doc.querySelectorAll !== 'function') return false;
+    if (!config || config.domRuneCheck !== true) return false; // default OFF
+    let imgs = 0;
+    let btns = 0;
+    let text = '';
+    try {
+      imgs = doc.querySelectorAll('img').length;
+      btns = doc.querySelectorAll('button').length;
+      const body = doc.body;
+      text = body && typeof body.textContent === 'string' ? body.textContent : '';
+    } catch (e) {
+      return false; // DOM read failed — the watcher never crashes on it
+    }
+    if (imgs > 40 && btns > 300) return false; // World-Map suppression
+    if (imgs < 6) return false;
+    if (!VERIFY_WORDING.test(text)) return false;
+    if (!/\d/.test(text)) return false; // countdown digits
+    if (state.runeCheck && state.runeCheck.active === true) {
+      state.runeCheck.lastSeenAt = now(); // keep the cooldown fresh — no re-alert
+      return true;
+    }
+    state.runeCheck = { active: true, at: now(), kind: 'dom', lastSeenAt: now() };
+    pushAlert('runecheck', 'Rune check detected — botting paused (solve the check to resume)');
+    info('antibot: rune check detected (DOM overlay) — botting paused (REQ-39)');
+    return true;
+  }
+
+  /**
    * Move/attack detection (REQ-33): edge-driven on the live player context —
    * position delta / teleported rising edge => moved; health drop / damage
    * tint rising edge => attacked. Steady state never re-alerts.
@@ -4951,6 +4992,9 @@ function createAntibotModule(opts = {}) {
     }
     observeChat(entries);
     observeContext();
+    // REQ-39 (D-A2): config-gated DOM overlay scan (default OFF) — the same
+    // single runecheck event path; chat-only detection ships regardless.
+    scanDomRuneCheck();
     return { alerts: state.alerts.slice() };
   }
 
@@ -5794,7 +5838,10 @@ const DEFAULT_CONFIG = {
   spawns: { on: false },
   huntStats: { on: false },
   learning: { knownWords: [] },       // REQ-25: observation always runs while armed
-  antibot: { on: false, replies: [] }, // PR5 (D9): anti-bot watcher + confirm-once replies (REQ-33/34)
+  // PR5 (D9): anti-bot watcher + confirm-once replies (REQ-33/34). REQ-38/39
+  // (D-A2): `domRuneCheck` gates the DOM overlay scan — default OFF (chat-only
+  // detection ships until the live capture probe finalizes the selectors).
+  antibot: { on: false, replies: [], domRuneCheck: false },
   routes: { on: false },               // REQ-23 (slice 6): native autowalk read + walk-to; recording = FUTURE
   // PR6 (REQ-35/36, D10): state-only skeleton modules — ALL OFF by default
   // (opt-in). attack: targeting choice (lowest-hp/nearest) + offensive
@@ -5858,7 +5905,7 @@ function normalizeConfig(raw) {
     spawns: { on: false },
     huntStats: { on: false },
     learning: { knownWords: [] },
-    antibot: { on: false, replies: [] },
+    antibot: { on: false, replies: [], domRuneCheck: false },
     routes: { on: false },
     attack: { on: false, targeting: 'lowest-hp', sid: null, runeSlot: null },
     cavebot: { on: false, paused: false, route: [] },
@@ -5957,6 +6004,7 @@ function normalizeConfig(raw) {
   // non-empty trimmed parts; malformed entries are dropped (never crash).
   const ab = moduleSource(src, 'antibot');
   if (typeof ab.on === 'boolean') cfg.antibot.on = ab.on;
+  if (typeof ab.domRuneCheck === 'boolean') cfg.antibot.domRuneCheck = ab.domRuneCheck; // REQ-39 (D-A2)
   if (Array.isArray(ab.replies)) {
     cfg.antibot.replies = ab.replies
       .filter((r) => r && typeof r === 'object'

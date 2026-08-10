@@ -90,7 +90,10 @@ const DEFAULT_CONFIG = {
   spawns: { on: false },
   huntStats: { on: false },
   learning: { knownWords: [] },       // REQ-25: observation always runs while armed
-  antibot: { on: false, replies: [] }, // PR5 (D9): anti-bot watcher + confirm-once replies (REQ-33/34)
+  // PR5 (D9): anti-bot watcher + confirm-once replies (REQ-33/34). REQ-38/39
+  // (D-A2): `domRuneCheck` gates the DOM overlay scan — default OFF (chat-only
+  // detection ships until the live capture probe finalizes the selectors).
+  antibot: { on: false, replies: [], domRuneCheck: false },
   routes: { on: false },               // REQ-23 (slice 6): native autowalk read + walk-to; recording = FUTURE
   // PR6 (REQ-35/36, D10): state-only skeleton modules — ALL OFF by default
   // (opt-in). attack: targeting choice (lowest-hp/nearest) + offensive
@@ -154,7 +157,7 @@ function normalizeConfig(raw) {
     spawns: { on: false },
     huntStats: { on: false },
     learning: { knownWords: [] },
-    antibot: { on: false, replies: [] },
+    antibot: { on: false, replies: [], domRuneCheck: false },
     routes: { on: false },
     attack: { on: false, targeting: 'lowest-hp', sid: null, runeSlot: null },
     cavebot: { on: false, paused: false, route: [] },
@@ -253,6 +256,7 @@ function normalizeConfig(raw) {
   // non-empty trimmed parts; malformed entries are dropped (never crash).
   const ab = moduleSource(src, 'antibot');
   if (typeof ab.on === 'boolean') cfg.antibot.on = ab.on;
+  if (typeof ab.domRuneCheck === 'boolean') cfg.antibot.domRuneCheck = ab.domRuneCheck; // REQ-39 (D-A2)
   if (Array.isArray(ab.replies)) {
     cfg.antibot.replies = ab.replies
       .filter((r) => r && typeof r === 'object'

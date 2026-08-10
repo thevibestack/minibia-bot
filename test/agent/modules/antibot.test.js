@@ -344,3 +344,73 @@ test('REQ-38: clearRuneCheck resets the state (manual/auto resume input)', () =>
   assert.equal(mod.getState().runeCheck, null);
   assert.equal(mod.clearRuneCheck().already, true, 'idempotent when already clear');
 });
+
+/* -------------------- REQ-39 — DOM overlay scan (config-gated, D-A2) -------------------- */
+
+function domWith(html) {
+  return new JSDOM('<!DOCTYPE html><html><body>' + html + '</body></html>').window.document;
+}
+
+function overlayHtml(imgs, text) {
+  return '<div class="overlay">'
+    + Array.from({ length: imgs }, (_, i) => '<img src="t' + i + '.png">').join('')
+    + '<p>' + text + '</p><span class="count">0:45</span></div>';
+}
+
+test('REQ-39: DOM scan detects >=6 imgs + wording + countdown when enabled', () => {
+  const doc = domWith(overlayHtml(8, 'select all images to verify you are human'));
+  const { mod } = makeModule({ document: doc, config: { on: true, replies: [], domRuneCheck: true } });
+  mod.observe();
+  const st = mod.getState();
+  assert.equal(st.alerts.filter((a) => a.kind === 'runecheck').length, 1, 'one runecheck alert');
+  assert.deepEqual(st.runeCheck, { active: true, at: 1000000, kind: 'dom', lastSeenAt: 1000000 });
+});
+
+test('REQ-39: DOM scan stays disabled by default — no scan, no events', () => {
+  const doc = domWith(overlayHtml(8, 'select all images to verify you are human'));
+  const { mod } = makeModule({ document: doc }); // default config: domRuneCheck absent
+  mod.observe();
+  const st = mod.getState();
+  assert.equal(st.alerts.filter((a) => a.kind === 'runecheck').length, 0, 'disabled by default');
+  assert.equal(st.runeCheck, null);
+});
+
+test('REQ-39: World-Map overlay (imgs > 40 AND btns > 300) is suppressed', () => {
+  const html = '<div class="worldmap">'
+    + Array.from({ length: 76 }, (_, i) => '<img src="t' + i + '.png">').join('')
+    + Array.from({ length: 499 }, (_, i) => '<button type="button">b' + i + '</button>').join('')
+    + '<p>verify your position on the map</p><span>12</span></div>';
+  const { mod } = makeModule({
+    document: domWith(html),
+    config: { on: true, replies: [], domRuneCheck: true },
+  });
+  mod.observe();
+  const st = mod.getState();
+  assert.equal(st.alerts.filter((a) => a.kind === 'runecheck').length, 0, 'World-Map layout suppressed');
+  assert.equal(st.runeCheck, null);
+});
+
+test('REQ-39: fewer than 6 imgs never matches even with wording + digits', () => {
+  const { mod } = makeModule({
+    document: domWith(overlayHtml(3, 'verify you are human')),
+    config: { on: true, replies: [], domRuneCheck: true },
+  });
+  mod.observe();
+  assert.equal(mod.getState().runeCheck, null);
+});
+
+test('REQ-39: DOM scan while a chat runecheck is already active never double-counts', () => {
+  const { mod, now } = makeModule({
+    gameClient: gcWith([entry('Cipfried', 'Please verify you are human', { type: 2, time: 5 })]),
+    document: domWith(overlayHtml(8, 'select all images to verify you are human')),
+    config: { on: true, replies: [], domRuneCheck: true },
+  });
+  mod.observe();
+  assert.equal(mod.getState().alerts.filter((a) => a.kind === 'runecheck').length, 1);
+  assert.equal(mod.getState().runeCheck.kind, 'chat', 'chat detection won the event');
+  now.t += 500;
+  mod.observe();
+  const st = mod.getState();
+  assert.equal(st.alerts.filter((a) => a.kind === 'runecheck').length, 1, 'one event across surfaces');
+  assert.equal(st.runeCheck.lastSeenAt, 1000500, 'DOM match refreshed the cooldown');
+});
