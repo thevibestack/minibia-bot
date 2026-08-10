@@ -186,3 +186,47 @@ test('REQ-08: the agent never injects UI into the game document', async () => {
     teardown(dom);
   }
 });
+
+test('REQ-46: hotkey RPC degrades to display-only when the keyboard surface is absent', async () => {
+  const { dom } = makePage(); // makePage has hotbarManager but NO keyboard
+  try {
+    const handle = dom.window.__mbAgentHandle;
+    await waitFor(() => handle.isReady());
+    const read = dom.window.__mbAgent.getHotbarKeybinds();
+    assert.equal(read.available, false, 'feature-detect: no keyboard surface');
+    dom.window.__mbAgent.applyConfig(armedConfig());
+    const write = dom.window.__mbAgent.setHotbarKeybind({ slot: 3, keyCode: 115 });
+    assert.equal(write.ok, false, 'write refused without the keyboard surface');
+    assert.equal(write.reason, 'keyboard unavailable');
+  } finally {
+    teardown(dom);
+  }
+});
+
+test('REQ-46: hotkey RPC reads/writes keyboard.__hotbarKeybinds when armed', async () => {
+  const { dom, gameClient } = makePage();
+  gameClient.interface.keyboard = { __hotbarKeybinds: {} };
+  try {
+    const handle = dom.window.__mbAgentHandle;
+    await waitFor(() => handle.isReady());
+    // REQ-02 gate: writes are refused pre-Connect.
+    const pre = dom.window.__mbAgent.setHotbarKeybind({ slot: 3, keyCode: 115 });
+    assert.deepEqual(JSON.parse(JSON.stringify(pre)), { ok: false, reason: 'not connected' });
+
+    dom.window.__mbAgent.applyConfig(armedConfig());
+    const res = dom.window.__mbAgent.setHotbarKeybind({ slot: 3, keyCode: 115 }); // F4 = 115
+    assert.equal(res.ok, true);
+    assert.equal(gameClient.interface.keyboard.__hotbarKeybinds[3], 115, 'keyboard.__hotbarKeybinds written');
+
+    const read = dom.window.__mbAgent.getHotbarKeybinds();
+    assert.equal(read.available, true);
+    assert.equal(read.keybinds[3], 115, 'read mirrors the written keybind');
+
+    const badSlot = JSON.parse(JSON.stringify(dom.window.__mbAgent.setHotbarKeybind({ slot: 13, keyCode: 115 })));
+    assert.deepEqual(badSlot, { ok: false, reason: 'invalid slot' });
+    const badKey = JSON.parse(JSON.stringify(dom.window.__mbAgent.setHotbarKeybind({ slot: 3, keyCode: 'x' })));
+    assert.deepEqual(badKey, { ok: false, reason: 'invalid keyCode' });
+  } finally {
+    teardown(dom);
+  }
+});
