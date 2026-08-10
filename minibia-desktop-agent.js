@@ -5802,6 +5802,9 @@ const require = __mbRequire;
  * Exposes window.__mbAgent with the REQ-04 surface:
  *   { readStats, readCooldown, fireSlot, eatFood, getChat,
  *     getRuneState, getWalkState, getPlayerInfo, applyConfig }
+ * Plus RPC extensions: confirmAntibot (REQ-34), resumeRuneCheck (REQ-41 —
+ * manual unpause of the rune-check queue gate), getSpellCatalog (REQ-28),
+ * walkTo/cavebot RPCs (REQ-23/36).
  *
  * In-page tick cadence: self-scheduling jittered setTimeout (50-400ms via
  * core/jitter), the SAME pattern the userscript uses (no Worker — the
@@ -5842,6 +5845,10 @@ const ROUTES_MOD = require('agent/modules/routes');
 // pickers config and cavebot route record/save/pause/start; NO tree nodes.
 const ATTACK_MOD = require('agent/modules/attack');
 const CAVEBOT_MOD = require('agent/modules/cavebot');
+
+/** REQ-40/41 (D-A4): auto-resume cooldown — the queue stays paused until no
+ *  fresh verification wording has been seen for this long. */
+const RUNECHECK_RESUME_COOLDOWN_MS = 10000;
 
 /** Minimal slice-2 config shape (per-character store lands in slice 3). */
 const DEFAULT_CONFIG = {
@@ -6140,6 +6147,10 @@ function createAgent(opts = {}) {
     // reset on agent restart): the trade cadence anchor (REQ-18 "toggle
     // resets on logout") + the kill observer baseline.
     timers: { tradeLastSentAt: 0 },
+    // REQ-40/41 (D-A3/A4): rune-check pause state {active, at, kind,
+    // lastSeenAt} — null when no check is active. Carried in getState() so
+    // the panel renders the banner + resume button (REQ-41).
+    runeCheck: null,
     // D8 (slice 1a): readable activity log ring (cap 200) — fed by the log
     // sinks above and the fire closures below; carried in getState() so the
     // panel renders formatted rows (REQ-26, never raw JSON).
@@ -7123,6 +7134,41 @@ function createAgent(opts = {}) {
     };
   }
 
+  /** REQ-40/41 (D-A3/A4): reconcile the rune-check pause against the anti-bot
+   *  module every tick:
+   *   - detection active -> queue.setPaused(true) + carry snapshot.runeCheck
+   *   - cooldown (10s, D-A4) with no fresh verification wording -> AUTO-RESUME
+   *     (clears the module state + unpauses)
+   *   - module already cleared (manual resumeRuneCheck RPC) -> mirror the clear.
+   *  The queue pause is a drain gate ONLY — throttle/jitter are never touched
+   *  (REQ-12 no-bypass: entries stay pending, pacing recomputes from the same
+   *  lastDispatchAt). */
+  function reconcileRuneCheck() {
+    const m = state.modules && state.modules.antibot;
+    if (!m || typeof m.getState !== 'function') return;
+    const rc = m.getState().runeCheck || null;
+    if (rc && rc.active === true) {
+      const lastSeen = Number.isFinite(Number(rc.lastSeenAt)) ? Number(rc.lastSeenAt)
+        : (Number.isFinite(Number(rc.at)) ? Number(rc.at) : 0);
+      if (nowFn() - lastSeen >= RUNECHECK_RESUME_COOLDOWN_MS) {
+        // Cooldown elapsed without fresh verification wording -> auto-resume.
+        if (typeof m.clearRuneCheck === 'function') m.clearRuneCheck();
+        state.queue.setPaused(false);
+        state.runeCheck = null;
+        logEvent('antibot', 'runecheck', 'auto-resumed');
+        return;
+      }
+      state.queue.setPaused(true);
+      state.runeCheck = { active: true, at: rc.at, kind: rc.kind, lastSeenAt: rc.lastSeenAt };
+      return;
+    }
+    if (state.runeCheck && state.runeCheck.active === true) {
+      // Module cleared (manual resume RPC) — mirror the clear.
+      state.queue.setPaused(false);
+      state.runeCheck = null;
+    }
+  }
+
   /** One tree tick + queue drain. At most one action enqueued per tick
    *  (the tree halts after the first executed action; actions are
    *  queue-aware and enqueue themselves — REQ-12 no-bypass). No tick while
@@ -7149,6 +7195,10 @@ function createAgent(opts = {}) {
       // echo/learning (REQ-24 MODIFIED) + the player context; alerts ride the
       // snapshot, confirmed patterns queue auto-replies for the tree node.
       if (m.antibot) m.antibot.observe();
+      // REQ-40/41 (D-A3/A4): rune-check pause reconcile — pause on detection,
+      // auto-resume after the 10s cooldown without fresh verification wording
+      // (reconciled every tick; manual resume via the resumeRuneCheck RPC).
+      reconcileRuneCheck();
       const result = state.tree.tick(ctx);
       state.lastPath = result.path;
       state.lastDispatch = state.queue.drain(); // eligible entries fire here, in the queue
@@ -7279,6 +7329,18 @@ function createAgent(opts = {}) {
         if (!m) return { ok: false, reason: 'not ready' };
         return m.confirm(pattern);
       },
+      resumeRuneCheck: function () {
+        // REQ-41 (D-A4): manual resume of a paused rune check — clears the
+        // module + snapshot rune-check state and unpauses the queue gate.
+        // The pause is a drain gate ONLY — no pacing bypass (REQ-12).
+        if (!state.armed) return { ok: false, reason: 'not connected' };
+        const m = state.modules && state.modules.antibot;
+        if (m && typeof m.clearRuneCheck === 'function') m.clearRuneCheck();
+        state.queue.setPaused(false);
+        state.runeCheck = null;
+        logEvent('antibot', 'runecheck', 'manual-resumed');
+        return { ok: true };
+      },
       getWalkState: function () {
         // REQ-23: real routes-v1 module state (slice 6) — autowalk read
         // (+ destination) or the honest "no pathfinder data" degrade.
@@ -7402,6 +7464,7 @@ function createAgent(opts = {}) {
       health: state.ctx.health,
       mana: state.ctx.mana,
       queue: state.queue ? state.queue.stats() : null,
+      runeCheck: state.runeCheck ? Object.assign({}, state.runeCheck) : null, // REQ-40/41 (D-A3): pause state -> panel banner
       lastPath: state.lastPath,
       castsSinceFood: state.ctx.castsSinceFood || 0,
       modules: {
