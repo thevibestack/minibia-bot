@@ -1463,7 +1463,29 @@ function isPremiumBlocked(state) {
   return Boolean(state && state.gated && state.active === false);
 }
 
-module.exports = { readPremiumState, isPremiumBlocked, toEpochMs };
+/**
+ * REQ-22 factory: wrap an injected premium reader (a function returning the
+ * {gated, active, source} verdict from readPremiumState) into the
+ * panel-facing {gated, active, blocked} shape every gated module exposes via
+ * getState(). Shared by trade/loot/spawns/huntStats (the same 6-line helper
+ * used to be duplicated in each module). Unknown state (absent reader or
+ * null active) never blocks — the blocked predicate is the reader verdict
+ * with `active === false`, exactly as the modules always computed it.
+ * @param {(() => {gated?: boolean, active?: boolean|null, source?: string|null})|null} readPremium
+ * @returns {() => {gated: boolean, active: boolean|null, blocked: boolean}}
+ */
+function createPremiumReader(readPremium) {
+  return function currentPremium() {
+    const p = typeof readPremium === 'function' ? readPremium() : null;
+    return {
+      gated: p ? p.gated : true,
+      active: p ? p.active : null,
+      blocked: Boolean(p && p.active === false),
+    };
+  };
+}
+
+module.exports = { readPremiumState, isPremiumBlocked, createPremiumReader, toEpochMs };
 
 return module.exports;
 })();
@@ -3544,6 +3566,8 @@ const exports = module.exports;
 const require = __mbRequire;
 'use strict';
 
+const { createPremiumReader } = require('core/premium');
+
 /**
  * Auto trade broadcast module (REQ-18, design D6 "Trade" row, task 5.1).
  *
@@ -3598,16 +3622,10 @@ function createTradeModule(opts = {}) {
 
   const state = { available: true, reason: 'ok' };
 
-  /** Eager premium read (REQ-22): the panel-facing state is computed on
-   *  getState — fresh regardless of whether the tree reached this module. */
-  function currentPremium() {
-    const p = typeof readPremium === 'function' ? readPremium() : null;
-    return {
-      gated: p ? p.gated : true,
-      active: p ? p.active : null,
-      blocked: Boolean(p && p.active === false),
-    };
-  }
+  // Eager premium read (REQ-22): the panel-facing state is computed on
+  // getState — fresh regardless of whether the tree reached this module.
+  // Shared reader (core/premium) so every gated module exposes the same shape.
+  const currentPremium = createPremiumReader(readPremium);
 
   /**
    * Pure decision (REQ-18): ON + message configured + interval elapsed since
@@ -3691,6 +3709,8 @@ const exports = module.exports;
 const require = __mbRequire;
 'use strict';
 
+const { createPremiumReader } = require('core/premium');
+
 /**
  * Auto-loot list module (REQ-19, design "Loot" row, task 5.2).
  *
@@ -3750,15 +3770,9 @@ function createLootModule(opts = {}) {
     lastRouted: null,
   };
 
-  /** Eager premium read (REQ-22): panel-facing state computed on getState. */
-  function currentPremium() {
-    const p = typeof readPremium === 'function' ? readPremium() : null;
-    return {
-      gated: p ? p.gated : true,
-      active: p ? p.active : null,
-      blocked: Boolean(p && p.active === false),
-    };
-  }
+  // Eager premium read (REQ-22): panel-facing state computed on getState —
+  // shared reader (core/premium) so every gated module exposes the same shape.
+  const currentPremium = createPremiumReader(readPremium);
 
   /**
    * Pure destination resolution (REQ-19): per-monster first, then the default
@@ -3878,6 +3892,8 @@ const exports = module.exports;
 const require = __mbRequire;
 'use strict';
 
+const { createPremiumReader } = require('core/premium');
+
 /**
  * Monster spawn maps provider (REQ-20, design "Spawns" row, task 5.3).
  *
@@ -3963,15 +3979,9 @@ function createSpawnsModule(opts = {}) {
 
   const state = { lastQuery: null };
 
-  /** Eager premium read (REQ-22): panel-facing state computed on getState. */
-  function currentPremium() {
-    const p = typeof readPremium === 'function' ? readPremium() : null;
-    return {
-      gated: p ? p.gated : true,
-      active: p ? p.active : null,
-      blocked: Boolean(p && p.active === false),
-    };
-  }
+  // Eager premium read (REQ-22): panel-facing state computed on getState —
+  // shared reader (core/premium) so every gated module exposes the same shape.
+  const currentPremium = createPremiumReader(readPremium);
 
   /**
    * Query the spawn locations for a monster (read-only, REQ-20). The panel
@@ -4038,6 +4048,8 @@ const module = { exports: {} };
 const exports = module.exports;
 const require = __mbRequire;
 'use strict';
+
+const { createPremiumReader } = require('core/premium');
 
 /**
  * Hunt session stats module (REQ-21, design "Hunt stats" row, task 5.4).
@@ -4106,15 +4118,9 @@ function createHuntStats(opts = {}) {
     lastSampleAt: 0,
   };
 
-  /** Eager premium read (REQ-22): panel-facing state computed on getState. */
-  function currentPremium() {
-    const p = typeof readPremium === 'function' ? readPremium() : null;
-    return {
-      gated: p ? p.gated : true,
-      active: p ? p.active : null,
-      blocked: Boolean(p && p.active === false),
-    };
-  }
+  // Eager premium read (REQ-22): panel-facing state computed on getState —
+  // shared reader (core/premium) so every gated module exposes the same shape.
+  const currentPremium = createPremiumReader(readPremium);
 
   /**
    * Sample the current raw counters + kill feed. Every metric is
