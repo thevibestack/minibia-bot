@@ -26,6 +26,27 @@ async function waitFor(fn, { timeout = 5000, step = 20 } = {}) {
 }
 
 /**
+ * Wait until `count` fresh tree ticks have been observed (de-flake, obs
+ * 10502). tickOnce() reassigns state.lastPath to a NEW array on every tick
+ * (tree.tick builds a fresh path per call), so a reference change proves a
+ * tick ran — deterministic under parallel load, unlike a fixed sleep. Use
+ * for "nothing happens" assertions: prove the tree actually ticked N times,
+ * THEN assert the counters.
+ */
+async function waitTicks(handle, count = 3, { timeout = 5000 } = {}) {
+  let last = handle.getState().lastPath;
+  let seen = 0;
+  const start = Date.now();
+  for (;;) {
+    const cur = handle.getState().lastPath;
+    if (cur !== last) { seen += 1; last = cur; }
+    if (seen >= count) return true;
+    if (Date.now() - start > timeout) return false;
+    await new Promise((r) => setTimeout(r, 20));
+  }
+}
+
+/**
  * Fresh jsdom page with a rich mocked gameClient carrying the live-probed
  * surface (obs 10320): __handleClick, __useItemOnSelf, __canPlayerCastSpell,
  * __runeAttackUntil/__runeHealUntil, interface.getSpell, container sources.
@@ -112,7 +133,7 @@ test('REQ-13: heal-items module -> tree -> queue -> __useItemOnSelf (selfUses); 
     dom.window.__mbAgent.applyConfig(moduleConfig({ healItems: { on: false, threshold: 50, slotCids: [100] } }));
     gameClient.player.state.health = 5;
     const before = selfUses.length;
-    await new Promise((r) => setTimeout(r, 900));
+    assert.equal(await waitTicks(handle, 3), true, 'the tree ticks while the module is OFF');
     assert.equal(selfUses.length, before, 'module OFF -> zero actions (REQ-13 toggle)');
   } finally {
     teardown(dom);
@@ -127,7 +148,7 @@ test('REQ-13: heal-items with no potion in the container -> zero actions', async
     gameClientSlotless(dom.window.gameClient);
     dom.window.__mbAgent.applyConfig(moduleConfig({ healItems: { on: true, threshold: 50, slotCids: [100] } }));
     dom.window.gameClient.player.state.health = 10;
-    await new Promise((r) => setTimeout(r, 900));
+    assert.equal(await waitTicks(handle, 3), true, 'the tree ticks while no potion is present');
     assert.equal(selfUses.length, 0, 'no item found -> no action (safe degrade)');
   } finally {
     teardown(dom);
@@ -153,7 +174,7 @@ test('REQ-14: heal-magic module -> tree -> queue -> __handleClick; GLOBAL_COOLDO
     gameClient.player.spellbook.cooldowns.GLOBAL_COOLDOWN = { active: true, seconds: 3 };
     gameClient.player.state.health = 5;
     const before = casts.filter((c) => c.slot === 2).length;
-    await new Promise((r) => setTimeout(r, 900));
+    assert.equal(await waitTicks(handle, 3), true, 'the tree ticks while GLOBAL_COOLDOWN is active');
     assert.equal(casts.filter((c) => c.slot === 2).length, before, 'GLOBAL_COOLDOWN defers the heal (REQ-14)');
 
     gameClient.player.spellbook.cooldowns.GLOBAL_COOLDOWN = { active: false };
@@ -172,7 +193,7 @@ test('REQ-14: heal-magic OFF and mana-starved -> zero actions', async () => {
     dom.window.__mbAgent.applyConfig(moduleConfig({ healMagic: { on: false, threshold: 150, slot: 2, sid: 61 } }));
     gameClient.player.state.health = 1;
     gameClient.player.state.mana = 5; // below the 20 cost anyway
-    await new Promise((r) => setTimeout(r, 900));
+    assert.equal(await waitTicks(handle, 3), true, 'the tree ticks while the heal module is OFF');
     assert.equal(casts.length, 0, 'module OFF -> zero actions (REQ-14 toggle)');
   } finally {
     teardown(dom);
@@ -189,7 +210,7 @@ test('REQ-15: runes fire on expiry via __handleClick; active window defers; abse
 
     // Native window ACTIVE -> defer, no double-fire.
     hb.__runeAttackUntil = Date.now() + 10000;
-    await new Promise((r) => setTimeout(r, 900));
+    assert.equal(await waitTicks(handle, 3), true, 'the tree ticks while the native window is active');
     assert.equal(casts.filter((c) => c.slot === 4).length, 0, 'native window active -> deferred (REQ-15)');
 
     // Window expired -> fire on the rune slot.
@@ -201,7 +222,7 @@ test('REQ-15: runes fire on expiry via __handleClick; active window defers; abse
     delete hb.__runeAttackUntil;
     delete hb.__runeHealUntil;
     const before = casts.length;
-    await new Promise((r) => setTimeout(r, 900));
+    assert.equal(await waitTicks(handle, 3), true, 'the tree ticks while the rune data is absent');
     assert.equal(casts.length, before, 'no native rune data -> never fires');
     const st = handle.getState().modules.runes;
     assert.equal(st.available, false, 'degrade recorded in module state');
@@ -258,7 +279,7 @@ test('REQ-16: training casts at queue cadence; pauses below cost+reserve', async
     gameClient.player.state.mana = 100;
     dom.window.__mbAgent.applyConfig(moduleConfig({ training: { on: true, slot: 7, sid: 50, reserve: 90 } }));
     const before = casts.filter((c) => c.slot === 7).length;
-    await new Promise((r) => setTimeout(r, 900));
+    assert.equal(await waitTicks(handle, 3), true, 'the tree ticks while the reserve gate holds');
     assert.equal(casts.filter((c) => c.slot === 7).length, before, 'below cost+reserve -> training pauses (REQ-16)');
   } finally {
     teardown(dom);
@@ -293,7 +314,7 @@ test('REQ-17: eat OFF + SATED false -> zero eat actions', async () => {
     assert.equal(await waitFor(() => handle.isReady()), true);
     gameClient.player.conditions = { has: () => false }; // hungry
     dom.window.__mbAgent.applyConfig(moduleConfig({ eat: { on: false } }));
-    await new Promise((r) => setTimeout(r, 900));
+    assert.equal(await waitTicks(handle, 3), true, 'the tree ticks while the eat module is OFF');
     assert.equal(uses.length, 0, 'eat module OFF -> zero actions (REQ-17 toggle)');
   } finally {
     teardown(dom);
@@ -331,9 +352,22 @@ test('REQ-11: survival priority — heal-magic beats training in the same tick c
     }));
 
     gameClient.player.state.health = 40; // below healMagic threshold, mana ample
-    assert.equal(await waitFor(() => casts.some((c) => c.slot === 2), { timeout: 6000 }), true,
+    assert.equal(await waitFor(() => casts.length >= 1, { timeout: 8000 }), true,
       'low hp -> heal branch runs (REQ-11 survival first)');
-    assert.equal(casts.some((c) => c.slot === 7), false, 'training defers while hp is low (REQ-11)');
+    // The FIRST cast is deterministically the heal: the urgent head-insert
+    // puts it ahead of any pending normal entry and the drain breaks at the
+    // first not-due entry, so nothing can dispatch before it.
+    assert.equal(casts[0].slot, 2, 'the FIRST cast is the heal — same-tick priority over training (REQ-11)');
+    // The queue DEFERS, never drops (REQ-12): while hp stays low the heal
+    // re-arms each queue cycle and the deferred training entry dispatches
+    // AFTER it — the heal always stays ahead. (De-flake, obs 10502: the old
+    // "training NEVER fires" assertion contradicted this defer-never-drop
+    // semantics and raced the deferred dispatch under load — a delayed drain
+    // dispatching both entries made slot 7 visible at the check.)
+    assert.equal(await waitTicks(handle, 3), true, 'the cadence continues while hp is low');
+    const firstTraining = casts.findIndex((c) => c.slot === 7);
+    assert.ok(firstTraining === -1 || firstTraining > 0,
+      'training only ever fires AFTER the heal (deferred, never preemptive)');
   } finally {
     teardown(dom);
   }

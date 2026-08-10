@@ -9,7 +9,9 @@
  * timers (the repo's proven harness); assertions are ORDER-deterministic —
  * the urgent heal is guaranteed to dispatch before the pinned-jitter rune
  * entry (heal jitter 50-400ms vs rune pinned 600ms), so the interrupt
- * scenario never races.
+ * scenario never races. Zero-assertions prove ticks elapsed via the
+ * lastPath-reference waitTicks() helper instead of fixed sleeps (de-flake,
+ * obs 10502).
  */
 
 const { test } = require('node:test');
@@ -27,6 +29,27 @@ async function waitFor(fn, { timeout = 5000, step = 20 } = {}) {
     if (fn()) return true;
     if (Date.now() - start > timeout) return false;
     await new Promise((r) => setTimeout(r, step));
+  }
+}
+
+/**
+ * Wait until `count` fresh tree ticks have been observed (de-flake, obs
+ * 10502). tickOnce() reassigns state.lastPath to a NEW array on every tick
+ * (tree.tick builds a fresh path per call), so a reference change proves a
+ * tick ran — deterministic under parallel load, unlike a fixed sleep. Use
+ * for "nothing happens" assertions: prove the tree actually ticked N times,
+ * THEN assert the counters.
+ */
+async function waitTicks(handle, count = 3, { timeout = 5000 } = {}) {
+  let last = handle.getState().lastPath;
+  let seen = 0;
+  const start = Date.now();
+  for (;;) {
+    const cur = handle.getState().lastPath;
+    if (cur !== last) { seen += 1; last = cur; }
+    if (seen >= count) return true;
+    if (Date.now() - start > timeout) return false;
+    await new Promise((r) => setTimeout(r, 20));
   }
 }
 
@@ -149,7 +172,7 @@ test('REQ-29: GLOBAL_COOLDOWN active -> the heal defers a tick, no bypass (spec 
     gameClient.player.state.health = 30;
     gameClient.player.spellbook.cooldowns.GLOBAL_COOLDOWN.active = true;
 
-    await new Promise((r) => setTimeout(r, 600)); // several tick cadences elapse
+    assert.equal(await waitTicks(handle(), 3), true, 'the tree evaluates while GLOBAL_COOLDOWN is active');
     assert.equal(casts.length, 0, 'heal due but GLOBAL_COOLDOWN active -> deferred, NEVER bypassed');
 
     gameClient.player.spellbook.cooldowns.GLOBAL_COOLDOWN.active = false;
@@ -170,7 +193,7 @@ test('REQ-29: heal OFF -> hp below threshold produces NO heal action (spec scena
     surface().applyConfig(cfg);
     gameClient.player.state.health = 10;
 
-    await new Promise((r) => setTimeout(r, 600)); // several tick cadences elapse
+    assert.equal(await waitTicks(handle(), 3), true, 'the tree evaluates while the heal module is OFF');
     assert.equal(casts.length, 0, 'heal OFF -> nothing fires, regardless of hp');
   } finally {
     teardown(dom);
@@ -193,11 +216,15 @@ test('REQ-14 MODIFIED: the heal branch evaluates BEFORE runes — hp drop preemp
       'rune attack fires while hp is healthy (tree order: heal first, then runes)');
 
     // HP drops: the NEXT action enqueued is the heal (tree priority), and
-    // the urgent entry jumps any pending rune work.
+    // the urgent entry jumps any pending rune work. The FIRST post-drop cast
+    // is deterministically the heal (de-flake, obs 10502): the urgent
+    // head-insert dispatches before any due rune entry in the same drain —
+    // the queue defers, never drops, so a due rune entry may land right
+    // AFTER the heal (asserting the LAST cast raced under load).
     const before = casts.length;
     gameClient.player.state.health = 30;
     assert.equal(await waitFor(() => casts.length > before, { timeout: 4000 }), true);
-    assert.equal(casts[casts.length - 1].slot, 2, 'the heal preempts the rune after the hp drop');
+    assert.equal(casts[before].slot, 2, 'the heal preempts the rune after the hp drop');
   } finally {
     teardown(dom);
   }
@@ -212,7 +239,7 @@ test('REQ-31/D2: hp low but mana below cost + reserve -> heal pauses (e2e reserv
     surface().applyConfig(cfg);
     gameClient.player.state.health = 30;
 
-    await new Promise((r) => setTimeout(r, 600));
+    assert.equal(await waitTicks(handle(), 3), true, 'the tree evaluates while the reserve gate holds');
     assert.equal(casts.length, 0, 'heal due but mana < cost + reserve -> pauses until mana recovers');
 
     gameClient.player.state.mana = 110;
