@@ -1087,6 +1087,11 @@ const { randomDelay } = require('core/jitter');
  *    the skipped normals — it never drops them).
  *  - No bypass: the queue is the ONLY dispatch path; the wiring guarantees
  *    game-handler invocations happen exclusively inside dispatched closures.
+ *  - Pause gate (REQ-40, D-A3): setPaused(true) makes drain() a NO-OP — every
+ *    entry STAYS pending (defer, never drop) and the throttle/jitter code is
+ *    untouched: pause is a drain gate, NEVER a min-interval/jitter bypass.
+ *    Resume recomputes fire times against the SAME lastDispatchAt, so the
+ *    global interval holds even when wall time passed while paused.
  *
  * Injectable `now` (fake clock) + `rng` (seeded) make the queue fully
  * deterministic and unit-testable in node without real timers.
@@ -1094,10 +1099,12 @@ const { randomDelay } = require('core/jitter');
  * createQueue(opts) -> {
  *   enqueue(action, { kind, priority, jitterMs }) -> entry,
  *   drain() -> Array<entry>,              // dispatched eligible prefix
+ *   setPaused(isPaused) -> boolean,
+ *   isPaused() -> boolean,
  *   hasPending(predicate) -> boolean,
  *   pendingCount() -> number,
  *   stats() -> { enqueued, urgentEnqueued, dispatched, failed, pending,
- *                pendingUrgent, lastDispatchAt, minInterval }
+ *                pendingUrgent, lastDispatchAt, minInterval, paused }
  * }
  */
 
@@ -1132,6 +1139,7 @@ function createQueue(opts = {}) {
 
   let lastDispatchAt = null; // timestamp of the last actually dispatched action
   let pending = [];          // FIFO-by-class of { action, kind, priority, jitterMs, fireAt }
+  let paused = false;        // REQ-40 (D-A3): pause gate — drain() no-ops while true
   const counters = { enqueued: 0, urgentEnqueued: 0, dispatched: 0, failed: 0 };
 
   /** Coerce the priority option: only 'urgent' is a class; anything else
@@ -1193,9 +1201,16 @@ function createQueue(opts = {}) {
    * against the running last-dispatch slot, so spacing is ALWAYS
    * >= minInterval + jitter even when entries were enqueued long ago.
    *
+   * REQ-40 (D-A3): while PAUSED the drain is a NO-OP — every entry stays
+   * pending (defer, never drop). The throttle/jitter code below is never
+   * touched by the pause: on resume, fire times recompute against the SAME
+   * lastDispatchAt, so the global interval holds even when wall time passed
+   * during the pause (pause is a gate, never a no-bypass violation).
+   *
    * @returns {Array} the entries actually dispatched this call
    */
   function drain() {
+    if (paused) return []; // REQ-40: pause gate — entries stay pending
     const now = nowFn();
     const dispatched = [];
     let slot = lastDispatchAt === null ? null : lastDispatchAt + minInterval;
@@ -1229,6 +1244,19 @@ function createQueue(opts = {}) {
     return pending.length;
   }
 
+  /** REQ-40 (D-A3): pause/resume the dispatch gate. `true` freezes drain()
+   *  (entries stay pending); `false` restores normal dispatch. The pause
+   *  NEVER touches the throttle/jitter pacing — no-bypass (REQ-12). */
+  function setPaused(isPaused) {
+    paused = isPaused === true;
+    return paused;
+  }
+
+  /** @returns {boolean} whether the dispatch gate is paused (REQ-40) */
+  function isPaused() {
+    return paused;
+  }
+
   /** @returns {object} counters + pacing state */
   function stats() {
     return {
@@ -1240,10 +1268,11 @@ function createQueue(opts = {}) {
       pendingUrgent: pending.reduce(function (n, e) { return n + (e.priority === 'urgent' ? 1 : 0); }, 0),
       lastDispatchAt,
       minInterval,
+      paused, // REQ-40: pause gate state (snapshot/panel observability)
     };
   }
 
-  return { enqueue, drain, hasPending, pendingCount, stats };
+  return { enqueue, drain, setPaused, isPaused, hasPending, pendingCount, stats };
 }
 
 module.exports = { createQueue, DEFAULT_MIN_INTERVAL, DEFAULT_JITTER };
