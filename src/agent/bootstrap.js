@@ -103,9 +103,37 @@ const DEFAULT_CONFIG = {
 };
 
 /**
+ * Per-module config source (REQ-08 fix slice): the REAL app push path
+ * delivers the per-character STORE shape — a NESTED `modules.<id>` object
+ * (app/panel/server.ts pushes the store config unchanged; the panel's
+ * buildPushConfig writes live toggles into the same nested shape). The
+ * agent historically read FLAT top-level keys only, so in the real app
+ * every module toggle stayed OFF. This helper merges the nested entry
+ * OVER the flat one: the nested store shape WINS for the fields it
+ * carries, while the flat keys (the established agent/test shape +
+ * DEFAULT_CONFIG) stay the fallback when `modules` is absent or a module
+ * has no nested entry. Arrays never merge — the top-level `routes` list
+ * is the cavebot route DATA (REQ-36), not the routes module config.
+ * @param {object} src raw config
+ * @param {string} id module id
+ * @returns {object} merged module source (empty when absent)
+ */
+function moduleSource(src, id) {
+  const nested = src.modules && typeof src.modules === 'object' && !Array.isArray(src.modules)
+    && src.modules[id] && typeof src.modules[id] === 'object' && !Array.isArray(src.modules[id])
+    ? src.modules[id] : null;
+  const flat = src[id] && typeof src[id] === 'object' && !Array.isArray(src[id]) ? src[id] : null;
+  return Object.assign({}, flat || {}, nested || {});
+}
+
+/**
  * Deep-ish merge of known keys over the defaults (unknown keys dropped).
- * `armed` is the REQ-02 gate flag: ONLY an explicit true arms the engine —
- * anything else leaves the agent disarmed ("not connected").
+ * Module configs are read through moduleSource() (see above): the NESTED
+ * per-module store shape wins per-field, flat top-level keys stay the
+ * fallback — both shapes keep working (REQ-08). `queue`/`jitter` are
+ * top-level in BOTH shapes (store SCOPED_KEYS; the panel never writes them
+ * nested). `armed` is the REQ-02 gate flag: ONLY an explicit true arms the
+ * engine — anything else leaves the agent disarmed ("not connected").
  */
 function normalizeConfig(raw) {
   const src = raw && typeof raw === 'object' ? raw : {};
@@ -140,26 +168,26 @@ function normalizeConfig(raw) {
     (src.jitter && src.jitter.max) || DEFAULT_CONFIG.jitter.max,
   );
   cfg.jitter = { min: j.min, max: j.max };
-  if (src.survival && typeof src.survival === 'object') {
-    if (typeof src.survival.on === 'boolean') cfg.survival.on = src.survival.on;
-    if (Number.isFinite(src.survival.threshold)) cfg.survival.threshold = src.survival.threshold;
-    if (Number.isInteger(src.survival.slot)) cfg.survival.slot = src.survival.slot;
-  }
-  if (src.rotation && Array.isArray(src.rotation.spells)) {
-    cfg.rotation.spells = src.rotation.spells.filter((s) => s && typeof s === 'object');
+  const sv = moduleSource(src, 'survival');
+  if (typeof sv.on === 'boolean') cfg.survival.on = sv.on;
+  if (Number.isFinite(sv.threshold)) cfg.survival.threshold = sv.threshold;
+  if (Number.isInteger(sv.slot)) cfg.survival.slot = sv.slot;
+  const ro = moduleSource(src, 'rotation');
+  if (Array.isArray(ro.spells)) {
+    cfg.rotation.spells = ro.spells.filter((s) => s && typeof s === 'object');
   }
   // --- Slice-4 module normalization (unknown keys dropped, invalid values default) ---
-  const hi = src.healItems && typeof src.healItems === 'object' ? src.healItems : {};
+  const hi = moduleSource(src, 'healItems');
   if (typeof hi.on === 'boolean') cfg.healItems.on = hi.on;
   if (Number.isFinite(hi.threshold)) cfg.healItems.threshold = hi.threshold;
   if (Array.isArray(hi.slotCids)) cfg.healItems.slotCids = hi.slotCids.map(Number).filter(Number.isInteger).filter((n) => n >= 0);
-  const hm = src.healMagic && typeof src.healMagic === 'object' ? src.healMagic : {};
+  const hm = moduleSource(src, 'healMagic');
   if (typeof hm.on === 'boolean') cfg.healMagic.on = hm.on;
   if (Number.isFinite(hm.threshold)) cfg.healMagic.threshold = hm.threshold;
   if (Number.isInteger(hm.slot)) cfg.healMagic.slot = hm.slot;
   if (Number.isInteger(hm.sid)) cfg.healMagic.sid = hm.sid;
   if (Number.isFinite(hm.reserve) && hm.reserve >= 0) cfg.healMagic.reserve = hm.reserve; // D2 (REQ-31)
-  const rn = src.runes && typeof src.runes === 'object' ? src.runes : {};
+  const rn = moduleSource(src, 'runes');
   if (typeof rn.on === 'boolean') cfg.runes.on = rn.on;
   if (Number.isInteger(rn.attackSlot)) cfg.runes.attackSlot = rn.attackSlot;
   if (Number.isInteger(rn.healSlot)) cfg.runes.healSlot = rn.healSlot;
@@ -176,7 +204,7 @@ function normalizeConfig(raw) {
   if (Number.isFinite(rn.fallbackManaPct) && rn.fallbackManaPct >= 0 && rn.fallbackManaPct <= 1) {
     cfg.runes.fallbackManaPct = rn.fallbackManaPct;
   }
-  const tr = src.training && typeof src.training === 'object' ? src.training : {};
+  const tr = moduleSource(src, 'training');
   if (typeof tr.on === 'boolean') cfg.training.on = tr.on;
   if (Number.isInteger(tr.slot)) cfg.training.slot = tr.slot;
   if (Number.isInteger(tr.sid)) cfg.training.sid = tr.sid;
@@ -185,7 +213,7 @@ function normalizeConfig(raw) {
   if (typeof ew.enabled === 'boolean') cfg.training.eatWithMagic.enabled = ew.enabled; // D4 (REQ-32)
   if (Number.isInteger(ew.slot)) cfg.training.eatWithMagic.slot = ew.slot;
   if (Number.isInteger(ew.sid)) cfg.training.eatWithMagic.sid = ew.sid;
-  const ea = src.eat && typeof src.eat === 'object' ? src.eat : {};
+  const ea = moduleSource(src, 'eat');
   if (typeof ea.on === 'boolean') cfg.eat.on = ea.on;
   if (Number.isFinite(ea.everyCasts) && ea.everyCasts >= 0) cfg.eat.everyCasts = Math.floor(ea.everyCasts);
   if (Number.isFinite(ea.warningWindowSec) && ea.warningWindowSec > 0) cfg.eat.warningWindowSec = ea.warningWindowSec;
@@ -193,15 +221,13 @@ function normalizeConfig(raw) {
   if (Number.isInteger(ea.slot)) cfg.eat.slot = ea.slot;
   if (Array.isArray(ea.cids)) cfg.eat.cids = ea.cids.map(Number).filter(Number.isInteger).filter((n) => n >= 0);
   // --- Slice-5 module normalization (REQ-18..22,24,25) ---
-  const hm5 = src.healMagic && typeof src.healMagic === 'object' ? src.healMagic : {};
-  if (typeof hm5.word === 'string') cfg.healMagic.word = hm5.word; // echo validation (REQ-24)
-  const tr5 = src.training && typeof src.training === 'object' ? src.training : {};
-  if (typeof tr5.word === 'string') cfg.training.word = tr5.word;   // echo validation (REQ-24)
-  const td = src.trade && typeof src.trade === 'object' ? src.trade : {};
+  if (typeof hm.word === 'string') cfg.healMagic.word = hm.word; // echo validation (REQ-24)
+  if (typeof tr.word === 'string') cfg.training.word = tr.word;   // echo validation (REQ-24)
+  const td = moduleSource(src, 'trade');
   if (typeof td.on === 'boolean') cfg.trade.on = td.on;
   if (typeof td.message === 'string') cfg.trade.message = td.message;
   if (Number.isFinite(td.intervalMs) && td.intervalMs > 0) cfg.trade.intervalMs = td.intervalMs;
-  const lt = src.loot && typeof src.loot === 'object' ? src.loot : {};
+  const lt = moduleSource(src, 'loot');
   if (typeof lt.on === 'boolean') cfg.loot.on = lt.on;
   if (typeof lt.defaultDest === 'string') cfg.loot.defaultDest = lt.defaultDest;
   if (lt.perMonster && typeof lt.perMonster === 'object' && !Array.isArray(lt.perMonster)) {
@@ -210,11 +236,11 @@ function normalizeConfig(raw) {
       if (typeof lt.perMonster[key] === 'string') cfg.loot.perMonster[key] = lt.perMonster[key];
     }
   }
-  const sp = src.spawns && typeof src.spawns === 'object' ? src.spawns : {};
+  const sp = moduleSource(src, 'spawns');
   if (typeof sp.on === 'boolean') cfg.spawns.on = sp.on;
-  const hs = src.huntStats && typeof src.huntStats === 'object' ? src.huntStats : {};
+  const hs = moduleSource(src, 'huntStats');
   if (typeof hs.on === 'boolean') cfg.huntStats.on = hs.on;
-  const le = src.learning && typeof src.learning === 'object' ? src.learning : {};
+  const le = moduleSource(src, 'learning');
   if (Array.isArray(le.knownWords)) {
     cfg.learning.knownWords = le.knownWords
       .filter((w) => typeof w === 'string' && w.trim())
@@ -222,7 +248,7 @@ function normalizeConfig(raw) {
   }
   // PR5 (REQ-33/34, D9): anti-bot watcher — {pattern, reply} entries with
   // non-empty trimmed parts; malformed entries are dropped (never crash).
-  const ab = src.antibot && typeof src.antibot === 'object' ? src.antibot : {};
+  const ab = moduleSource(src, 'antibot');
   if (typeof ab.on === 'boolean') cfg.antibot.on = ab.on;
   if (Array.isArray(ab.replies)) {
     cfg.antibot.replies = ab.replies
@@ -231,7 +257,7 @@ function normalizeConfig(raw) {
         && typeof r.reply === 'string' && r.reply.trim())
       .map((r) => ({ pattern: r.pattern.trim(), reply: r.reply.trim() }));
   }
-  const rt = src.routes && typeof src.routes === 'object' && !Array.isArray(src.routes) ? src.routes : {};
+  const rt = moduleSource(src, 'routes');
   if (typeof rt.on === 'boolean') cfg.routes.on = rt.on;
   // PR6 (REQ-35/36, D10): skeleton module configs — attack targeting +
   // pickers; cavebot pause + saved route. The SAVED ROUTE LIST travels on
@@ -239,12 +265,12 @@ function normalizeConfig(raw) {
   // shape, REQ-36 "save = config.routes"); the flat agent/test shape may
   // also carry it as `cavebot.route`. Both normalize into cfg.cavebot.route
   // (sanitized: finite {x,y} waypoints only, junk dropped).
-  const at = src.attack && typeof src.attack === 'object' ? src.attack : {};
+  const at = moduleSource(src, 'attack');
   if (typeof at.on === 'boolean') cfg.attack.on = at.on;
   cfg.attack.targeting = ATTACK_MOD.normalizeTargeting(at.targeting);
   cfg.attack.sid = ATTACK_MOD.normalizeSid(at.sid);
   cfg.attack.runeSlot = ATTACK_MOD.normalizeSlot(at.runeSlot);
-  const cv = src.cavebot && typeof src.cavebot === 'object' ? src.cavebot : {};
+  const cv = moduleSource(src, 'cavebot');
   if (typeof cv.on === 'boolean') cfg.cavebot.on = cv.on;
   if (typeof cv.paused === 'boolean') cfg.cavebot.paused = cv.paused;
   if (Array.isArray(cv.route)) cfg.cavebot.route = CAVEBOT_MOD.sanitizeRouteList(cv.route);
