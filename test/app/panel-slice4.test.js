@@ -155,3 +155,36 @@ test('REQ-30 (PR4): trainerFormFromConfig falls back to the forward-compat defau
     fallbackManaPct: '50', reserve: '', eatMagic: 'false', eatMagicSlot: '',
   });
 });
+
+test('REQ-41 (PR A): renderLiveState shows the localized rune-check banner + resume button when active', () => {
+  let state = armedState();
+  state = Object.assign({}, state, {
+    snapshot: { agent: { runeCheck: { active: true, at: 1, kind: 'chat', lastSeenAt: 1 } } },
+  });
+  const html = P.renderLiveState(state);
+  assert.match(html, /Rune check detected — botting paused/, 'localized banner (EN default)');
+  assert.match(html, /id="runecheck-resume-btn"/, 'resume button rendered');
+  assert.match(html, /Resume botting/, 'localized resume label');
+  const clear = Object.assign({}, state, { snapshot: { agent: { runeCheck: null } } });
+  assert.ok(!P.renderLiveState(clear).includes('runecheck-resume-btn'), 'no banner when no active rune check');
+});
+
+test('REQ-41 (PR A): renderLiveState shows the Spanish banner when the panel language is ES', () => {
+  let state = armedState();
+  state = Object.assign({}, state, { lang: 'es' });
+  state = Object.assign({}, state, {
+    snapshot: { agent: { runeCheck: { active: true, at: 1, kind: 'chat', lastSeenAt: 1 } } },
+  });
+  const html = P.renderLiveState(state);
+  assert.match(html, /Check de runas detectado/, 'ES banner text');
+  assert.match(html, /Reanudar bot/, 'ES resume label');
+});
+
+test('REQ-41 (PR A): RUNECHECK_RESUME is armed-gated and emits the runecheck-resume effect', () => {
+  const armed = P.panelReducer(armedState(), { type: 'RUNECHECK_RESUME' });
+  assert.deepEqual(armed.effects, [{ type: 'runecheck-resume' }]);
+  assert.equal(armed.state.refusal, null);
+  const unarmed = P.panelReducer(P.createInitialState(), { type: 'RUNECHECK_RESUME' });
+  assert.equal(unarmed.effects.length, 0, 'no effect pre-Connect');
+  assert.equal(unarmed.state.refusal.reason, 'not connected', 'visible refusal (REQ-02)');
+});

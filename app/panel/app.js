@@ -219,6 +219,21 @@
         });
         break;
       }
+      case 'runecheck-resume': {
+        // REQ-41 (PR A): the user resumed a paused rune check — the server
+        // RPCs the in-page agent resumeRuneCheck (queue unpause + state
+        // clear); the panel confirms with a localized info alert.
+        postJson('/api/runecheck-resume', {
+          character: state.identity ? state.identity.name : null,
+        }).then(function (res) {
+          if (res && res.ok) {
+            dispatch({ type: 'ALERT', kind: 'info', message: P.t(state, 'trainer.runeCheckResumed') });
+          } else if (res && res.ok === false && res.reason) {
+            dispatch({ type: 'ERROR', message: 'resume refused: ' + res.reason });
+          }
+        });
+        break;
+      }
       case 'cavebot-command': {
         // REQ-36 (PR6): cavebot skeleton controls reach the in-page agent
         // via the server RPC. The record-stop result carries the recorded
@@ -474,6 +489,11 @@
       // REQ-34 (PR5): confirm the pending anti-bot pattern — the effect
       // posts /api/antibot-confirm (server persists + RPC confirmAntibot).
       dispatch({ type: 'CONFIRM_ANTIBOT', pattern: target.getAttribute('data-antibot-confirm') || '' });
+    }
+    else if (target.matches('#runecheck-resume-btn')) {
+      // REQ-41 (PR A): manual resume of a paused rune check — the effect
+      // posts /api/runecheck-resume (server RPCs resumeRuneCheck).
+      dispatch({ type: 'RUNECHECK_RESUME' });
     }
     else if (target.matches('#attack-save-btn')) {
       // REQ-35 (PR6): commit the ATTACK settings form (targeting choice +

@@ -178,6 +178,12 @@
       'trainer.eatMagicSlot': 'Magic food slot',
       'trainer.save': 'Save trainer settings',
       'trainer.capFullAlert': 'Rune cap full — rune-making stopped (fallback or idle)',
+      // PR A (REQ-40/41, D-A3/A5): rune-check pause banner + resume + alert
+      // kind labels (the detection ALERT rides the anti-bot per-id latch).
+      'trainer.runeCheckAlert': 'Rune check detected — botting paused (solve the check to resume)',
+      'trainer.runeCheckResumed': 'Rune check resolved — botting resumed',
+      'trainer.resumeBtn': 'Resume botting',
+      'alert.kind.antibot-runecheck': 'Rune check',
       // Slice 5 (PR5, REQ-33/34): OTHERS settings form + anti-bot live state.
       'others.formTitle': 'Other settings',
       'others.foodTitle': 'Food',
@@ -344,6 +350,13 @@
       'trainer.eatMagicSlot': 'Slot de comida mágica',
       'trainer.save': 'Guardar entrenamiento',
       'trainer.capFullAlert': 'Tope de runas lleno — se detuvo la fabricación (alternativo o espera)',
+      // PR A (REQ-40/41, D-A3/A5): banner de pausa por check de runas +
+      // reanudar + etiquetas de alerta (la ALERTA de detección viaja por el
+      // latch por-id anti-bot).
+      'trainer.runeCheckAlert': 'Check de runas detectado — bot pausado (resolvé el check para reanudar)',
+      'trainer.runeCheckResumed': 'Check de runas resuelto — bot reanudado',
+      'trainer.resumeBtn': 'Reanudar bot',
+      'alert.kind.antibot-runecheck': 'Check de runas',
       // Slice 5 (PR5, REQ-33/34): formulario de OTROS + estado anti-bot en vivo.
       'others.formTitle': 'Otros ajustes',
       'others.foodTitle': 'Comida',
@@ -1266,6 +1279,14 @@
         return { state, effects: [{ type: 'antibot-confirm', pattern }] };
       }
 
+      case 'RUNECHECK_RESUME': {
+        // REQ-41 (PR A, D-A4): manual resume of a paused rune check — the
+        // effect posts /api/runecheck-resume (server -> agent resumeRuneCheck
+        // RPC: queue unpause + state clear). Armed-gated like every RPC.
+        if (state.gate !== GATE_ARMED) return { state: refuse(state, action), effects: [] };
+        return { state, effects: [{ type: 'runecheck-resume' }] };
+      }
+
       case 'RESET':
         return { state: reset(), effects: [] };
 
@@ -1960,6 +1981,18 @@
       if (modules && modules.training && modules.training.capFull === true) {
         parts.push('<div class="module-alert alert-cap-full">'
           + escapeHtml(t(state, 'trainer.capFullAlert')) + '</div>');
+      }
+      // PR A (REQ-40/41, D-A3/A5): the rune-check pause banner + manual resume
+      // button. The ALERT + beep for NEW runecheck events ride the anti-bot
+      // per-id latch (app.js poll); this banner keeps the pause visible while
+      // it persists and offers the resume action (the effect posts
+      // /api/runecheck-resume -> resumeRuneCheck RPC).
+      const runeCheck = state.snapshot.agent && state.snapshot.agent.runeCheck;
+      if (runeCheck && runeCheck.active === true) {
+        parts.push('<div class="module-alert alert-runecheck">'
+          + escapeHtml(t(state, 'trainer.runeCheckAlert'))
+          + ' <button type="button" class="runecheck-resume-btn" id="runecheck-resume-btn">'
+          + escapeHtml(t(state, 'trainer.resumeBtn')) + '</button></div>');
       }
       // Slice 5 (PR5, REQ-33/34): the anti-bot watcher state — pending
       // confirm prompt (first pattern occurrence), recent alerts, and the

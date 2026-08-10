@@ -27,6 +27,8 @@
  *                           (REQ-27 cross-load offer).
  *   POST /api/load-profile -> cross-load another character's config with
  *                           per-sid vocation/level rejection (REQ-27, D6).
+ *   POST /api/runecheck-resume -> RPCs the in-page resumeRuneCheck (REQ-41:
+ *                           manual unpause of the rune-check queue gate).
  *
  * Static file serving is an exact-name whitelist (never a user path join),
  * so no traversal is possible. Body parsing is length-capped.
@@ -144,6 +146,8 @@ function readMana(payload) {
  *   REQ-25 agent RPC for offer decisions (decline = session-silent)
  * @param {(pattern: string) => Promise<unknown>} [opts.confirmAntibot] -
  *   REQ-34 in-page confirmAntibot RPC (session-confirmed -> auto-replies)
+ * @param {() => Promise<unknown>} [opts.resumeRuneCheck] -
+ *   REQ-41 in-page resumeRuneCheck RPC (unpauses the rune-check queue gate)
  * @param {() => Promise<unknown>} [opts.snapshot] - live state payload
  * @param {(x: number, y: number) => Promise<unknown>} [opts.walkTo] -
  *   REQ-23 in-page walkTo RPC (native autowalk, queue-dispatched)
@@ -164,6 +168,7 @@ function createPanelServer(opts) {
   const applyConfigFn = opts.applyConfig;
   const respondOfferFn = typeof opts.respondOffer === 'function' ? opts.respondOffer : async () => null;
   const confirmAntibotFn = typeof opts.confirmAntibot === 'function' ? opts.confirmAntibot : async () => null;
+  const resumeRuneCheckFn = typeof opts.resumeRuneCheck === 'function' ? opts.resumeRuneCheck : async () => ({ ok: true });
   const snapshotFn = typeof opts.snapshot === 'function' ? opts.snapshot : async () => null;
   const walkToFn = typeof opts.walkTo === 'function' ? opts.walkTo : async () => ({ ok: true });
   const cavebotRpcFn = typeof opts.cavebotRpc === 'function'
@@ -505,6 +510,25 @@ function createPanelServer(opts) {
         store.saveCharacter({ name, config });
         lastCharacter = name;
         sendJson(res, 200, { ok: true, pattern, confirmed });
+        return;
+      }
+      if (req.method === 'POST' && url === '/api/runecheck-resume') {
+        // REQ-41 (PR A, D-A5): the panel's Resume button — RPCs the in-page
+        // agent resumeRuneCheck (unpauses the queue gate + clears the
+        // rune-check state). 409 while no character is connected; 400 on a
+        // non-object body (invalid JSON is rejected by the body reader).
+        const body = await readBody(req);
+        const name = typeof body.character === 'string' && body.character ? body.character : lastCharacter;
+        if (!name) {
+          sendJson(res, 409, { ok: false, reason: 'not connected' });
+          return;
+        }
+        if (body === null || typeof body !== 'object' || Array.isArray(body)) {
+          sendJson(res, 400, { ok: false, reason: 'invalid body' });
+          return;
+        }
+        const result = await resumeRuneCheckFn();
+        sendJson(res, 200, { ok: true, result: result || null });
         return;
       }
 

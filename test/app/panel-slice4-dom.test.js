@@ -194,3 +194,30 @@ test('REQ-30 (PR4, jsdom): the TRAINER settings form is NOT rendered before Conn
     await teardown(dom);
   }
 });
+
+test('REQ-41 (PR A, jsdom): the rune-check banner renders and Resume posts /api/runecheck-resume', async () => {
+  const routes = Object.assign({}, ROUTES, {
+    '/api/snapshot': () => ({
+      stats: { health: 100, mana: 400, maxMana: 500, maxHealth: 200 },
+      agent: { runeCheck: { active: true, at: 1, kind: 'chat', lastSeenAt: 1 } },
+    }),
+    '/api/runecheck-resume': () => ({ ok: true }),
+  });
+  const { dom, requests } = makePanel(routes);
+  try {
+    await connect(dom);
+    await new Promise((r) => setTimeout(r, 600)); // a snapshot poll lands the banner
+    const btn = dom.window.document.getElementById('runecheck-resume-btn');
+    assert.ok(btn, 'resume button rendered from the snapshot banner');
+    assert.match(btn.parentElement.textContent, /Rune check detected/, 'localized banner text');
+
+    click(dom, '#runecheck-resume-btn');
+    await new Promise((r) => setTimeout(r, 40));
+    const resumeReqs = requests.filter((r) => r.url === '/api/runecheck-resume');
+    assert.ok(resumeReqs.length >= 1, '/api/runecheck-resume posted');
+    assert.equal(resumeReqs[resumeReqs.length - 1].method, 'POST');
+    assert.equal(resumeReqs[resumeReqs.length - 1].body.character, 'Flamamex');
+  } finally {
+    await teardown(dom);
+  }
+});
