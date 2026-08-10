@@ -56,6 +56,9 @@ const SPAWNS_MOD = require('./modules/spawns');
 const HUNT_STATS_MOD = require('./modules/huntStats');
 const ECHO_MOD = require('./modules/echo');
 const LEARNING_MOD = require('./modules/learning');
+// PR5 (REQ-33/34, D9): anti-bot watcher + confirm-once chat replies — shares
+// the Default-channel poll surface with echo/learning (REQ-24 MODIFIED).
+const ANTIBOT_MOD = require('./modules/antibot');
 // Slice-6 module (REQ-23): native autowalk state read + walk-to (routes v1).
 const ROUTES_MOD = require('./modules/routes');
 
@@ -83,6 +86,7 @@ const DEFAULT_CONFIG = {
   spawns: { on: false },
   huntStats: { on: false },
   learning: { knownWords: [] },       // REQ-25: observation always runs while armed
+  antibot: { on: false, replies: [] }, // PR5 (D9): anti-bot watcher + confirm-once replies (REQ-33/34)
   routes: { on: false },               // REQ-23 (slice 6): native autowalk read + walk-to; recording = FUTURE
   armed: false,                                      // interconnection gate (REQ-02, slice 3)
 };
@@ -111,6 +115,7 @@ function normalizeConfig(raw) {
     spawns: { on: false },
     huntStats: { on: false },
     learning: { knownWords: [] },
+    antibot: { on: false, replies: [] },
     routes: { on: false },
     armed: false,
   };
@@ -201,6 +206,17 @@ function normalizeConfig(raw) {
     cfg.learning.knownWords = le.knownWords
       .filter((w) => typeof w === 'string' && w.trim())
       .map((w) => w.trim());
+  }
+  // PR5 (REQ-33/34, D9): anti-bot watcher — {pattern, reply} entries with
+  // non-empty trimmed parts; malformed entries are dropped (never crash).
+  const ab = src.antibot && typeof src.antibot === 'object' ? src.antibot : {};
+  if (typeof ab.on === 'boolean') cfg.antibot.on = ab.on;
+  if (Array.isArray(ab.replies)) {
+    cfg.antibot.replies = ab.replies
+      .filter((r) => r && typeof r === 'object'
+        && typeof r.pattern === 'string' && r.pattern.trim()
+        && typeof r.reply === 'string' && r.reply.trim())
+      .map((r) => ({ pattern: r.pattern.trim(), reply: r.reply.trim() }));
   }
   const rt = src.routes && typeof src.routes === 'object' ? src.routes : {};
   if (typeof rt.on === 'boolean') cfg.routes.on = rt.on;
@@ -460,6 +476,73 @@ function createAgent(opts = {}) {
     } catch (e) { return null; }
   }
 
+  /** Default-channel send surface (PR5, REQ-34, design D9 open probe): the
+   *  channelManager resolved for the Default channel (id 1/0 candidates, the
+   *  'Default' name, or the channels map) with the send method feature-
+   *  detected. Returns {send, label} or null — the anti-bot module degrades
+   *  to ALERT-ONLY when null; a send path is never invented. */
+  function readDefaultChannelSend() {
+    try {
+      const gc = state.gameClient;
+      const manager = (gc && ((gc.interface && gc.interface.channelManager) || gc.channelManager)) || null;
+      if (!manager) return null;
+      const candidates = [];
+      if (typeof manager.getChannelById === 'function') {
+        for (const id of [1, 0]) {
+          try {
+            const c = manager.getChannelById(id);
+            if (c) candidates.push(c);
+          } catch (e) { /* try the next candidate */ }
+        }
+      }
+      if (typeof manager.getChannel === 'function') {
+        try {
+          const c = manager.getChannel('Default');
+          if (c) candidates.push(c);
+        } catch (e) { /* try the next candidate */ }
+      }
+      if (manager.channels && typeof manager.channels === 'object') {
+        const c = manager.channels.Default || manager.channels['Default']
+          || manager.channels[1] || manager.channels[0];
+        if (c) candidates.push(c);
+      }
+      for (const channel of candidates) {
+        if (!channel || typeof channel !== 'object') continue;
+        const send = channel.send || channel.sendMessage || channel.sendChat
+          || channel.message || channel.sendChannelMessage;
+        if (typeof send === 'function') return { send: send.bind(channel), label: 'Default' };
+      }
+      return null;
+    } catch (e) { return null; }
+  }
+
+  /** Anti-bot player context (PR5, REQ-33, D9): position (`__position`),
+   *  teleport flag (`__teleported`), health and damage tint (`__damageTint`)
+   *  over the live-probed candidate locations — feature-detected; absent
+   *  fields report null and the watcher never invents events. */
+  function readAntibotContext() {
+    try {
+      const p = state.gameClient && state.gameClient.player;
+      if (!p) return { position: null, teleported: null, health: null, damageTint: null };
+      const st = p.state && typeof p.state === 'object' ? p.state : {};
+      const rawPos = st.__position || p.__position;
+      let position = null;
+      if (rawPos && typeof rawPos === 'object') {
+        const x = Number(rawPos.x);
+        const y = Number(rawPos.y);
+        const z = Number(rawPos.z);
+        if (Number.isFinite(x) && Number.isFinite(y)) {
+          position = { x, y, z: Number.isFinite(z) ? z : 0 };
+        }
+      }
+      const teleported = (st.__teleported === true || p.__teleported === true) ? true : null;
+      const rawHp = st.health !== undefined ? st.health : p.health;
+      const health = Number.isFinite(Number(rawHp)) ? Number(rawHp) : null;
+      const damageTint = (st.__damageTint === true || p.__damageTint === true) ? true : null;
+      return { position, teleported, health, damageTint };
+    } catch (e) { return { position: null, teleported: null, health: null, damageTint: null }; }
+  }
+
   /** Loot-command surface (REQ-19): feature-detected game function
    *  (monster, destination) => void; null = unavailable (degrade). */
   function readLootCommand() {
@@ -713,6 +796,22 @@ function createAgent(opts = {}) {
       now: nowFn,
       log,
     });
+    // REQ-33/34 (PR5, D9): anti-bot watcher — reads the SAME Default-channel
+    // surface as echo/learning (REQ-24 MODIFIED) + the player context; the
+    // auto-reply send is feature-detected (degrade = alert-only). The
+    // confirm-once session state lives in state.timers (survives rebuilds,
+    // resets on agent restart — REQ-34 "per session").
+    const antibot = ANTIBOT_MOD.createAntibotModule({
+      config: cfg.antibot,
+      playerName: function () { return (state.gameClient && state.gameClient.player && state.gameClient.player.name) || null; },
+      gameClient: state.gameClient,
+      document: doc,
+      readContext: readAntibotContext,
+      readSend: readDefaultChannelSend,
+      timers: state.timers,
+      now: nowFn,
+      log,
+    });
     // REQ-23 (slice 6): routes v1 — native autowalk state read + walk-to
     // via the game's own pathfinder primitive (never synthetic per-step
     // input). Not a tree node: the read is passive (eager getState) and
@@ -726,7 +825,7 @@ function createAgent(opts = {}) {
     state.modules = {
       healItems: healItems, healMagic: healMagic, runes: runes, training: training, eat: eat,
       trade: trade, loot: loot, spawns: spawns, huntStats: huntStats, echo: echo, learning: learning,
-      routes: routes,
+      antibot: antibot, routes: routes,
     };
 
     /* -------- tree nodes: survival > combat > training > eat > loot (REQ-11) -------- */
@@ -1013,14 +1112,52 @@ function createAgent(opts = {}) {
       ],
     };
 
+    // REQ-34 (PR5, D9): anti-bot auto-replies — the Default-channel send runs
+    // ONLY inside a queue-dispatched closure (REQ-12 no-bypass). The watcher
+    // (tickOnce observe) feeds the decision; when the send surface is absent
+    // the module degrades to ALERT-ONLY (never an invented send path). Lowest
+    // priority: a chat reply never pre-empts survival/combat (REQ-11).
+    const antibotNode = {
+      type: 'sequence',
+      id: 'antibot',
+      children: [
+        {
+          type: 'condition',
+          id: 'antibot-feasible',
+          predicate: function () {
+            if (!cfg.antibot.on) return false;
+            const d = antibot.decide();
+            if (!d.fire) return false;
+            return !state.queue.hasPending(function (e) { return e.kind === 'antibot-reply'; });
+          },
+        },
+        {
+          type: 'action',
+          id: 'antibot-send',
+          run: function () {
+            const d = antibot.decide();
+            if (!d.fire) return false;
+            // NO-BYPASS (REQ-12): the real channel send happens ONLY inside
+            // the queue-dispatched closure.
+            state.queue.enqueue(function () {
+              const ok = antibot.fire(d);
+              logEvent('antibot', 'reply', ok ? d.pattern : 'send-failed');
+            }, { kind: 'antibot-reply' });
+            return true;
+          },
+        },
+      ],
+    };
+
     state.tree = createTree({
       root: {
         type: 'selector',
         id: 'priority-root',
         // heal (items + magic + legacy slot-heal) > runes > combat > training
-        // > eat > loot > trade (REQ-11: survival/heal always beats
-        // combat/loot/training; trade broadcast is the lowest priority).
-        children: [healItemsNode, healMagicNode, survival, runesNode, combat, trainingNode, eatNode, lootNode, tradeNode],
+        // > eat > loot > trade > antibot (REQ-11: survival/heal always beats
+        // combat/loot/training; trade broadcast and anti-bot replies are the
+        // lowest-priority chat actions).
+        children: [healItemsNode, healMagicNode, survival, runesNode, combat, trainingNode, eatNode, lootNode, tradeNode, antibotNode],
       },
     });
   }
@@ -1094,6 +1231,10 @@ function createAgent(opts = {}) {
       if (m.huntStats) m.huntStats.accumulate(killScan);
       if (m.loot) m.loot.observeKills(killScan.kills);
       if (m.learning) m.learning.observeChat();
+      // REQ-33/34 (PR5): anti-bot watcher — the SAME Default-channel poll as
+      // echo/learning (REQ-24 MODIFIED) + the player context; alerts ride the
+      // snapshot, confirmed patterns queue auto-replies for the tree node.
+      if (m.antibot) m.antibot.observe();
       const result = state.tree.tick(ctx);
       state.lastPath = result.path;
       state.lastDispatch = state.queue.drain(); // eligible entries fire here, in the queue
@@ -1189,6 +1330,15 @@ function createAgent(opts = {}) {
         }
         return { ok: false, reason: 'unknown action' };
       },
+      confirmAntibot: function (pattern) {
+        // REQ-34 (PR5): user confirmation on a pending anti-bot pattern — the
+        // module moves it to session-confirmed (state.timers), enabling
+        // auto-replies for later occurrences. Refused pre-Connect (REQ-02).
+        if (!state.armed) return { ok: false, reason: 'not connected' };
+        const m = state.modules && state.modules.antibot;
+        if (!m) return { ok: false, reason: 'not ready' };
+        return m.confirm(pattern);
+      },
       getWalkState: function () {
         // REQ-23: real routes-v1 module state (slice 6) — autowalk read
         // (+ destination) or the honest "no pathfinder data" degrade.
@@ -1273,6 +1423,7 @@ function createAgent(opts = {}) {
         huntStats: modules.huntStats ? modules.huntStats.getState() : null,
         echo: modules.echo ? modules.echo.getState() : null,
         learning: modules.learning ? modules.learning.getState() : null,
+        antibot: modules.antibot ? modules.antibot.getState() : null, // PR5 (REQ-33/34): alerts + pending confirm
         routes: modules.routes ? modules.routes.getState() : null,
       },
       warnings: state.warnings.slice(),
