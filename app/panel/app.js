@@ -28,6 +28,7 @@
   var pollTimer = null;
   var prefilledFor = null; // last character whose saved config was pre-fetched
   var lastCapFull = false; // PR4 (REQ-30, D3): rising-edge detection for the cap-full alert
+  var lastAntibotSeq = 0;  // PR5 (REQ-33): per-alert-id latch — each NEW anti-bot alert rings once
 
   /* ------------------------------- render ------------------------------- */
 
@@ -192,6 +193,16 @@
         });
         break;
       }
+      case 'antibot-confirm': {
+        // REQ-34 (PR5): user confirmed a pending anti-bot pattern — the
+        // server persists the confirmation per character and RPCs the agent
+        // confirmAntibot (session-confirmed -> later occurrences auto-reply).
+        postJson('/api/antibot-confirm', {
+          character: state.identity ? state.identity.name : null,
+          pattern: effect.pattern,
+        });
+        break;
+      }
       default:
         break;
     }
@@ -245,6 +256,32 @@
           dispatch({ type: 'ALERT', kind: 'cap-full', message: 'Rune cap full — rune-making stopped (fallback or idle)' });
         }
         lastCapFull = capFull;
+      }
+      // PR5 (REQ-33): anti-bot alerts ride the snapshot — each NEW alert id
+      // raises the panel ALERT (the ALERT dispatch rings the Web Audio beep);
+      // steady state / already-seen ids stay silent. A module restart resets
+      // the id sequence (detected by a lower max id) and re-arms the latch.
+      if (res && res.agent && res.agent.modules && res.agent.modules.antibot) {
+        var antibotAlerts = res.agent.modules.antibot.alerts;
+        if (Array.isArray(antibotAlerts) && antibotAlerts.length > 0) {
+          var maxSeq = 0;
+          for (var ai = 0; ai < antibotAlerts.length; ai += 1) {
+            var aid = Number(antibotAlerts[ai].id) || 0;
+            if (aid > maxSeq) maxSeq = aid;
+          }
+          if (maxSeq < lastAntibotSeq) lastAntibotSeq = 0; // agent restart: ids restart
+          for (var aj = 0; aj < antibotAlerts.length; aj += 1) {
+            var alert = antibotAlerts[aj];
+            if ((Number(alert.id) || 0) > lastAntibotSeq) {
+              dispatch({
+                type: 'ALERT',
+                kind: 'antibot-' + (alert.kind || 'event'),
+                message: alert.message || 'Anti-bot: ' + (alert.kind || 'event'),
+              });
+            }
+          }
+          lastAntibotSeq = maxSeq;
+        }
       }
     });
   }
@@ -307,6 +344,14 @@
           : target.matches('#trainer-fallback-pct') ? 'fallbackManaPct'
             : target.matches('#trainer-reserve') ? 'reserve' : 'eatMagicSlot';
       dispatch({ type: 'UPDATE_TRAINER_INPUT', key: trainerKey, value: target.value });
+    } else if (target && target.matches && target.matches(
+      '#others-food-slot, #others-every-casts, #others-loot-dest, #others-replies')) {
+      // REQ-33/34 (PR5): OTHERS settings form — pure UI values that survive
+      // re-renders; the Save button commits them into the config.
+      var othersKey = target.matches('#others-food-slot') ? 'foodSlot'
+        : target.matches('#others-every-casts') ? 'everyCasts'
+          : target.matches('#others-loot-dest') ? 'lootDest' : 'antibotReplies';
+      dispatch({ type: 'UPDATE_OTHERS_INPUT', key: othersKey, value: target.value });
     }
   });
 
@@ -374,6 +419,17 @@
       // cap % -> ratio, fallback slot + mana % -> ratio, reserve,
       // eat-with-magic) into the config.
       dispatch({ type: 'SAVE_TRAINER_SETTINGS' });
+    }
+    else if (target.matches('#others-save-btn')) {
+      // REQ-33/34 (PR5): commit the OTHERS settings form (food slot +
+      // every-N-casts, loot default destination, anti-bot pattern => reply
+      // lines) into the config.
+      dispatch({ type: 'SAVE_OTHERS_SETTINGS' });
+    }
+    else if (target.matches('.antibot-confirm-btn')) {
+      // REQ-34 (PR5): confirm the pending anti-bot pattern — the effect
+      // posts /api/antibot-confirm (server persists + RPC confirmAntibot).
+      dispatch({ type: 'CONFIRM_ANTIBOT', pattern: target.getAttribute('data-antibot-confirm') || '' });
     }
   });
 

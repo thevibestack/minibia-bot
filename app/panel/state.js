@@ -170,6 +170,24 @@
       'trainer.eatMagicSlot': 'Magic food slot',
       'trainer.save': 'Save trainer settings',
       'trainer.capFullAlert': 'Rune cap full — rune-making stopped (fallback or idle)',
+      // Slice 5 (PR5, REQ-33/34): OTHERS settings form + anti-bot live state.
+      'others.formTitle': 'Other settings',
+      'others.foodTitle': 'Food',
+      'others.foodSlot': 'Food slot (backpack index)',
+      'others.everyCasts': 'Eat every N casts (0 = hunger only)',
+      'others.lootTitle': 'Auto-loot',
+      'others.lootDest': 'Default destination (empty = loot only listed monsters)',
+      'others.antibotTitle': 'Anti-bot chat replies',
+      'others.antibotReplies': 'One per line: pattern => reply (first match asks confirmation once per session)',
+      'others.save': 'Save other settings',
+      'others.confirmPrompt': 'Anti-bot pattern "%pattern%" seen — confirm to auto-reply "%reply%"?',
+      'others.confirmBtn': 'Confirm & enable auto-reply',
+      'others.sendUnavailable': 'Auto-replies unavailable — no Default-channel send surface (alert only)',
+      'others.alertsTitle': 'Anti-bot alerts',
+      'others.noAlerts': 'No anti-bot events yet.',
+      'others.alertSpeak': 'Speak',
+      'others.alertMoved': 'Moved',
+      'others.alertAttacked': 'Attack',
     },
     es: {
       'gate.disconnected': 'Desconectado',
@@ -253,6 +271,24 @@
       'trainer.eatMagicSlot': 'Slot de comida mágica',
       'trainer.save': 'Guardar entrenamiento',
       'trainer.capFullAlert': 'Tope de runas lleno — se detuvo la fabricación (alternativo o espera)',
+      // Slice 5 (PR5, REQ-33/34): formulario de OTROS + estado anti-bot en vivo.
+      'others.formTitle': 'Otros ajustes',
+      'others.foodTitle': 'Comida',
+      'others.foodSlot': 'Slot de comida (índice de mochila)',
+      'others.everyCasts': 'Comer cada N hechizos (0 = solo con hambre)',
+      'others.lootTitle': 'Auto-loot',
+      'others.lootDest': 'Destino por defecto (vacío = loot solo a monstruos listados)',
+      'others.antibotTitle': 'Respuestas anti-bot',
+      'others.antibotReplies': 'Una por línea: patrón => respuesta (la primera coincidencia pide confirmación una vez por sesión)',
+      'others.save': 'Guardar otros ajustes',
+      'others.confirmPrompt': 'Patrón anti-bot "%pattern%" detectado — ¿confirmás para responder "%reply%"?',
+      'others.confirmBtn': 'Confirmar y activar respuesta',
+      'others.sendUnavailable': 'Respuestas no disponibles — sin superficie de envío al canal Default (solo alertas)',
+      'others.alertsTitle': 'Alertas anti-bot',
+      'others.noAlerts': 'Todavía no hay eventos anti-bot.',
+      'others.alertSpeak': 'Habla',
+      'others.alertMoved': 'Movimiento',
+      'others.alertAttacked': 'Ataque',
     },
   };
 
@@ -333,6 +369,11 @@
         capMode: '', capFullThreshold: '', fallbackSlot: '', fallbackManaPct: '',
         reserve: '', eatMagic: '', eatMagicSlot: '',
       },
+      // Slice 5 (PR5, REQ-33/34): OTHERS settings form raw values — pure UI
+      // strings (food slot, every-N-casts, loot default destination, anti-bot
+      // replies as `pattern => reply` lines) that survive re-renders;
+      // SAVE_OTHERS_SETTINGS parses + commits them into the config.
+      othersForm: { foodSlot: '', everyCasts: '', lootDest: '', antibotReplies: '' },
     };
   }
 
@@ -392,6 +433,55 @@
       eatMagic: ew.enabled === true ? 'true' : 'false',
       eatMagicSlot: ew.slot !== null && ew.slot !== undefined ? String(ew.slot) : '',
     };
+  }
+
+  /**
+   * Slice 5 (PR5, REQ-33/34): derive the OTHERS form values from the saved
+   * config. The anti-bot replies render as `pattern => reply` lines (one per
+   * entry) — the exact format SAVE_OTHERS_SETTINGS parses back.
+   * @param {object} state
+   * @returns {object} othersForm-shaped value strings
+   */
+  function othersFormFromConfig(state) {
+    const cfg = state.config && state.config.modules || {};
+    const eat = cfg.eat || {};
+    const loot = cfg.loot || {};
+    const antibot = cfg.antibot || {};
+    const replies = Array.isArray(antibot.replies) ? antibot.replies : [];
+    return {
+      foodSlot: eat.slot !== null && eat.slot !== undefined ? String(eat.slot) : '',
+      everyCasts: Number.isFinite(Number(eat.everyCasts)) ? String(eat.everyCasts) : '',
+      lootDest: typeof loot.defaultDest === 'string' && loot.defaultDest ? loot.defaultDest : '',
+      antibotReplies: replies
+        .filter((r) => r && typeof r === 'object')
+        .map((r) => String(r.pattern || '') + ' => ' + String(r.reply || ''))
+        .join('\n'),
+    };
+  }
+
+  /**
+   * Slice 5 (PR5, REQ-33/34): parse the anti-bot replies textarea — one
+   * `pattern => reply` entry per line, blank lines skipped. A malformed line
+   * returns the line number + text (the save is refused with a visible
+   * reason — never a silent drop).
+   * @param {string} text
+   * @returns {{error: string|null, entries: Array<{pattern: string, reply: string}>}}
+   */
+  function parseRepliesText(text) {
+    const entries = [];
+    const lines = String(text === null || text === undefined ? '' : text).split('\n');
+    for (let i = 0; i < lines.length; i += 1) {
+      const line = lines[i].trim();
+      if (!line) continue;
+      const sep = line.indexOf(' => ');
+      const pattern = sep === -1 ? '' : line.slice(0, sep).trim();
+      const reply = sep === -1 ? '' : line.slice(sep + 4).trim();
+      if (!pattern || !reply) {
+        return { error: 'line ' + (i + 1) + ' must be "pattern => reply"', entries: null };
+      }
+      entries.push({ pattern, reply });
+    }
+    return { error: null, entries };
   }
 
   /** Refusal factory — the shared "not connected" gate reason. */
@@ -925,6 +1015,87 @@
         };
       }
 
+      /* ------------------- slice 5 (PR5, REQ-33/34): OTHERS form ------------------- */
+
+      case 'UPDATE_OTHERS_INPUT': {
+        // REQ-33/34: pure UI state — the OTHERS form values survive re-renders
+        // (healForm/trainerForm precedent). No gate: typing pre-Connect is
+        // harmless.
+        const key = String(action.key || '');
+        const OTHERS_KEYS = ['foodSlot', 'everyCasts', 'lootDest', 'antibotReplies'];
+        if (OTHERS_KEYS.indexOf(key) === -1) return { state, effects: [] };
+        const othersForm = Object.assign({}, state.othersForm || {
+          foodSlot: '', everyCasts: '', lootDest: '', antibotReplies: '',
+        });
+        othersForm[key] = String(action.value === null || action.value === undefined ? '' : action.value);
+        return { state: Object.assign({}, state, { othersForm }), effects: [] };
+      }
+
+      case 'SAVE_OTHERS_SETTINGS': {
+        // REQ-33/34 (PR5): commit the OTHERS form into the config: the food
+        // slot + every-N-casts cadence (eat module, REQ-17 unchanged), the
+        // auto-loot default destination (REQ-33 — auto-loot fires ONLY with a
+        // configured list; per-monster entries stay managed elsewhere), and
+        // the anti-bot `pattern => reply` list (REQ-34 confirm-once config).
+        // Invalid values are refused with a visible reason — never silently
+        // dropped. The push-config effect carries the change to the agent.
+        if (state.gate !== GATE_ARMED) return { state: refuse(state, action), effects: [] };
+        const form = state.othersForm || {};
+        const at = Date.now();
+        const invalid = (reason) => ({
+          state: Object.assign({}, state, { refusal: { action: 'SAVE_OTHERS_SETTINGS', module: 'others', reason, at } }),
+          effects: [],
+        });
+        const rawSlot = String(form.foodSlot || '').trim();
+        const rawCasts = String(form.everyCasts || '').trim();
+        const rawDest = String(form.lootDest || '').trim();
+        const rawReplies = String(form.antibotReplies || '');
+        const foodSlot = rawSlot === '' ? null : Number(rawSlot);
+        if (foodSlot !== null && (!Number.isInteger(foodSlot) || foodSlot < 1)) {
+          return invalid('invalid other settings — food slot must be a positive backpack index or empty');
+        }
+        const everyCasts = rawCasts === '' ? 0 : Number(rawCasts);
+        if (!Number.isFinite(everyCasts) || everyCasts < 0) {
+          return invalid('invalid other settings — eat every N casts must be >= 0');
+        }
+        const parsed = parseRepliesText(rawReplies);
+        if (parsed.error) {
+          return invalid('invalid anti-bot replies — ' + parsed.error);
+        }
+        const config = JSON.parse(JSON.stringify(state.config || {}));
+        if (!config.modules || typeof config.modules !== 'object') config.modules = {};
+        if (!config.modules.eat || typeof config.modules.eat !== 'object') config.modules.eat = {};
+        if (!config.modules.loot || typeof config.modules.loot !== 'object') config.modules.loot = {};
+        if (!config.modules.antibot || typeof config.modules.antibot !== 'object') config.modules.antibot = {};
+        config.modules.eat.slot = foodSlot;
+        config.modules.eat.everyCasts = everyCasts;
+        config.modules.loot.defaultDest = rawDest === '' ? null : rawDest;
+        config.modules.antibot.replies = parsed.entries;
+        return {
+          state: Object.assign({}, state, {
+            config,
+            othersForm: {
+              foodSlot: foodSlot === null ? '' : String(foodSlot),
+              everyCasts: String(everyCasts),
+              lootDest: rawDest,
+              antibotReplies: rawReplies,
+            },
+            refusal: null,
+          }),
+          effects: [{ type: 'push-config' }],
+        };
+      }
+
+      case 'CONFIRM_ANTIBOT': {
+        // REQ-34 (PR5): user confirmation on the pending anti-bot pattern —
+        // the effect posts /api/antibot-confirm (server persists per
+        // character + RPCs the agent confirmAntibot, enabling auto-replies).
+        if (state.gate !== GATE_ARMED) return { state: refuse(state, action), effects: [] };
+        const pattern = String(action.pattern || '').trim();
+        if (!pattern) return { state, effects: [] };
+        return { state, effects: [{ type: 'antibot-confirm', pattern }] };
+      }
+
       case 'RESET':
         return { state: reset(), effects: [] };
 
@@ -987,6 +1158,33 @@
     const offers = snapshot && snapshot.agent && snapshot.agent.modules
       && snapshot.agent.modules.learning && snapshot.agent.modules.learning.offers;
     return Array.isArray(offers) ? offers : [];
+  }
+
+  /**
+   * PR5 (REQ-33/34): anti-bot module state carried by the live snapshot
+   * (agent state modules.antibot). Pure — null when absent.
+   * @param {object|null} snapshot - SNAPSHOT payload
+   * @returns {object|null}
+   */
+  function snapshotAntibot(snapshot) {
+    const m = snapshot && snapshot.agent && snapshot.agent.modules
+      && snapshot.agent.modules.antibot;
+    return m && typeof m === 'object' ? m : null;
+  }
+
+  /** PR5 (REQ-33): one readable anti-bot alert row (never raw JSON). */
+  function renderAntibotAlert(alert, state) {
+    const kindLabel = alert && alert.kind === 'speak' ? t(state, 'others.alertSpeak')
+      : alert && alert.kind === 'moved' ? t(state, 'others.alertMoved')
+        : alert && alert.kind === 'attacked' ? t(state, 'others.alertAttacked')
+          : String((alert && alert.kind) || 'event');
+    const when = alert && Number.isFinite(Number(alert.at))
+      ? new Date(Number(alert.at)).toLocaleTimeString() : '--:--:--';
+    return '<div class="antibot-alert" data-antibot-alert="' + (alert && alert.id !== undefined ? alert.id : '') + '">'
+      + '<span class="antibot-alert-kind">' + escapeHtml(kindLabel) + '</span>'
+      + ' <span class="antibot-alert-time">' + escapeHtml(when) + '</span>'
+      + ' <span class="antibot-alert-message">' + escapeHtml(String((alert && alert.message) || '')) + '</span>'
+      + '</div>';
   }
 
   /** REQ-25: offer row HTML (word + time + best-effort sid + Confirm/Decline). */
@@ -1243,6 +1441,37 @@
       + '</div>';
   }
 
+  /**
+   * OTHERS settings form (PR5, REQ-33/34): food (slot + every-N-casts), the
+   * auto-loot default destination (auto-loot fires ONLY with a configured
+   * list — REQ-33) and the anti-bot `pattern => reply` list (confirm-once
+   * config, REQ-34). Values come from the pure-UI othersForm state (survive
+   * re-renders) falling back to the saved config. The module toggles live in
+   * the OTHERS tab module list.
+   * @param {object} state
+   * @returns {string}
+   */
+  function renderOthersForm(state) {
+    const form = state.othersForm || {};
+    const derived = othersFormFromConfig(state);
+    const val = (key) => (form[key] !== '' && form[key] !== undefined ? form[key] : derived[key]);
+    return '<div class="others-form">'
+      + '<h3>' + escapeHtml(t(state, 'others.formTitle')) + '</h3>'
+      + '<h4>' + escapeHtml(t(state, 'others.foodTitle')) + '</h4>'
+      + '<label class="others-field">' + escapeHtml(t(state, 'others.foodSlot'))
+      + ' <input type="number" id="others-food-slot" min="1" step="1" value="' + escapeHtml(val('foodSlot')) + '"></label>'
+      + '<label class="others-field">' + escapeHtml(t(state, 'others.everyCasts'))
+      + ' <input type="number" id="others-every-casts" min="0" step="1" value="' + escapeHtml(val('everyCasts')) + '"></label>'
+      + '<h4>' + escapeHtml(t(state, 'others.lootTitle')) + '</h4>'
+      + '<label class="others-field">' + escapeHtml(t(state, 'others.lootDest'))
+      + ' <input type="text" id="others-loot-dest" value="' + escapeHtml(val('lootDest')) + '"></label>'
+      + '<h4>' + escapeHtml(t(state, 'others.antibotTitle')) + '</h4>'
+      + '<label class="others-field">' + escapeHtml(t(state, 'others.antibotReplies'))
+      + ' <textarea id="others-replies" rows="4" spellcheck="false">' + escapeHtml(val('antibotReplies')) + '</textarea></label>'
+      + '<button type="button" id="others-save-btn">' + escapeHtml(t(state, 'others.save')) + '</button>'
+      + '</div>';
+  }
+
   /** Config form: module settings shell + the Routes v1 walk-to form
    *  (REQ-23, slice 6) + the slice-1b profile loader and spell picker.
    *  Route RECORDING is explicitly marked FUTURE — out of v1 scope per the
@@ -1253,7 +1482,8 @@
     let body;
     if (state.gate === GATE_ARMED) {
       const wt = state.walkTo || { x: '', y: '' };
-      body = renderHealForm(state) + renderTrainerForm(state) + renderProfileLoader(state)
+      body = renderHealForm(state) + renderTrainerForm(state) + renderOthersForm(state)
+        + renderProfileLoader(state)
         + renderSpellPicker(state)
         + '<div class="routes-form">'
         + '<h3>Routes (v1)</h3>'
@@ -1352,6 +1582,33 @@
       if (modules && modules.training && modules.training.capFull === true) {
         parts.push('<div class="module-alert alert-cap-full">'
           + escapeHtml(t(state, 'trainer.capFullAlert')) + '</div>');
+      }
+      // Slice 5 (PR5, REQ-33/34): the anti-bot watcher state — pending
+      // confirm prompt (first pattern occurrence), recent alerts, and the
+      // honest auto-reply degrade. The ALERT + beep for NEW alerts fire in
+      // app.js (per-alert-id rising edge); these lines keep everything visible.
+      const antibot = snapshotAntibot(state.snapshot);
+      if (antibot) {
+        const pending = antibot.pendingConfirm;
+        if (pending && pending.pattern) {
+          parts.push('<div class="antibot-confirm-prompt">'
+            + escapeHtml(tVar(state, 'others.confirmPrompt', { pattern: pending.pattern, reply: pending.reply }))
+            + ' <button type="button" class="antibot-confirm-btn" data-antibot-confirm="'
+            + escapeHtml(pending.pattern) + '">' + escapeHtml(t(state, 'others.confirmBtn')) + '</button>'
+            + '</div>');
+        }
+        if (antibot.sendAvailable === false) {
+          parts.push('<div class="module-alert alert-antibot-send">'
+            + escapeHtml(t(state, 'others.sendUnavailable')) + '</div>');
+        }
+        parts.push('<div class="antibot-alerts"><h3>' + escapeHtml(t(state, 'others.alertsTitle')) + '</h3>');
+        const alerts = Array.isArray(antibot.alerts) ? antibot.alerts.slice(-5) : [];
+        if (alerts.length === 0) {
+          parts.push('<p class="antibot-none">' + escapeHtml(t(state, 'others.noAlerts')) + '</p>');
+        } else {
+          parts.push(alerts.map((a) => renderAntibotAlert(a, state)).join(''));
+        }
+        parts.push('</div>');
       }
       if (modules && modules.routes) {
         const r = modules.routes;
@@ -1506,9 +1763,11 @@
     escapeHtml,
     premiumBlockedModules,
     snapshotOffers,
+    snapshotAntibot,
     snapshotStats,
     formatLogResult,
     renderOffer,
+    renderAntibotAlert,
     renderStatusBar,
     renderModuleList,
     renderProfileLoader,
@@ -1518,6 +1777,9 @@
     renderHealForm,
     trainerFormFromConfig,
     renderTrainerForm,
+    othersFormFromConfig,
+    parseRepliesText,
+    renderOthersForm,
     renderLiveState,
     renderLog,
     renderTutorial,

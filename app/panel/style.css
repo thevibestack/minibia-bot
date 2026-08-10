@@ -311,3 +311,38 @@ body {
 }
 .picker-pick:hover { background: var(--ok); color: #0b1016; }
 .picker-current { color: var(--accent); font-size: 12px; }
+
+/* Slice 5 (PR5, REQ-33/34): OTHERS settings form + anti-bot live state. */
+.others-form { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); }
+.others-form h4 { margin: 10px 0 6px; font-size: 13px; color: var(--accent); }
+.others-form h4:first-of-type { margin-top: 4px; }
+.others-field { display: block; margin: 6px 0; color: var(--muted); font-size: 13px; }
+.others-field input[type="number"],
+.others-field input[type="text"] { width: 180px; }
+.others-field textarea { width: 100%; max-width: 560px; font-family: var(--mono, monospace); font-size: 12px; }
+.others-save-btn, #others-save-btn { margin-top: 8px; }
+.antibot-confirm-prompt {
+  margin: 8px 0;
+  padding: 8px 10px;
+  border: 1px solid var(--warn, #d9a13b);
+  border-radius: 8px;
+  background: rgba(217, 161, 59, 0.1);
+  font-size: 13px;
+}
+.antibot-confirm-btn {
+  margin-left: 8px;
+  padding: 3px 12px;
+  border: 1px solid var(--warn, #d9a13b);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--warn, #d9a13b);
+  cursor: pointer;
+  font-weight: 600;
+}
+.antibot-alerts { margin-top: 10px; font-size: 13px; }
+.antibot-alerts h3 { font-size: 13px; margin: 8px 0 4px; }
+.antibot-none { color: var(--muted); font-size: 12px; }
+.antibot-alert { padding: 3px 0; border-bottom: 1px dotted var(--border); font-size: 12px; }
+.antibot-alert-kind { font-weight: 600; color: var(--warn, #d9a13b); }
+.antibot-alert-time { color: var(--muted); margin: 0 6px; }
+.alert-antibot-send { color: var(--warn, #d9a13b); }
