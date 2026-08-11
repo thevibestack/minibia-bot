@@ -412,6 +412,83 @@ test('REQ-45 (B): the confirm overlay renders when pending with localized Yes/No
   assert.ok(!P.renderConfigForm(armedState()).includes('confirm-stop-yes'), 'no overlay when nothing is pending');
 });
 
+test('REQ-42/46 (B): UPDATE_TRAINER_INPUT accepts the rune sid and hotkey F-keys', () => {
+  let state = armedState();
+  state = P.panelReducer(state, { type: 'UPDATE_TRAINER_INPUT', key: 'runeSid', value: '42' }).state;
+  state = P.panelReducer(state, { type: 'UPDATE_TRAINER_INPUT', key: 'runeKey', value: 'F6' }).state;
+  state = P.panelReducer(state, { type: 'UPDATE_TRAINER_INPUT', key: 'fallbackKey', value: 'F7' }).state;
+  assert.equal(state.trainerForm.runeSid, '42');
+  assert.equal(state.trainerForm.runeKey, 'F6');
+  assert.equal(state.trainerForm.fallbackKey, 'F7');
+  assert.equal(state.trainerForm.reserve, '', 'other keys untouched');
+});
+
+test('REQ-42/46 (B): SAVE_TRAINER_SETTINGS persists the rune sid, hotkeys and stop flags', () => {
+  let state = armedState();
+  state = P.panelReducer(state, {
+    type: 'SPELL_CATALOG',
+    spells: [
+      { sid: 42, name: 'Blank Rune', words: 'adori vita', mana: 100, level: 1, vocations: [] },
+    ],
+  }).state;
+  const r = saveTrainer(state, Object.assign({}, VALID_FORM, {
+    runeSid: '42', runeKey: 'F6', fallbackKey: 'F7', stopRuneMaking: 'true', stopBotting: 'false',
+  }));
+  assert.deepEqual(r.effects, [{ type: 'push-config' }]);
+  const training = r.state.config.modules.training;
+  assert.equal(training.sid, 42, 'rune sid persisted to training.sid');
+  assert.deepEqual(training.hotkeys, { runeKey: 'F6', fallbackKey: 'F7' }, 'hotkey F-keys persisted');
+  assert.equal(training.stopRuneMaking, true, 'stop rune-making flag persisted');
+  assert.equal(training.stopBotting, false, 'stop botting flag persisted');
+  assert.equal(r.state.modules.runes, false, 'runes module off after the stop save');
+  const committed = r.state.trainerForm;
+  assert.equal(committed.runeSid, '42');
+  assert.equal(committed.runeKey, 'F6');
+  assert.equal(committed.fallbackKey, 'F7');
+});
+
+test('REQ-46 (B): SAVE_TRAINER_SETTINGS refuses a hotkey outside F1-F12', () => {
+  const r = saveTrainer(armedState(), Object.assign({}, VALID_FORM, { runeKey: 'F13' }));
+  assert.equal(r.effects.length, 0);
+  assert.match(r.state.refusal.reason, /hotkeys must be F1-F12/, 'visible refusal');
+});
+
+test('REQ-46 (B): ASSIGN_HOTKEY is armed-gated and emits the hotkey-assign effect', () => {
+  const armed = P.panelReducer(armedState(), { type: 'ASSIGN_HOTKEY', which: 'rune' });
+  assert.deepEqual(armed.effects, [{ type: 'hotkey-assign', which: 'rune' }]);
+  assert.equal(armed.state.refusal, null);
+  const fallback = P.panelReducer(armedState(), { type: 'ASSIGN_HOTKEY', which: 'fallback' });
+  assert.deepEqual(fallback.effects, [{ type: 'hotkey-assign', which: 'fallback' }]);
+  const unarmed = P.panelReducer(P.createInitialState(), { type: 'ASSIGN_HOTKEY', which: 'rune' });
+  assert.equal(unarmed.effects.length, 0, 'no effect pre-Connect');
+  assert.equal(unarmed.state.refusal.reason, 'not connected', 'visible refusal (REQ-02)');
+});
+
+test('REQ-46 (B): HOTKEY_RESULT surfaces a visible refusal on failure and clears on success', () => {
+  const fail = P.panelReducer(armedState(), { type: 'HOTKEY_RESULT', ok: false, which: 'rune', reason: 'keyboard surface unavailable' });
+  assert.equal(fail.state.refusal.action, 'ASSIGN_HOTKEY');
+  assert.equal(fail.state.refusal.reason, 'keyboard surface unavailable');
+  const ok = P.panelReducer(fail.state, { type: 'HOTKEY_RESULT', ok: true, which: 'rune' });
+  assert.equal(ok.state.refusal, null);
+});
+
+test('REQ-46 (B): HOTKEYS_LOADED records the surface availability for the display-only degrade', () => {
+  const loaded = P.panelReducer(armedState(), {
+    type: 'HOTKEYS_LOADED',
+    available: false,
+    reason: 'no keyboard surface',
+    configured: { runeKey: 'F6', fallbackKey: 'F7' },
+  });
+  assert.equal(loaded.state.hotkeys.available, false);
+  assert.deepEqual(loaded.state.hotkeys.configured, { runeKey: 'F6', fallbackKey: 'F7' });
+  // Display-only degrade: the hotkey selects are disabled + honest note.
+  const html = P.renderConfigForm(loaded.state);
+  assert.match(html, /id="trainer-rune-key" disabled/, 'rune hotkey select disabled');
+  assert.match(html, /id="trainer-fallback-key" disabled/, 'fallback hotkey select disabled');
+  assert.match(html, /id="trainer-rune-assign" disabled/, 'assign button disabled');
+  assert.match(html, /Hotkeys unavailable — the game keyboard surface is not exposed/, 'honest degrade note');
+});
+
 test('REQ-42 (B): the form derives the rune sid, hotkeys and toggles from the saved config', () => {
   let state = armedState();
   state = P.panelReducer(state, {

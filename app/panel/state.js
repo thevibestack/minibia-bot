@@ -556,6 +556,11 @@
       soundEnabled: true,      // alert sound toggle — default ON (persisted 'mb-panel-sound')
       tutorial: null,          // null | {step: number} — first-run stepper
       confirmStop: null,       // Slice B (REQ-45, D-B6): null | {pending: true, at} — Stop-Botting confirm overlay
+      // Slice B (REQ-46, D-B3): hotkey surface availability + configured
+      // F-keys (from /api/hotkeys). available:false drives the display-only
+      // degrade (disabled selects + honest note). Default true until the
+      // connect-time read lands.
+      hotkeys: { available: true, reason: null, configured: { runeKey: 'F4', fallbackKey: 'F5' } },
       // Slice 1b (REQ-27/28): profile cross-load + spell picker state.
       profiles: [],            // character names with saved configs (REQ-27)
       catalog: { spells: [], loaded: false, reason: null }, // filtered client catalog (REQ-28)
@@ -900,6 +905,16 @@
     }
     config.modules.training.eatWithMagic.enabled = ewEnabled;
     config.modules.training.eatWithMagic.slot = eatSlot;
+    // Slice B (REQ-42/46, D-B2/D-B3/B6): persist the rune sid (when chosen),
+    // the hotkey F-keys and the stop flags.
+    if (runeSid !== '') config.modules.training.sid = Number(runeSid);
+    if (!config.modules.training.hotkeys || typeof config.modules.training.hotkeys !== 'object') {
+      config.modules.training.hotkeys = {};
+    }
+    config.modules.training.hotkeys.runeKey = runeKey;
+    config.modules.training.hotkeys.fallbackKey = fallbackKey;
+    config.modules.training.stopRuneMaking = stopRuneMaking === 'true';
+    config.modules.training.stopBotting = stopBotting === 'true';
     // Slice B (REQ-44, D-B4): either stop toggle turns the runes MODULE off
     // only — healing and eating continue (decision 4). The module toggle
     // state is what the push reads (buildPushConfig), so flip it here too.
@@ -1357,11 +1372,12 @@
       case 'UPDATE_TRAINER_INPUT': {
         // REQ-30/31/32: pure UI state — the TRAINER form values survive
         // re-renders (healForm/walkTo precedent). No gate: typing pre-Connect
-        // is harmless. Slice B (REQ-44, D-B4): the toggle switches
-        // (autoFallback/stopRuneMaking/stopBotting) are form values too.
+        // is harmless. Slice B (REQ-42/44/46): the rune sid + hotkey F-keys
+        // + the toggle switches are form values too.
         const key = String(action.key || '');
         const TRAINER_KEYS = ['capMode', 'capFullThreshold', 'fallbackSlot', 'fallbackManaPct',
           'reserve', 'eatMagic', 'eatMagicSlot',
+          'runeSid', 'runeKey', 'fallbackKey',
           'autoFallback', 'stopRuneMaking', 'stopBotting'];
         if (TRAINER_KEYS.indexOf(key) === -1) return { state, effects: [] };
         const trainerForm = Object.assign({}, state.trainerForm || {
@@ -1409,6 +1425,50 @@
         // REQ-45 (D-B6): the confirm overlay's No — drop the pending
         // confirmation; nothing is saved or pushed.
         return { state: Object.assign({}, state, { confirmStop: null }), effects: [] };
+      }
+
+      case 'ASSIGN_HOTKEY': {
+        // REQ-46 (D-B3): assign the selected F-key to the rune/fallback
+        // hotbar slot — the effect posts /api/hotkeys (server -> in-page
+        // setHotbarKeybind RPC + per-character persistence). Armed-gated
+        // like every RPC effect.
+        if (state.gate !== GATE_ARMED) return { state: refuse(state, action), effects: [] };
+        const which = action.which === 'fallback' ? 'fallback' : 'rune';
+        return { state, effects: [{ type: 'hotkey-assign', which }] };
+      }
+
+      case 'HOTKEY_RESULT': {
+        // REQ-46 (D-B3): the /api/hotkeys assign outcome — a failure surfaces
+        // as a visible refusal (never silent); success clears it.
+        const which = action.which === 'fallback' ? 'fallback' : 'rune';
+        if (action.ok === true) {
+          return { state: Object.assign({}, state, { refusal: null }), effects: [] };
+        }
+        const at = Date.now();
+        return {
+          state: Object.assign({}, state, {
+            refusal: { action: 'ASSIGN_HOTKEY', module: 'training', reason: String(action.reason || 'hotkey assign failed'), at },
+          }),
+          effects: [],
+        };
+      }
+
+      case 'HOTKEYS_LOADED': {
+        // REQ-46 (D-B3): /api/hotkeys read result — available:false drives
+        // the display-only degrade (disabled selects + honest note, D-B3).
+        const configured = action.configured && typeof action.configured === 'object'
+          ? { runeKey: action.configured.runeKey || 'F4', fallbackKey: action.configured.fallbackKey || 'F5' }
+          : { runeKey: 'F4', fallbackKey: 'F5' };
+        return {
+          state: Object.assign({}, state, {
+            hotkeys: {
+              available: action.available === true,
+              reason: typeof action.reason === 'string' ? action.reason : null,
+              configured,
+            },
+          }),
+          effects: [],
+        };
       }
 
       /* ------------------- slice 5 (PR5, REQ-33/34): OTHERS form ------------------- */

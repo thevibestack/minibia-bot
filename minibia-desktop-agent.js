@@ -6202,6 +6202,13 @@ function createAgent(opts = {}) {
     return gc && ((gc.interface && gc.interface.hotbarManager) || gc.hotbarManager) || null;
   }
 
+  /** Live-probed keyboard surface (firing keyboard mode, obs 10320):
+   *  gameClient.interface.keyboard holds `__hotbarKeybinds` (slot -> keyCode). */
+  function readKeyboard() {
+    const gc = state.gameClient;
+    return gc && ((gc.interface && gc.interface.keyboard) || gc.keyboard) || null;
+  }
+
   /** Live-probed vocation gate hotbarManager.__canPlayerCastSpell(sid)
    *  (obs 10320). Returns true/false when the gate exists; null when the
    *  feature is absent (callers skip the gate, never block). */
@@ -7428,6 +7435,43 @@ function createAgent(opts = {}) {
         // Returns null while the game client is not ready (degrade).
         if (!state.gameClient) return null;
         return GC_MOD.enumerateSpellCatalog(state.gameClient, { maxUnknown: 30, limit: 400 });
+      },
+      getHotbarKeybinds: function () {
+        // REQ-46 (D-B3): read keyboard.__hotbarKeybinds — feature-detected;
+        // { available:false } when the surface is absent so the panel
+        // degrades to display-only with an honest note (never invented keys).
+        try {
+          const kb = readKeyboard();
+          if (!kb || typeof kb.__hotbarKeybinds !== 'object' || kb.__hotbarKeybinds === null) {
+            return { available: false };
+          }
+          return { available: true, keybinds: kb.__hotbarKeybinds };
+        } catch (e) {
+          return { available: false };
+        }
+      },
+      setHotbarKeybind: function (opts) {
+        // REQ-46 (D-B3): write keyboard.__hotbarKeybinds[slot] = keyCode so
+        // the panel's Rune/Fallback hotkey assignments reach the game. REQ-02
+        // gate (mutates the game surface, like fireSlot) + feature-detect:
+        // an absent keyboard surface returns ok:false (display-only degrade).
+        if (!state.armed) return { ok: false, reason: 'not connected' };
+        const slot = Number(opts && opts.slot);
+        const keyCode = Number(opts && opts.keyCode);
+        if (!Number.isInteger(slot) || slot < 1 || slot > 12) return { ok: false, reason: 'invalid slot' };
+        if (!Number.isInteger(keyCode)) return { ok: false, reason: 'invalid keyCode' };
+        try {
+          const kb = readKeyboard();
+          if (!kb) return { ok: false, reason: 'keyboard unavailable' };
+          if (typeof kb.__hotbarKeybinds !== 'object' || kb.__hotbarKeybinds === null) {
+            kb.__hotbarKeybinds = {};
+          }
+          kb.__hotbarKeybinds[slot] = keyCode;
+          logEvent('agent', 'hotkey', 'slot ' + slot + ' -> key ' + keyCode);
+          return { ok: true };
+        } catch (e) {
+          return { ok: false, reason: 'keyboard unavailable' };
+        }
       },
       applyConfig: applyConfig,
     };

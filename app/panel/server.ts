@@ -49,6 +49,12 @@ const GC = require('../../src/adapters/gameClient');
 const STATIC_FILES = ['index.html', 'state.js', 'app.js', 'style.css'];
 const MAX_BODY_BYTES = 1024 * 1024; // 1 MiB config payload cap
 
+// Slice B (REQ-46, D-B3): F-key -> keyCode map for the hotkey RPC
+// (F1=112 .. F12=123 — the same KEYCODES the firing keyboard mode reads).
+const KEYCODES: Record<string, number> = {};
+for (let i = 1; i <= 12; i += 1) KEYCODES['F' + i] = 111 + i;
+const HOTKEY_KEYS = Object.keys(KEYCODES);
+
 function contentTypeFor(name) {
   if (name.endsWith('.html')) return 'text/html; charset=utf-8';
   if (name.endsWith('.css')) return 'text/css; charset=utf-8';
@@ -148,6 +154,10 @@ function readMana(payload) {
  *   REQ-34 in-page confirmAntibot RPC (session-confirmed -> auto-replies)
  * @param {() => Promise<unknown>} [opts.resumeRuneCheck] -
  *   REQ-41 in-page resumeRuneCheck RPC (unpauses the rune-check queue gate)
+ * @param {() => Promise<{available: boolean, keybinds?: object}|null>} [opts.getHotbarKeybinds] -
+ *   REQ-46 in-page hotbar-keybind read (feature-detected; {available:false} degrade)
+ * @param {({slot: number, keyCode: number}) => Promise<{ok: boolean, reason?: string}|null>} [opts.setHotbarKeybind] -
+ *   REQ-46 in-page hotbar-keybind write (keyboard.__hotbarKeybinds)
  * @param {() => Promise<unknown>} [opts.snapshot] - live state payload
  * @param {(x: number, y: number) => Promise<unknown>} [opts.walkTo] -
  *   REQ-23 in-page walkTo RPC (native autowalk, queue-dispatched)
@@ -169,6 +179,9 @@ function createPanelServer(opts) {
   const respondOfferFn = typeof opts.respondOffer === 'function' ? opts.respondOffer : async () => null;
   const confirmAntibotFn = typeof opts.confirmAntibot === 'function' ? opts.confirmAntibot : async () => null;
   const resumeRuneCheckFn = typeof opts.resumeRuneCheck === 'function' ? opts.resumeRuneCheck : async () => ({ ok: true });
+  const getHotbarKeybindsFn = typeof opts.getHotbarKeybinds === 'function' ? opts.getHotbarKeybinds : async () => ({ available: false });
+  const setHotbarKeybindFn = typeof opts.setHotbarKeybind === 'function'
+    ? opts.setHotbarKeybind : async () => ({ ok: false, reason: 'keyboard surface unavailable' });
   const snapshotFn = typeof opts.snapshot === 'function' ? opts.snapshot : async () => null;
   const walkToFn = typeof opts.walkTo === 'function' ? opts.walkTo : async () => ({ ok: true });
   const cavebotRpcFn = typeof opts.cavebotRpc === 'function'
@@ -178,6 +191,25 @@ function createPanelServer(opts) {
   const host = opts.host || '127.0.0.1';
 
   let lastCharacter = null; // last armed character (disconnect needs it)
+
+  /** REQ-46 (D-B3): restore the saved F-key assignments to the game after a
+   *  connect — the RPC feature-detects, so an absent keyboard surface is a
+   *  silent no-op (the panel already degrades to display-only). */
+  async function restoreHotkeyAssignments(config) {
+    const training = config && config.modules && config.modules.training || {};
+    const runes = config && config.modules && config.modules.runes || {};
+    const hotkeys = training.hotkeys && typeof training.hotkeys === 'object' ? training.hotkeys : {};
+    const slot = Number(training.slot);
+    if (hotkeys.runeKey && HOTKEY_KEYS.indexOf(hotkeys.runeKey) !== -1
+      && Number.isInteger(slot) && slot >= 1 && slot <= 12) {
+      await setHotbarKeybindFn({ slot, keyCode: KEYCODES[hotkeys.runeKey] });
+    }
+    const fallbackSlot = Number(runes.fallbackSlot);
+    if (hotkeys.fallbackKey && HOTKEY_KEYS.indexOf(hotkeys.fallbackKey) !== -1
+      && Number.isInteger(fallbackSlot) && fallbackSlot >= 1 && fallbackSlot <= 12) {
+      await setHotbarKeybindFn({ slot: fallbackSlot, keyCode: KEYCODES[hotkeys.fallbackKey] });
+    }
+  }
 
   const server = http.createServer(async (req, res) => {
     const url = (req.url || '/').split('?')[0];
@@ -315,6 +347,7 @@ function createPanelServer(opts) {
         // persisted). The connect push AND the pre-fill carry on:false.
         if (config.modules && config.modules.trade) config.modules.trade.on = false;
         await applyConfigFn(Object.assign({}, config, { armed: true }));
+        await restoreHotkeyAssignments(config); // REQ-46 (D-B3): restore saved F-keys
         store.saveCharacter({ name, config });
         lastCharacter = name;
         sendJson(res, 200, { ok: true, identity, config });
@@ -529,6 +562,64 @@ function createPanelServer(opts) {
         }
         const result = await resumeRuneCheckFn();
         sendJson(res, 200, { ok: true, result: result || null });
+        return;
+      }
+      if (req.method === 'GET' && url === '/api/hotkeys') {
+        // REQ-46 (D-B3): hotkey read — the panel learns whether the game
+        // keyboard surface is exposed ({available}) + the current slot:keyCode
+        // keybinds + the per-character configured F-keys. Connected-gated:
+        // the config belongs to the last armed character.
+        if (!lastCharacter) {
+          sendJson(res, 409, { ok: false, reason: 'not connected' });
+          return;
+        }
+        const kb = await getHotbarKeybindsFn();
+        const { config } = store.loadCharacter({ name: lastCharacter });
+        const training = config.modules && config.modules.training || {};
+        const hotkeys = training.hotkeys && typeof training.hotkeys === 'object' ? training.hotkeys : {};
+        sendJson(res, 200, {
+          ok: true,
+          available: Boolean(kb && kb.available === true),
+          keybinds: kb && kb.available === true && kb.keybinds ? kb.keybinds : null,
+          configured: { runeKey: hotkeys.runeKey || 'F4', fallbackKey: hotkeys.fallbackKey || 'F5' },
+        });
+        return;
+      }
+      if (req.method === 'POST' && url === '/api/hotkeys') {
+        // REQ-46 (D-B3): assign a hotbar slot to an F-key — the server RPCs
+        // setHotbarKeybind (writes keyboard.__hotbarKeybinds[slot]) and
+        // persists the key per character (training.hotkeys.runeKey/fallbackKey
+        // — runeKey for the rune-making slot, fallbackKey for the fallback
+        // slot, design D-B3). When the keyboard surface is absent the RPC
+        // refuses and NOTHING persists (honest display-only degrade).
+        const body = await readBody(req);
+        const name = typeof body.character === 'string' && body.character ? body.character : lastCharacter;
+        if (!name) {
+          sendJson(res, 409, { ok: false, reason: 'not connected' });
+          return;
+        }
+        const slot = Number(body.slot);
+        const key = String(body.key || '');
+        if (!Number.isInteger(slot) || slot < 1 || slot > 12 || HOTKEY_KEYS.indexOf(key) === -1) {
+          sendJson(res, 400, { ok: false, reason: 'invalid hotkey — slot 1-12 and key F1-F12' });
+          return;
+        }
+        const rpcResult = await setHotbarKeybindFn({ slot, keyCode: KEYCODES[key] });
+        if (!rpcResult || rpcResult.ok !== true) {
+          sendJson(res, 200, { ok: false, reason: (rpcResult && rpcResult.reason) || 'keyboard surface unavailable' });
+          return;
+        }
+        const { config } = store.loadCharacter({ name });
+        config.character = name;
+        if (!config.modules.training || typeof config.modules.training !== 'object') config.modules.training = {};
+        if (!config.modules.training.hotkeys || typeof config.modules.training.hotkeys !== 'object') {
+          config.modules.training.hotkeys = {};
+        }
+        const isFallback = config.modules.runes && Number(config.modules.runes.fallbackSlot) === slot;
+        config.modules.training.hotkeys[isFallback ? 'fallbackKey' : 'runeKey'] = key;
+        store.saveCharacter({ name, config });
+        lastCharacter = name;
+        sendJson(res, 200, { ok: true, slot, key });
         return;
       }
 
