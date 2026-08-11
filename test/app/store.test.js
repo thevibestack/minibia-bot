@@ -53,6 +53,9 @@ test('REQ-09: missing file -> defaults (first run), no warning', (t) => {
   assert.equal(config.modules.runes.fallbackManaPct, 0.5);
   assert.equal(config.modules.runes.reserve, 0, 'runes reserve default');
   assert.deepEqual(config.modules.training.eatWithMagic, { enabled: false, slot: null, sid: null });
+  assert.deepEqual(config.modules.training.hotkeys, { runeKey: 'F4', fallbackKey: 'F5' }, 'hotkey defaults (REQ-46)');
+  assert.equal(config.modules.training.stopRuneMaking, false, 'stop rune-making default off');
+  assert.equal(config.modules.training.stopBotting, false, 'stop botting default off');
   assert.deepEqual(config.modules.antibot, { on: false, replies: [] });
 });
 

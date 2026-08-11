@@ -314,6 +314,181 @@ test('REQ-42 (B): SAVE_TRAINER_SETTINGS refuses a rune sid outside the catalog (
   assert.equal(ok.state.refusal, null);
 });
 
+test('REQ-44 (B): UPDATE_TRAINER_INPUT accepts the toggle switches', () => {
+  let state = armedState();
+  state = P.panelReducer(state, { type: 'UPDATE_TRAINER_INPUT', key: 'autoFallback', value: 'true' }).state;
+  state = P.panelReducer(state, { type: 'UPDATE_TRAINER_INPUT', key: 'stopRuneMaking', value: 'true' }).state;
+  state = P.panelReducer(state, { type: 'UPDATE_TRAINER_INPUT', key: 'stopBotting', value: 'false' }).state;
+  assert.equal(state.trainerForm.autoFallback, 'true');
+  assert.equal(state.trainerForm.stopRuneMaking, 'true');
+  assert.equal(state.trainerForm.stopBotting, 'false');
+  assert.equal(state.trainerForm.capMode, '', 'other keys untouched');
+});
+
+test('REQ-44 (B): the Sound Alert toggle maps to SET_SOUND and reflects in the form', () => {
+  let state = armedState();
+  const r = P.panelReducer(state, { type: 'SET_SOUND', enabled: false });
+  assert.equal(r.state.soundEnabled, false);
+  assert.deepEqual(r.effects, [{ type: 'sound-set', enabled: false }]);
+  const html = P.renderConfigForm(r.state);
+  assert.ok(!/id="trainer-sound-alert" checked/.test(html), 'checkbox unchecked when sound off');
+  assert.match(P.renderConfigForm(state), /id="trainer-sound-alert" checked/, 'checkbox checked by default');
+});
+
+test('REQ-44 (B): Auto Fallback Magic ON requires a fallback slot on save', () => {
+  const refused = saveTrainer(armedState(), Object.assign({}, VALID_FORM, { fallbackSlot: '', autoFallback: 'true' }));
+  assert.equal(refused.effects.length, 0, 'no push without a fallback slot');
+  assert.match(refused.state.refusal.reason, /auto fallback magic needs a fallback slot/, 'visible refusal');
+  const ok = saveTrainer(armedState(), Object.assign({}, VALID_FORM, { autoFallback: 'true' }));
+  assert.deepEqual(ok.effects, [{ type: 'push-config' }], 'ON with a slot passes');
+  assert.equal(ok.state.refusal, null);
+});
+
+test('REQ-44 (B): Stop Rune-Making turns ONLY the runes module off — heal/eat continue', () => {
+  let state = armedState();
+  state = P.panelReducer(state, { type: 'TOGGLE_MODULE', module: 'healItems', on: true }).state;
+  state = P.panelReducer(state, { type: 'TOGGLE_MODULE', module: 'eat', on: true }).state;
+  state = P.panelReducer(state, { type: 'TOGGLE_MODULE', module: 'runes', on: true }).state;
+  const r = saveTrainer(state, Object.assign({}, VALID_FORM, { stopRuneMaking: 'true' }));
+  assert.deepEqual(r.effects, [{ type: 'push-config' }]);
+  assert.equal(r.state.modules.runes, false, 'runes off');
+  assert.equal(r.state.modules.healItems, true, 'healing continues');
+  assert.equal(r.state.modules.eat, true, 'eating continues');
+  assert.equal(r.state.refusal, null);
+});
+
+test('REQ-45 (B): Stop Botting Entirely is gated by the confirm overlay and heal/eat continue', () => {
+  let state = armedState();
+  state = P.panelReducer(state, { type: 'TOGGLE_MODULE', module: 'healItems', on: true }).state;
+  state = P.panelReducer(state, { type: 'TOGGLE_MODULE', module: 'runes', on: true }).state;
+  const pending = saveTrainer(state, Object.assign({}, VALID_FORM, { stopBotting: 'true' }));
+  assert.deepEqual(pending.effects, [], 'no push while the confirm is pending');
+  assert.equal(pending.state.confirmStop.pending, true, 'confirm overlay armed');
+  assert.equal(pending.state.config, state.config, 'config untouched while pending');
+  assert.equal(pending.state.modules.runes, true, 'runes still on while pending');
+  const yes = P.panelReducer(pending.state, { type: 'CONFIRM_STOP' });
+  assert.deepEqual(yes.effects, [{ type: 'push-config' }]);
+  assert.equal(yes.state.confirmStop, null, 'overlay cleared after commit');
+  assert.equal(yes.state.modules.runes, false, 'runes module off after confirm');
+  assert.equal(yes.state.modules.healItems, true, 'healing continues');
+  assert.match(P.renderConfigForm(yes.state), /Botting stopped — rune-making is off/, 'persistent banner after confirm');
+});
+
+test('REQ-45 (B): the confirm overlay No (CANCEL_STOP) drops the pending save without committing', () => {
+  let state = armedState();
+  state = P.panelReducer(state, { type: 'TOGGLE_MODULE', module: 'runes', on: true }).state;
+  const pending = saveTrainer(state, Object.assign({}, VALID_FORM, { stopBotting: 'true' }));
+  const no = P.panelReducer(pending.state, { type: 'CANCEL_STOP' });
+  assert.deepEqual(no.effects, [], 'no push');
+  assert.equal(no.state.confirmStop, null, 'overlay cleared');
+  assert.equal(no.state.modules.runes, true, 'runes untouched');
+  assert.equal(no.state.config, state.config, 'config untouched');
+  const again = P.panelReducer(no.state, { type: 'SAVE_TRAINER_SETTINGS' });
+  assert.equal(again.state.confirmStop.pending, true, 'destructive actions are always re-confirmed');
+});
+
+test('REQ-45 (B): a save while the confirm is pending commits directly (CONFIRM_STOP path)', () => {
+  let state = armedState();
+  state = P.panelReducer(state, { type: 'TOGGLE_MODULE', module: 'runes', on: true }).state;
+  const pending = saveTrainer(state, Object.assign({}, VALID_FORM, { stopBotting: 'true' }));
+  const r = P.panelReducer(pending.state, { type: 'SAVE_TRAINER_SETTINGS' });
+  assert.deepEqual(r.effects, [{ type: 'push-config' }], 'a pending confirm commits on the next save');
+  assert.equal(r.state.confirmStop, null);
+  assert.equal(r.state.modules.runes, false);
+});
+
+test('REQ-45 (B): the confirm overlay renders when pending with localized Yes/No', () => {
+  let state = armedState();
+  state = Object.assign({}, state, { confirmStop: { pending: true, at: 1 } });
+  const html = P.renderConfigForm(state);
+  assert.match(html, /Stop botting entirely\?/, 'EN confirm title');
+  assert.match(html, /This turns rune-making off/, 'EN confirm body');
+  assert.match(html, /id="confirm-stop-yes"/, 'Yes button');
+  assert.match(html, /id="confirm-stop-no"/, 'No button');
+  const esHtml = P.renderConfigForm(Object.assign({}, state, { lang: 'es' }));
+  assert.match(esHtml, /¿Detener el bot por completo\?/, 'ES confirm title');
+  assert.match(esHtml, /Sí, detener el bot/, 'ES Yes button');
+  assert.match(esHtml, /Cancelar/, 'ES No button');
+  assert.ok(!P.renderConfigForm(armedState()).includes('confirm-stop-yes'), 'no overlay when nothing is pending');
+});
+
+test('REQ-42/46 (B): UPDATE_TRAINER_INPUT accepts the rune sid and hotkey F-keys', () => {
+  let state = armedState();
+  state = P.panelReducer(state, { type: 'UPDATE_TRAINER_INPUT', key: 'runeSid', value: '42' }).state;
+  state = P.panelReducer(state, { type: 'UPDATE_TRAINER_INPUT', key: 'runeKey', value: 'F6' }).state;
+  state = P.panelReducer(state, { type: 'UPDATE_TRAINER_INPUT', key: 'fallbackKey', value: 'F7' }).state;
+  assert.equal(state.trainerForm.runeSid, '42');
+  assert.equal(state.trainerForm.runeKey, 'F6');
+  assert.equal(state.trainerForm.fallbackKey, 'F7');
+  assert.equal(state.trainerForm.reserve, '', 'other keys untouched');
+});
+
+test('REQ-42/46 (B): SAVE_TRAINER_SETTINGS persists the rune sid, hotkeys and stop flags', () => {
+  let state = armedState();
+  state = P.panelReducer(state, {
+    type: 'SPELL_CATALOG',
+    spells: [
+      { sid: 42, name: 'Blank Rune', words: 'adori vita', mana: 100, level: 1, vocations: [] },
+    ],
+  }).state;
+  const r = saveTrainer(state, Object.assign({}, VALID_FORM, {
+    runeSid: '42', runeKey: 'F6', fallbackKey: 'F7', stopRuneMaking: 'true', stopBotting: 'false',
+  }));
+  assert.deepEqual(r.effects, [{ type: 'push-config' }]);
+  const training = r.state.config.modules.training;
+  assert.equal(training.sid, 42, 'rune sid persisted to training.sid');
+  assert.deepEqual(training.hotkeys, { runeKey: 'F6', fallbackKey: 'F7' }, 'hotkey F-keys persisted');
+  assert.equal(training.stopRuneMaking, true, 'stop rune-making flag persisted');
+  assert.equal(training.stopBotting, false, 'stop botting flag persisted');
+  assert.equal(r.state.modules.runes, false, 'runes module off after the stop save');
+  const committed = r.state.trainerForm;
+  assert.equal(committed.runeSid, '42');
+  assert.equal(committed.runeKey, 'F6');
+  assert.equal(committed.fallbackKey, 'F7');
+});
+
+test('REQ-46 (B): SAVE_TRAINER_SETTINGS refuses a hotkey outside F1-F12', () => {
+  const r = saveTrainer(armedState(), Object.assign({}, VALID_FORM, { runeKey: 'F13' }));
+  assert.equal(r.effects.length, 0);
+  assert.match(r.state.refusal.reason, /hotkeys must be F1-F12/, 'visible refusal');
+});
+
+test('REQ-46 (B): ASSIGN_HOTKEY is armed-gated and emits the hotkey-assign effect', () => {
+  const armed = P.panelReducer(armedState(), { type: 'ASSIGN_HOTKEY', which: 'rune' });
+  assert.deepEqual(armed.effects, [{ type: 'hotkey-assign', which: 'rune' }]);
+  assert.equal(armed.state.refusal, null);
+  const fallback = P.panelReducer(armedState(), { type: 'ASSIGN_HOTKEY', which: 'fallback' });
+  assert.deepEqual(fallback.effects, [{ type: 'hotkey-assign', which: 'fallback' }]);
+  const unarmed = P.panelReducer(P.createInitialState(), { type: 'ASSIGN_HOTKEY', which: 'rune' });
+  assert.equal(unarmed.effects.length, 0, 'no effect pre-Connect');
+  assert.equal(unarmed.state.refusal.reason, 'not connected', 'visible refusal (REQ-02)');
+});
+
+test('REQ-46 (B): HOTKEY_RESULT surfaces a visible refusal on failure and clears on success', () => {
+  const fail = P.panelReducer(armedState(), { type: 'HOTKEY_RESULT', ok: false, which: 'rune', reason: 'keyboard surface unavailable' });
+  assert.equal(fail.state.refusal.action, 'ASSIGN_HOTKEY');
+  assert.equal(fail.state.refusal.reason, 'keyboard surface unavailable');
+  const ok = P.panelReducer(fail.state, { type: 'HOTKEY_RESULT', ok: true, which: 'rune' });
+  assert.equal(ok.state.refusal, null);
+});
+
+test('REQ-46 (B): HOTKEYS_LOADED records the surface availability for the display-only degrade', () => {
+  const loaded = P.panelReducer(armedState(), {
+    type: 'HOTKEYS_LOADED',
+    available: false,
+    reason: 'no keyboard surface',
+    configured: { runeKey: 'F6', fallbackKey: 'F7' },
+  });
+  assert.equal(loaded.state.hotkeys.available, false);
+  assert.deepEqual(loaded.state.hotkeys.configured, { runeKey: 'F6', fallbackKey: 'F7' });
+  // Display-only degrade: the hotkey selects are disabled + honest note.
+  const html = P.renderConfigForm(loaded.state);
+  assert.match(html, /id="trainer-rune-key" disabled/, 'rune hotkey select disabled');
+  assert.match(html, /id="trainer-fallback-key" disabled/, 'fallback hotkey select disabled');
+  assert.match(html, /id="trainer-rune-assign" disabled/, 'assign button disabled');
+  assert.match(html, /Hotkeys unavailable — the game keyboard surface is not exposed/, 'honest degrade note');
+});
+
 test('REQ-42 (B): the form derives the rune sid, hotkeys and toggles from the saved config', () => {
   let state = armedState();
   state = P.panelReducer(state, {
