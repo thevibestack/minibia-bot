@@ -77,7 +77,7 @@ function antibotConfig(overrides = {}) {
     survival: { on: true, threshold: 50, slot: 1 },
     rotation: { spells: [] },
     armed: true,
-    antibot: { on: true, replies: [{ pattern: 'verify your account', reply: 'ok then' }] },
+    antibot: { on: true, replies: [{ pattern: 'are you bot?', reply: 'ok then' }] },
   }, overrides);
 }
 
@@ -111,25 +111,25 @@ test('REQ-34 (PR5, e2e): first occurrence -> pending confirm; confirmAntibot RPC
     dom.window.__mbAgent.applyConfig(antibotConfig());
 
     // First occurrence: pending confirm surfaces in the snapshot.
-    c.push({ name: 'GM-Test', message: 'verify your account', __time: 10, type: 2 });
+    c.push({ name: 'GM-Test', message: 'are you bot?', __time: 10, type: 2 });
     const pending = await waitFor(() => {
       const m = handle.getState().modules.antibot;
-      return m && m.pendingConfirm && m.pendingConfirm.pattern === 'verify your account';
+      return m && m.pendingConfirm && m.pendingConfirm.pattern === 'are you bot?';
     });
     assert.equal(pending, true, 'pending confirm raised (REQ-34 first occurrence)');
     assert.equal(handle.getState().modules.antibot.replyPendingCount, 0, 'no auto-reply before confirm');
     assert.equal(sends.length, 0);
 
     // Confirm via the RPC (the panel -> /api/antibot-confirm path).
-    const res = dom.window.__mbAgent.confirmAntibot('verify your account');
+    const res = dom.window.__mbAgent.confirmAntibot('are you bot?');
     assert.equal(res.ok, true);
     assert.deepEqual(
       JSON.parse(JSON.stringify(handle.getState().modules.antibot.confirmed)),
-      ['verify your account'],
+      ['are you bot?'],
     );
 
     // Next occurrence: the auto-reply fires through the queue-dispatched send.
-    c.push({ name: 'GM-Test', message: 'verify your account', __time: 20, type: 2 });
+    c.push({ name: 'GM-Test', message: 'are you bot?', __time: 20, type: 2 });
     const sent = await waitFor(() => sends.length > 0);
     assert.equal(sent, true, 'auto-reply dispatched through the queue (REQ-12)');
     assert.deepEqual(sends, ['ok then'], 'the configured reply text reached the Default channel send');
@@ -147,16 +147,16 @@ test('REQ-34 (PR5, e2e): session-scoped — the confirmation survives an applyCo
     const handle = dom.window.__mbAgentHandle;
     await waitFor(() => handle.isReady());
     dom.window.__mbAgent.applyConfig(antibotConfig());
-    c.push({ name: 'GM-Test', message: 'verify your account', __time: 5, type: 2 });
+    c.push({ name: 'GM-Test', message: 'are you bot?', __time: 5, type: 2 });
     await waitFor(() => {
       const m = handle.getState().modules.antibot;
       return m && m.pendingConfirm;
     });
-    dom.window.__mbAgent.confirmAntibot('verify your account');
+    dom.window.__mbAgent.confirmAntibot('are you bot?');
 
     // Rebuild (applyConfig again) — session state (state.timers) survives.
-    dom.window.__mbAgent.applyConfig(antibotConfig({ antibot: { on: true, replies: [{ pattern: 'verify your account', reply: 'ok then' }] } }));
-    c.push({ name: 'GM-Test', message: 'verify your account', __time: 15, type: 2 });
+    dom.window.__mbAgent.applyConfig(antibotConfig({ antibot: { on: true, replies: [{ pattern: 'are you bot?', reply: 'ok then' }] } }));
+    c.push({ name: 'GM-Test', message: 'are you bot?', __time: 15, type: 2 });
     const sent = await waitFor(() => sends.length > 0);
     assert.equal(sent, true, 'confirmed pattern auto-replies after the rebuild (session-scoped)');
   } finally {
@@ -174,13 +174,13 @@ test('REQ-34 (PR5, e2e, open probe): no Default-channel send surface -> alert-on
     await waitFor(() => handle.isReady());
     dom.window.__mbAgent.applyConfig(antibotConfig());
     // Confirm directly (the pending prompt flow would take the same path).
-    contents.push({ name: 'GM-Test', message: 'verify your account', __time: 1, type: 2 });
+    contents.push({ name: 'GM-Test', message: 'are you bot?', __time: 1, type: 2 });
     await waitFor(() => {
       const m = handle.getState().modules.antibot;
       return m && m.pendingConfirm;
     });
-    dom.window.__mbAgent.confirmAntibot('verify your account');
-    contents.push({ name: 'GM-Test', message: 'verify your account', __time: 2, type: 2 });
+    dom.window.__mbAgent.confirmAntibot('are you bot?');
+    contents.push({ name: 'GM-Test', message: 'are you bot?', __time: 2, type: 2 });
     await new Promise((r) => setTimeout(r, 900)); // several tick cadences
     const st = handle.getState().modules.antibot;
     assert.equal(st.sendAvailable, false, 'honest degrade: no send surface');
@@ -197,8 +197,50 @@ test('REQ-34 (PR5, e2e): confirmAntibot RPC is refused pre-Connect', async () =>
   try {
     const handle = dom.window.__mbAgentHandle;
     await waitFor(() => handle.isReady());
-    const res = dom.window.__mbAgent.confirmAntibot('verify your account');
+    const res = dom.window.__mbAgent.confirmAntibot('are you bot?');
     assert.deepEqual(JSON.parse(JSON.stringify(res)), { ok: false, reason: 'not connected' });
+  } finally {
+    teardown(dom);
+  }
+});
+
+test('REQ-40/41 (e2e): Cipfried verification message pauses the queue + snapshot.runeCheck; resumeRuneCheck unpauses', async () => {
+  const contents = [];
+  const { dom, contents: c } = makePage(contents);
+  try {
+    const handle = dom.window.__mbAgentHandle;
+    await waitFor(() => handle.isReady());
+    dom.window.__mbAgent.applyConfig(antibotConfig());
+
+    c.push({ name: 'Cipfried', message: 'Please verify you are human by clicking the correct images', __time: 10, type: 2 });
+    const paused = await waitFor(() => {
+      const st = handle.getState();
+      return st.runeCheck && st.runeCheck.active === true;
+    });
+    assert.equal(paused, true, 'snapshot.runeCheck active (REQ-40)');
+    const st = handle.getState();
+    assert.equal(st.runeCheck.kind, 'chat');
+    assert.equal(st.queue.paused, true, 'queue gate paused on detection');
+    assert.ok(st.modules.antibot.alerts.some((a) => a.kind === 'runecheck'), 'runecheck alert rides the module alerts');
+
+    // Steady state: repeated wording keeps the pause, never double-counts.
+    c.push({ name: 'Cipfried', message: 'Please verify you are human by clicking the correct images', __time: 20, type: 2 });
+    await new Promise((r) => setTimeout(r, 700));
+    assert.equal(handle.getState().queue.paused, true, 'still paused while the wording continues');
+    assert.equal(
+      handle.getState().modules.antibot.alerts.filter((a) => a.kind === 'runecheck').length,
+      1,
+      'one runecheck alert — no double-count',
+    );
+
+    // Manual resume RPC: unpauses + clears the state.
+    const res = dom.window.__mbAgent.resumeRuneCheck();
+    assert.equal(res.ok, true);
+    const resumed = await waitFor(() => {
+      const s = handle.getState();
+      return s.queue.paused !== true && s.runeCheck === null;
+    });
+    assert.equal(resumed, true, 'manual resume unpauses and clears the snapshot state');
   } finally {
     teardown(dom);
   }

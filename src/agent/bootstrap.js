@@ -25,6 +25,9 @@
  * Exposes window.__mbAgent with the REQ-04 surface:
  *   { readStats, readCooldown, fireSlot, eatFood, getChat,
  *     getRuneState, getWalkState, getPlayerInfo, applyConfig }
+ * Plus RPC extensions: confirmAntibot (REQ-34), resumeRuneCheck (REQ-41 —
+ * manual unpause of the rune-check queue gate), getSpellCatalog (REQ-28),
+ * walkTo/cavebot RPCs (REQ-23/36).
  *
  * In-page tick cadence: self-scheduling jittered setTimeout (50-400ms via
  * core/jitter), the SAME pattern the userscript uses (no Worker — the
@@ -66,6 +69,10 @@ const ROUTES_MOD = require('./modules/routes');
 const ATTACK_MOD = require('./modules/attack');
 const CAVEBOT_MOD = require('./modules/cavebot');
 
+/** REQ-40/41 (D-A4): auto-resume cooldown — the queue stays paused until no
+ *  fresh verification wording has been seen for this long. */
+const RUNECHECK_RESUME_COOLDOWN_MS = 10000;
+
 /** Minimal slice-2 config shape (per-character store lands in slice 3). */
 const DEFAULT_CONFIG = {
   queue: { minIntervalMs: 150 },
@@ -90,7 +97,10 @@ const DEFAULT_CONFIG = {
   spawns: { on: false },
   huntStats: { on: false },
   learning: { knownWords: [] },       // REQ-25: observation always runs while armed
-  antibot: { on: false, replies: [] }, // PR5 (D9): anti-bot watcher + confirm-once replies (REQ-33/34)
+  // PR5 (D9): anti-bot watcher + confirm-once replies (REQ-33/34). REQ-38/39
+  // (D-A2): `domRuneCheck` gates the DOM overlay scan — default OFF (chat-only
+  // detection ships until the live capture probe finalizes the selectors).
+  antibot: { on: false, replies: [], domRuneCheck: false },
   routes: { on: false },               // REQ-23 (slice 6): native autowalk read + walk-to; recording = FUTURE
   // PR6 (REQ-35/36, D10): state-only skeleton modules — ALL OFF by default
   // (opt-in). attack: targeting choice (lowest-hp/nearest) + offensive
@@ -154,7 +164,7 @@ function normalizeConfig(raw) {
     spawns: { on: false },
     huntStats: { on: false },
     learning: { knownWords: [] },
-    antibot: { on: false, replies: [] },
+    antibot: { on: false, replies: [], domRuneCheck: false },
     routes: { on: false },
     attack: { on: false, targeting: 'lowest-hp', sid: null, runeSlot: null },
     cavebot: { on: false, paused: false, route: [] },
@@ -253,6 +263,7 @@ function normalizeConfig(raw) {
   // non-empty trimmed parts; malformed entries are dropped (never crash).
   const ab = moduleSource(src, 'antibot');
   if (typeof ab.on === 'boolean') cfg.antibot.on = ab.on;
+  if (typeof ab.domRuneCheck === 'boolean') cfg.antibot.domRuneCheck = ab.domRuneCheck; // REQ-39 (D-A2)
   if (Array.isArray(ab.replies)) {
     cfg.antibot.replies = ab.replies
       .filter((r) => r && typeof r === 'object'
@@ -359,6 +370,10 @@ function createAgent(opts = {}) {
     // reset on agent restart): the trade cadence anchor (REQ-18 "toggle
     // resets on logout") + the kill observer baseline.
     timers: { tradeLastSentAt: 0 },
+    // REQ-40/41 (D-A3/A4): rune-check pause state {active, at, kind,
+    // lastSeenAt} — null when no check is active. Carried in getState() so
+    // the panel renders the banner + resume button (REQ-41).
+    runeCheck: null,
     // D8 (slice 1a): readable activity log ring (cap 200) — fed by the log
     // sinks above and the fire closures below; carried in getState() so the
     // panel renders formatted rows (REQ-26, never raw JSON).
@@ -408,6 +423,13 @@ function createAgent(opts = {}) {
   function readHotbar() {
     const gc = state.gameClient;
     return gc && ((gc.interface && gc.interface.hotbarManager) || gc.hotbarManager) || null;
+  }
+
+  /** Live-probed keyboard surface (firing keyboard mode, obs 10320):
+   *  gameClient.interface.keyboard holds `__hotbarKeybinds` (slot -> keyCode). */
+  function readKeyboard() {
+    const gc = state.gameClient;
+    return gc && ((gc.interface && gc.interface.keyboard) || gc.keyboard) || null;
   }
 
   /** Live-probed vocation gate hotbarManager.__canPlayerCastSpell(sid)
@@ -1342,6 +1364,41 @@ function createAgent(opts = {}) {
     };
   }
 
+  /** REQ-40/41 (D-A3/A4): reconcile the rune-check pause against the anti-bot
+   *  module every tick:
+   *   - detection active -> queue.setPaused(true) + carry snapshot.runeCheck
+   *   - cooldown (10s, D-A4) with no fresh verification wording -> AUTO-RESUME
+   *     (clears the module state + unpauses)
+   *   - module already cleared (manual resumeRuneCheck RPC) -> mirror the clear.
+   *  The queue pause is a drain gate ONLY — throttle/jitter are never touched
+   *  (REQ-12 no-bypass: entries stay pending, pacing recomputes from the same
+   *  lastDispatchAt). */
+  function reconcileRuneCheck() {
+    const m = state.modules && state.modules.antibot;
+    if (!m || typeof m.getState !== 'function') return;
+    const rc = m.getState().runeCheck || null;
+    if (rc && rc.active === true) {
+      const lastSeen = Number.isFinite(Number(rc.lastSeenAt)) ? Number(rc.lastSeenAt)
+        : (Number.isFinite(Number(rc.at)) ? Number(rc.at) : 0);
+      if (nowFn() - lastSeen >= RUNECHECK_RESUME_COOLDOWN_MS) {
+        // Cooldown elapsed without fresh verification wording -> auto-resume.
+        if (typeof m.clearRuneCheck === 'function') m.clearRuneCheck();
+        state.queue.setPaused(false);
+        state.runeCheck = null;
+        logEvent('antibot', 'runecheck', 'auto-resumed');
+        return;
+      }
+      state.queue.setPaused(true);
+      state.runeCheck = { active: true, at: rc.at, kind: rc.kind, lastSeenAt: rc.lastSeenAt };
+      return;
+    }
+    if (state.runeCheck && state.runeCheck.active === true) {
+      // Module cleared (manual resume RPC) — mirror the clear.
+      state.queue.setPaused(false);
+      state.runeCheck = null;
+    }
+  }
+
   /** One tree tick + queue drain. At most one action enqueued per tick
    *  (the tree halts after the first executed action; actions are
    *  queue-aware and enqueue themselves — REQ-12 no-bypass). No tick while
@@ -1368,6 +1425,10 @@ function createAgent(opts = {}) {
       // echo/learning (REQ-24 MODIFIED) + the player context; alerts ride the
       // snapshot, confirmed patterns queue auto-replies for the tree node.
       if (m.antibot) m.antibot.observe();
+      // REQ-40/41 (D-A3/A4): rune-check pause reconcile — pause on detection,
+      // auto-resume after the 10s cooldown without fresh verification wording
+      // (reconciled every tick; manual resume via the resumeRuneCheck RPC).
+      reconcileRuneCheck();
       const result = state.tree.tick(ctx);
       state.lastPath = result.path;
       state.lastDispatch = state.queue.drain(); // eligible entries fire here, in the queue
@@ -1498,6 +1559,18 @@ function createAgent(opts = {}) {
         if (!m) return { ok: false, reason: 'not ready' };
         return m.confirm(pattern);
       },
+      resumeRuneCheck: function () {
+        // REQ-41 (D-A4): manual resume of a paused rune check — clears the
+        // module + snapshot rune-check state and unpauses the queue gate.
+        // The pause is a drain gate ONLY — no pacing bypass (REQ-12).
+        if (!state.armed) return { ok: false, reason: 'not connected' };
+        const m = state.modules && state.modules.antibot;
+        if (m && typeof m.clearRuneCheck === 'function') m.clearRuneCheck();
+        state.queue.setPaused(false);
+        state.runeCheck = null;
+        logEvent('antibot', 'runecheck', 'manual-resumed');
+        return { ok: true };
+      },
       getWalkState: function () {
         // REQ-23: real routes-v1 module state (slice 6) — autowalk read
         // (+ destination) or the honest "no pathfinder data" degrade.
@@ -1586,6 +1659,43 @@ function createAgent(opts = {}) {
         if (!state.gameClient) return null;
         return GC_MOD.enumerateSpellCatalog(state.gameClient, { maxUnknown: 30, limit: 400 });
       },
+      getHotbarKeybinds: function () {
+        // REQ-46 (D-B3): read keyboard.__hotbarKeybinds — feature-detected;
+        // { available:false } when the surface is absent so the panel
+        // degrades to display-only with an honest note (never invented keys).
+        try {
+          const kb = readKeyboard();
+          if (!kb || typeof kb.__hotbarKeybinds !== 'object' || kb.__hotbarKeybinds === null) {
+            return { available: false };
+          }
+          return { available: true, keybinds: kb.__hotbarKeybinds };
+        } catch (e) {
+          return { available: false };
+        }
+      },
+      setHotbarKeybind: function (opts) {
+        // REQ-46 (D-B3): write keyboard.__hotbarKeybinds[slot] = keyCode so
+        // the panel's Rune/Fallback hotkey assignments reach the game. REQ-02
+        // gate (mutates the game surface, like fireSlot) + feature-detect:
+        // an absent keyboard surface returns ok:false (display-only degrade).
+        if (!state.armed) return { ok: false, reason: 'not connected' };
+        const slot = Number(opts && opts.slot);
+        const keyCode = Number(opts && opts.keyCode);
+        if (!Number.isInteger(slot) || slot < 1 || slot > 12) return { ok: false, reason: 'invalid slot' };
+        if (!Number.isInteger(keyCode)) return { ok: false, reason: 'invalid keyCode' };
+        try {
+          const kb = readKeyboard();
+          if (!kb) return { ok: false, reason: 'keyboard unavailable' };
+          if (typeof kb.__hotbarKeybinds !== 'object' || kb.__hotbarKeybinds === null) {
+            kb.__hotbarKeybinds = {};
+          }
+          kb.__hotbarKeybinds[slot] = keyCode;
+          logEvent('agent', 'hotkey', 'slot ' + slot + ' -> key ' + keyCode);
+          return { ok: true };
+        } catch (e) {
+          return { ok: false, reason: 'keyboard unavailable' };
+        }
+      },
       applyConfig: applyConfig,
     };
   }
@@ -1621,6 +1731,7 @@ function createAgent(opts = {}) {
       health: state.ctx.health,
       mana: state.ctx.mana,
       queue: state.queue ? state.queue.stats() : null,
+      runeCheck: state.runeCheck ? Object.assign({}, state.runeCheck) : null, // REQ-40/41 (D-A3): pause state -> panel banner
       lastPath: state.lastPath,
       castsSinceFood: state.ctx.castsSinceFood || 0,
       modules: {

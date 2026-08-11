@@ -298,3 +298,68 @@ test('3.1: hasPending sees urgent entries (re-arm guards never miss them)', () =
   assert.equal(h.queue.hasPending((e) => e.priority === 'urgent'), true);
   assert.equal(h.queue.hasPending((e) => e.priority === 'normal'), false);
 });
+
+/* -------------------- REQ-40 — queue-level pause (D-A3) -------------------- */
+
+test('4.1 (REQ-40): setPaused makes drain a no-op — entries stay pending (defer-never-drop)', () => {
+  const h = makeHarness({ minInterval: 0, jitter: { min: 0, max: 0 } });
+  const fired = [];
+  h.queue.enqueue(() => fired.push('A'), { kind: 'a' });
+  h.queue.enqueue(() => fired.push('B'), { kind: 'b' });
+  assert.equal(h.queue.setPaused(true), true);
+  assert.equal(h.queue.isPaused(), true);
+  assert.deepEqual(h.queue.drain(), [], 'drain returns [] while paused');
+  assert.equal(fired.length, 0, 'nothing dispatched while paused');
+  assert.equal(h.queue.pendingCount(), 2, 'entries stay pending (defer, never drop)');
+  assert.equal(h.queue.stats().paused, true, 'pause state visible in stats');
+});
+
+test('4.1 (REQ-40): resume drains the accumulated backlog in FIFO order', () => {
+  const h = makeHarness({ minInterval: 0, jitter: { min: 0, max: 0 } });
+  const fired = [];
+  h.queue.enqueue(() => fired.push('A'), { kind: 'a' });
+  h.queue.enqueue(() => fired.push('B'), { kind: 'b' });
+  h.queue.setPaused(true);
+  assert.deepEqual(h.queue.drain(), [], 'paused');
+  assert.equal(h.queue.setPaused(false), false);
+  assert.equal(h.queue.isPaused(), false);
+  const done = h.queue.drain();
+  assert.deepEqual(done.map((e) => e.kind), ['a', 'b'], 'FIFO order preserved across the pause');
+  assert.deepEqual(fired, ['A', 'B']);
+  assert.equal(h.queue.pendingCount(), 0);
+  assert.equal(h.queue.stats().paused, false);
+});
+
+test('4.1 (REQ-40): pause is a gate, never a throttle/jitter bypass — the interval holds across pause/resume', () => {
+  const h = makeHarness({ minInterval: 150, jitter: { min: 0, max: 0 } });
+  const fired = [];
+  h.queue.enqueue(() => fired.push('A'), { kind: 'a' });
+  assert.deepEqual(h.queue.drain().map((e) => e.fireAt), [0], 'A at its enqueue anchor');
+  h.advance(10);
+  h.queue.enqueue(() => fired.push('B'), { kind: 'b' }); // slot 150 (after A@0)
+  h.queue.enqueue(() => fired.push('C'), { kind: 'c' }); // slot 300
+  h.queue.setPaused(true);
+  h.advance(500); // wall time passes while paused
+  assert.deepEqual(h.queue.drain(), [], 'paused: no dispatch');
+  assert.equal(h.queue.pendingCount(), 2);
+  h.queue.setPaused(false);
+  const done = h.queue.drain();
+  assert.deepEqual(done.map((e) => e.fireAt), [150, 300],
+    'fire times recomputed against the SAME last dispatch — 150ms interval holds, pause never compressed it');
+  assert.deepEqual(fired, ['A', 'B', 'C'], 'A dispatched pre-pause; B/C after resume, in order');
+});
+
+test('4.1 (REQ-40): pause does not loosen jitter — additive jitter still applies on resume', () => {
+  const h = makeHarness({ minInterval: 150, jitter: { min: 50, max: 400 }, rng: () => 0 });
+  const fired = [];
+  h.queue.enqueue(() => fired.push('A'), { kind: 'a' }); // anchor 0 -> fireAt 50
+  assert.deepEqual(fireTimesOf(h, 50), [50], 'A at anchor + jitter 50');
+  h.advance(10);
+  h.queue.enqueue(() => fired.push('B'), { kind: 'b' }); // slot 50+150=200 -> fireAt 250
+  h.queue.setPaused(true);
+  h.advance(1000);
+  assert.deepEqual(h.queue.drain(), []);
+  h.queue.setPaused(false);
+  assert.deepEqual(fireTimesOf(h, 0), [250], 'B still fires at slot + jitter (200+50) — the pause added no bypass');
+  assert.deepEqual(fired, ['A', 'B']);
+});

@@ -63,6 +63,47 @@ test('REQ-09: channel entries tolerate missing fields', () => {
   assert.equal(entries[2].message, '');
 });
 
+test('REQ-37: Date-object __time normalizes to epoch ms (real client shape)', () => {
+  const ctx = {
+    gameClient: makeGameClient([
+      { name: 'Cipfried', message: 'verify you are human', __time: new Date(123456789), type: 2 },
+      { name: 'Otto', message: 'hi', __time: new Date(987654321) },
+    ]),
+  };
+  const entries = getRecentMessages(ctx);
+  assert.equal(entries.length, 2);
+  assert.equal(entries[0].time, 123456789, 'Date -> getTime()');
+  assert.equal(entries[1].time, 987654321);
+  assert.equal(entries[0].type, 2, 'other fields untouched');
+  assert.equal(entries[0].source, 'channel');
+});
+
+test('REQ-37: numeric __time passes through unchanged', () => {
+  const ctx = {
+    gameClient: makeGameClient([
+      { name: 'Otto', message: 'hi', __time: 456 },
+      { name: 'Sys', message: 'msg', __time: 0 },
+    ]),
+  };
+  const entries = getRecentMessages(ctx);
+  assert.equal(entries[0].time, 456, 'numeric passthrough');
+  assert.equal(entries[1].time, 0, 'legit epoch 0 is NOT nulled');
+});
+
+test('REQ-37: missing/null/invalid __time is null-safe — no throw', () => {
+  const ctx = {
+    gameClient: makeGameClient([
+      { name: 'X', message: 'no time' },
+      { name: 'Y', message: 'null time', __time: null },
+      { name: 'Z', message: 'bogus time', __time: 'nope' },
+      { name: 'W', message: 'invalid date', __time: new Date(NaN) },
+    ]),
+  };
+  const entries = getRecentMessages(ctx);
+  assert.equal(entries.length, 4);
+  for (const e of entries) assert.equal(e.time, null, 'null-safe time for ' + e.name);
+});
+
 test('REQ-09: no channel -> #chat-text-area fallback parsed per line', () => {
   const dom = makeDom('<div id="chat-text-area">Flamamex: adori\nOtto: hello there</div>');
   const entries = getRecentMessages({ document: dom.window.document });

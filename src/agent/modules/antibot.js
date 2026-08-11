@@ -29,6 +29,16 @@
  *      the injected `timers` (bootstrap state.timers) — they survive config
  *      rebuilds and reset on agent restart.
  *
+ *   3. Rune-check detection (REQ-38/39, D-A2): a type-2 (server/GM speak —
+ *      live-probed) message with verification wording (human/verify/click/
+ *      select/countdown) raises ONE `runecheck` event: alert via pushAlert
+ *      + the module `runeCheck` state {active, at, kind, lastSeenAt}. While
+ *      active, further verification wording only refreshes lastSeenAt (the
+ *      auto-resume cooldown input, D-A4) — NEVER a second alert (bounded,
+ *      per-id seq). The periodic "Make sure you do not go exploring…" spam
+ *      is filtered out and MUST NOT trigger. An optional DOM overlay scan
+ *      (`antibot.domRuneCheck`, default OFF) runs the same event path.
+ *
  * Auto-reply fires ONLY inside a queue-dispatched closure (REQ-12 no-bypass)
  * and ONLY through the feature-detected Default-channel send surface (the
  * open probe): when no send surface exists the module degrades to ALERT-ONLY
@@ -41,12 +51,19 @@ const ALERTS_CAP = 20;
 const PENDING_CAP = 3;
 const SEEN_KEYS_CAP = 500;
 
+/** Rune-check verification wording (REQ-38, D-A2): the anti-bot screen the
+ *  server pushes through the Default channel (live probe: type-2 entries
+ *  from Cipfried). Mirrors the matchesPattern /regex/ style below. */
+const VERIFY_WORDING = /human|verify|click|select|countdown/i;
+
 /**
  * Create the anti-bot watcher module.
  *
  * @param {object} opts
  * @param {object} opts.config - normalized antibot config
- *   { on: boolean, replies: Array<{pattern: string, reply: string}> }
+ *   { on: boolean, replies: Array<{pattern: string, reply: string}>,
+ *     domRuneCheck?: boolean } — domRuneCheck (REQ-39) gates the DOM overlay
+ *   scan; absent/false = chat-only detection (default)
  * @param {() => string|null} [opts.playerName] - current player name accessor
  * @param {object|null} [opts.gameClient] - page gameClient (chat reads)
  * @param {Document|null} [opts.document] - page DOM (chat DOM fallback)
@@ -66,6 +83,7 @@ const SEEN_KEYS_CAP = 500;
  *   fire: (decision: object) => boolean,
  *   getState: () => object,
  *   isEnabled: () => boolean,
+ *   clearRuneCheck: () => {ok: boolean, already?: boolean},
  * }}
  */
 function createAntibotModule(opts = {}) {
@@ -101,6 +119,10 @@ function createAntibotModule(opts = {}) {
     lastTeleported: false,
     lastHealth: null,
     lastDamageTint: false,
+    // REQ-38/39 (D-A2): rune-check state {active, at, kind, lastSeenAt} —
+    // null when no check is active. `lastSeenAt` refreshes while the
+    // detection surface keeps matching (auto-resume cooldown input, D-A4).
+    runeCheck: null,
   };
 
   /** Push a bounded alert with a monotonic id (the panel beeps per new id). */
@@ -157,6 +179,9 @@ function createAntibotModule(opts = {}) {
       state.counters.speaks += 1;
       const short = msg.length > 80 ? msg.slice(0, 80) + '…' : msg;
       pushAlert('speak', String(entry.name) + ' speaks: "' + short + '"');
+      // REQ-38 (D-A2): chat rune-check detection — same deduped entry, one
+      // event path (alert + runeCheck state; spam never fires it).
+      handleRuneCheck(entry, msg);
       handlePatterns(msg);
     }
   }
@@ -196,6 +221,90 @@ function createAntibotModule(opts = {}) {
       timers.antibotPendingQueue.push({ pattern, at: now() });
       warn('antibot: pattern "' + pattern + '" first seen — confirmation pending (REQ-34)');
     }
+  }
+
+  /**
+   * Rune-check spam filter (REQ-38): the periodic "Make sure you do not go
+   * exploring…" message MUST never raise a runecheck event. Both the exact
+   * string and the /exploring/i family are filtered — belt and braces (the
+   * ellipsis shape may vary between builds).
+   */
+  function isRuneCheckSpam(msg) {
+    if (msg === 'Make sure you do not go exploring...') return true;
+    return /exploring/i.test(msg);
+  }
+
+  /**
+   * Chat-based rune-check detection (REQ-38, D-A2): a type-2 entry (server/
+   * GM speak — live-probed; the player-name exclusion already gates own
+   * messages via isSpeakEntry) carrying verification wording raises ONE
+   * runecheck event. While already active, further wording only refreshes
+   * lastSeenAt (the auto-resume cooldown input) — never a second alert
+   * (bounded, per-id pushAlert seq). Exploring spam is filtered first.
+   * @param {object} entry - normalized channel entry ({name, message, time, type})
+   * @param {string} msg - trimmed message
+   * @returns {boolean} true when a runecheck event is (or stays) active
+   */
+  function handleRuneCheck(entry, msg) {
+    if (entry.type !== 2) return false; // live-probed server/GM speak gate
+    if (isRuneCheckSpam(msg)) return false;
+    if (!VERIFY_WORDING.test(msg)) return false;
+    if (state.runeCheck && state.runeCheck.active === true) {
+      state.runeCheck.lastSeenAt = now(); // keep the cooldown fresh — no re-alert
+      return true;
+    }
+    state.runeCheck = { active: true, at: now(), kind: 'chat', lastSeenAt: now() };
+    pushAlert('runecheck', 'Rune check detected — botting paused (solve the check to resume)');
+    info('antibot: rune check detected (chat, type-2) — botting paused (REQ-38)');
+    return true;
+  }
+
+  /** Clear the rune-check state — the manual resume RPC (resumeRuneCheck,
+   *  REQ-41) and the auto-resume reconcile (D-A4) both land here. */
+  function clearRuneCheck() {
+    if (!state.runeCheck) return { ok: true, already: true };
+    state.runeCheck = null;
+    info('antibot: rune check cleared (manual/auto resume) (REQ-40/41)');
+    return { ok: true };
+  }
+
+  /**
+   * DOM overlay scan (REQ-39, D-A2, belt-and-braces): config-gated
+   * (`antibot.domRuneCheck`, default OFF — ships chat-only until the live
+   * capture probe finalizes the overlay selectors). Criteria: >= 6 imgs AND
+   * verification wording AND countdown digits; the World-Map overlay (76
+   * imgs / 499 btns live probe) is suppressed by the imgs > 40 AND btns >
+   * 300 rule. A match runs the SAME single runecheck event path (alert +
+   * state); while already active only lastSeenAt refreshes (no double-count
+   * across surfaces). A DOM read failure degrades to no-op — never crashes.
+   * @returns {boolean} true when a runecheck event is (or stays) active
+   */
+  function scanDomRuneCheck() {
+    if (!doc || typeof doc.querySelectorAll !== 'function') return false;
+    if (!config || config.domRuneCheck !== true) return false; // default OFF
+    let imgs = 0;
+    let btns = 0;
+    let text = '';
+    try {
+      imgs = doc.querySelectorAll('img').length;
+      btns = doc.querySelectorAll('button').length;
+      const body = doc.body;
+      text = body && typeof body.textContent === 'string' ? body.textContent : '';
+    } catch (e) {
+      return false; // DOM read failed — the watcher never crashes on it
+    }
+    if (imgs > 40 && btns > 300) return false; // World-Map suppression
+    if (imgs < 6) return false;
+    if (!VERIFY_WORDING.test(text)) return false;
+    if (!/\d/.test(text)) return false; // countdown digits
+    if (state.runeCheck && state.runeCheck.active === true) {
+      state.runeCheck.lastSeenAt = now(); // keep the cooldown fresh — no re-alert
+      return true;
+    }
+    state.runeCheck = { active: true, at: now(), kind: 'dom', lastSeenAt: now() };
+    pushAlert('runecheck', 'Rune check detected — botting paused (solve the check to resume)');
+    info('antibot: rune check detected (DOM overlay) — botting paused (REQ-39)');
+    return true;
   }
 
   /**
@@ -263,6 +372,9 @@ function createAntibotModule(opts = {}) {
     }
     observeChat(entries);
     observeContext();
+    // REQ-39 (D-A2): config-gated DOM overlay scan (default OFF) — the same
+    // single runecheck event path; chat-only detection ships regardless.
+    scanDomRuneCheck();
     return { alerts: state.alerts.slice() };
   }
 
@@ -348,6 +460,7 @@ function createAntibotModule(opts = {}) {
       sendAvailable: state.sendAvailable,
       sendReason: state.sendReason,
       replyPendingCount: state.pendingReplies.length,
+      runeCheck: state.runeCheck ? Object.assign({}, state.runeCheck) : null,
     };
   }
 
@@ -356,7 +469,7 @@ function createAntibotModule(opts = {}) {
     return Boolean(config && config.on === true);
   }
 
-  return { observe, confirm, decide, fire, getState, isEnabled };
+  return { observe, confirm, decide, fire, getState, isEnabled, clearRuneCheck };
 }
 
 module.exports = { createAntibotModule, ALERTS_CAP, PENDING_CAP };
