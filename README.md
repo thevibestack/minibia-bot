@@ -74,5 +74,39 @@ Integrated on `develop`/`main`:
   rune select, confirm-gated stop toggles, hotbar keybind RPC with
   per-character persistence (REQ-42..46)
 
-Deferred (live probe): DOM-overlay selector finalization, real-client hotkey
-slot confirmation, exact Cipfried wording.
+## Known gaps / pending work (as of 2026-08-11)
+
+Audited during the runecheck-trainer-ui close. None of these block the
+merged code; they are the honest remainder.
+
+1. **Catalog picker covers only 3 modules.** The spell picker
+   (`renderSpellPicker`, `PICKER_MODULES = ['healMagic', 'training',
+   'attack']`) lets you select a spell from the client catalog for those
+   modules. All other modules — runes, eat, loot, trade, spawns, cavebot —
+   are configured with numeric hotbar slots only, not a catalog selector.
+   The full catalog is fetched from the client (`/api/spell-catalog`,
+   filtered by vocation + level) but the UI does not let you assign a spell
+   to every machine.
+2. **Config form is hidden until armed.** `renderConfigForm` renders only
+   when `gate === GATE_ARMED` (connected); before that the panel shows a
+   locked placeholder (`configLocked`). The TRAINER section (rune-making,
+   hotkeys, toggles) is part of that form — it is not visible until you
+   Connect. Easy to misread as "no configuration exists".
+3. **TRAINER rune select vs picker overlap.** The TRAINER form filters the
+   catalog with `/rune/i` (name|words); the general picker also lists the
+   `training` module. Duplicated selection paths — unify when touched.
+4. **Live probe (deferred, CF-blocked posture):** finalize the DOM-overlay
+   rune-check selectors (A3, config-optional, default off), confirm the
+   real hotbar slot / F-key arrival in `keyboard.__hotbarKeybinds` (B5),
+   and refine the exact Cipfried verification wording (A2).
+5. **`dist/` binaries are stale.** Built 2026-08-09, before the
+   runecheck-trainer-ui change. Rebuild with `node tools/build-app.js`
+   before distributing.
+6. **Dedicated `sdd-*` sub-agents return empty task results** in this
+   environment (`GENTLE_AI_SDD_FAILURE sdd_task_result_empty`, transport
+   level; apply ×2, verify ×2 during the runecheck close). Workaround used:
+   the general worker under the identical contract, gatekeeper-validated.
+   Recorded in the change archive; report upstream when convenient.
+
+Deferred live checks: DOM-overlay selector finalization, real-client
+hotkey slot confirmation, exact Cipfried wording.
