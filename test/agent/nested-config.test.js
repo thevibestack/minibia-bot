@@ -86,7 +86,7 @@ test('REQ-08 fix: the NESTED store shape reaches EVERY module — on flags + key
   assert.equal(cfg.spawns.on, true);
   assert.equal(cfg.huntStats.on, true);
   assert.deepEqual(cfg.learning.knownWords, ['exura', 'utevo vis']);
-  assert.deepEqual(cfg.antibot, { on: true, replies: [{ pattern: 'are you bot?', reply: 'no' }] });
+  assert.deepEqual(cfg.antibot, { on: true, replies: [{ pattern: 'are you bot?', reply: 'no' }], domRuneCheck: false });
   assert.equal(cfg.routes.on, true);
   assert.deepEqual(cfg.attack, { on: true, targeting: 'nearest', sid: 12, runeSlot: 5 });
   assert.deepEqual(cfg.cavebot, { on: true, paused: false, route: [{ x: 1, y: 2 }, { x: 3, y: 4 }] });

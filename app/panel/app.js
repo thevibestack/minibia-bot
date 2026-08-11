@@ -83,6 +83,25 @@
   }
 
   /**
+   * Slice B (REQ-46, D-B3): fetch the hotkey surface availability + the
+   * configured F-keys so the TRAINER form degrades to display-only when the
+   * game keyboard surface is absent. Ignored while not connected (the server
+   * answers 409 — nothing to read yet).
+   */
+  function refreshHotkeys() {
+    if (!fetchImpl) return;
+    jsonRequest('/api/hotkeys').then(function (res) {
+      if (!res || res.ok === false) return; // not connected yet — ignore
+      dispatch({
+        type: 'HOTKEYS_LOADED',
+        available: res.available === true,
+        reason: res.available === true ? null : (res.reason || null),
+        configured: res.configured || null,
+      });
+    });
+  }
+
+  /**
    * Slice 1b (REQ-27/28): after Connect the panel fetches the castable spell
    * catalog (filtered server-side) and the profile list for the cross-load
    * offer. Refetches on every connect (new character = new catalog).
@@ -139,6 +158,7 @@
           if (res && res.ok) {
             dispatch({ type: 'PREFILL_CONFIG', config: res.config });
             refreshSpellData(); // REQ-27/28: catalog + profiles after Connect
+            refreshHotkeys();   // REQ-46 (B): hotkey surface + configured F-keys
           } else {
             dispatch({ type: 'CONNECT_FAILED', message: (res && res.reason) || 'connect refused' });
           }
@@ -216,6 +236,55 @@
         postJson('/api/antibot-confirm', {
           character: state.identity ? state.identity.name : null,
           pattern: effect.pattern,
+        });
+        break;
+      }
+      case 'runecheck-resume': {
+        // REQ-41 (PR A): the user resumed a paused rune check — the server
+        // RPCs the in-page agent resumeRuneCheck (queue unpause + state
+        // clear); the panel confirms with a localized info alert.
+        postJson('/api/runecheck-resume', {
+          character: state.identity ? state.identity.name : null,
+        }).then(function (res) {
+          if (res && res.ok) {
+            dispatch({ type: 'ALERT', kind: 'info', message: P.t(state, 'trainer.runeCheckResumed') });
+          } else if (res && res.ok === false && res.reason) {
+            dispatch({ type: 'ERROR', message: 'resume refused: ' + res.reason });
+          }
+        });
+        break;
+      }
+      case 'hotkey-assign': {
+        // REQ-46 (D-B3): assign the rune/fallback hotkey — the server RPCs
+        // setHotbarKeybind (writes keyboard.__hotbarKeybinds) and persists
+        // the key per character. The rune key maps to the rune-making slot
+        // (training.slot); the fallback key to the fallback slot
+        // (runes.fallbackSlot). A missing slot refuses visibly.
+        var which = effect.which === 'fallback' ? 'fallback' : 'rune';
+        var key = which === 'rune'
+          ? (state.trainerForm.runeKey || 'F4')
+          : (state.trainerForm.fallbackKey || 'F5');
+        var cfg = state.config || {};
+        var training = cfg.modules && cfg.modules.training || {};
+        var runes = cfg.modules && cfg.modules.runes || {};
+        var slot = which === 'rune' ? Number(training.slot) : Number(runes.fallbackSlot);
+        if (!Number.isInteger(slot) || slot < 1 || slot > 12) {
+          dispatch({
+            type: 'HOTKEY_RESULT', ok: false, which: which,
+            reason: 'no ' + which + ' hotbar slot configured',
+          });
+          return;
+        }
+        postJson('/api/hotkeys', {
+          character: state.identity ? state.identity.name : null,
+          slot: slot,
+          key: key,
+        }).then(function (res) {
+          if (res && res.ok === true) {
+            dispatch({ type: 'HOTKEY_RESULT', ok: true, which: which });
+          } else if (res && res.ok === false) {
+            dispatch({ type: 'HOTKEY_RESULT', ok: false, which: which, reason: res.reason || 'hotkey assign failed' });
+          }
         });
         break;
       }
@@ -347,6 +416,31 @@
     } else if (target && target.matches && target.matches('#trainer-cap-mode')) {
       // REQ-30 (PR4): cap mode select — pure UI value (selects fire change).
       dispatch({ type: 'UPDATE_TRAINER_INPUT', key: 'capMode', value: target.value });
+    } else if (target && target.matches && target.matches('#trainer-rune-select')) {
+      // REQ-42 (B, D-B2): inline rune select — pure UI value (the save
+      // validates the sid is castable, PICK_SPELL pattern).
+      dispatch({ type: 'UPDATE_TRAINER_INPUT', key: 'runeSid', value: target.value });
+    } else if (target && target.matches && target.matches('#trainer-rune-key')) {
+      // REQ-46 (B, D-B3): Rune Hotkey select — pure UI value.
+      dispatch({ type: 'UPDATE_TRAINER_INPUT', key: 'runeKey', value: target.value });
+    } else if (target && target.matches && target.matches('#trainer-fallback-key')) {
+      // REQ-46 (B, D-B3): Fallback Hotkey select — pure UI value.
+      dispatch({ type: 'UPDATE_TRAINER_INPUT', key: 'fallbackKey', value: target.value });
+    } else if (target && target.matches && target.matches('#trainer-auto-fallback')) {
+      // REQ-44 (B, D-B4): Auto Fallback Magic toggle — pure UI value (save
+      // refuses when ON without a fallback slot).
+      dispatch({ type: 'UPDATE_TRAINER_INPUT', key: 'autoFallback', value: target.checked ? 'true' : 'false' });
+    } else if (target && target.matches && target.matches('#trainer-sound-alert')) {
+      // REQ-44 (B): Sound Alert toggle — maps to the existing SET_SOUND
+      // action (PR4 reuse), persisted via 'mb-panel-sound'.
+      dispatch({ type: 'SET_SOUND', enabled: target.checked });
+    } else if (target && target.matches && target.matches('#trainer-stop-runes')) {
+      // REQ-44 (B, D-B4): Stop Rune-Making — runes module off only.
+      dispatch({ type: 'UPDATE_TRAINER_INPUT', key: 'stopRuneMaking', value: target.checked ? 'true' : 'false' });
+    } else if (target && target.matches && target.matches('#trainer-stop-botting')) {
+      // REQ-44/45 (B, D-B4/D-B6): Stop Botting Entirely — runes module off
+      // only, gated by the confirm overlay at save time.
+      dispatch({ type: 'UPDATE_TRAINER_INPUT', key: 'stopBotting', value: target.checked ? 'true' : 'false' });
     } else if (target && target.matches && target.matches('#attack-targeting')) {
       // REQ-35 (PR6): attack targeting select — pure UI value.
       dispatch({ type: 'UPDATE_ATTACK_INPUT', key: 'targeting', value: target.value });
@@ -459,10 +553,29 @@
       dispatch({ type: 'SAVE_HEAL_SETTINGS' });
     }
     else if (target.matches('#trainer-save-btn')) {
-      // REQ-30/31/32 (PR4): commit the TRAINER settings form (cap mode,
-      // cap % -> ratio, fallback slot + mana % -> ratio, reserve,
-      // eat-with-magic) into the config.
+      // REQ-30/31/32 (PR4) + REQ-44/45 (B): commit the TRAINER settings form
+      // (cap mode, cap % -> ratio, fallback slot + mana % -> ratio, reserve,
+      // eat-with-magic, rune sid, hotkeys, toggles). Stop Botting is gated by
+      // the confirm overlay (the reducer arms it; Yes commits).
       dispatch({ type: 'SAVE_TRAINER_SETTINGS' });
+    }
+    else if (target.matches('#confirm-stop-yes')) {
+      // REQ-45 (B, D-B6): the Stop-Botting confirm overlay — Yes commits the
+      // pending trainer save (rune-making off; heal/eat continue).
+      dispatch({ type: 'CONFIRM_STOP' });
+    }
+    else if (target.matches('#confirm-stop-no')) {
+      // REQ-45 (B, D-B6): No drops the pending confirmation — nothing saved.
+      dispatch({ type: 'CANCEL_STOP' });
+    }
+    else if (target.matches('#trainer-rune-assign')) {
+      // REQ-46 (B, D-B3): assign the Rune Hotkey to the rune-making slot
+      // (server -> setHotbarKeybind RPC + per-character persistence).
+      dispatch({ type: 'ASSIGN_HOTKEY', which: 'rune' });
+    }
+    else if (target.matches('#trainer-fallback-assign')) {
+      // REQ-46 (B, D-B3): assign the Fallback Hotkey to the fallback slot.
+      dispatch({ type: 'ASSIGN_HOTKEY', which: 'fallback' });
     }
     else if (target.matches('#others-save-btn')) {
       // REQ-33/34 (PR5): commit the OTHERS settings form (food slot +
@@ -474,6 +587,11 @@
       // REQ-34 (PR5): confirm the pending anti-bot pattern — the effect
       // posts /api/antibot-confirm (server persists + RPC confirmAntibot).
       dispatch({ type: 'CONFIRM_ANTIBOT', pattern: target.getAttribute('data-antibot-confirm') || '' });
+    }
+    else if (target.matches('#runecheck-resume-btn')) {
+      // REQ-41 (PR A): manual resume of a paused rune check — the effect
+      // posts /api/runecheck-resume (server RPCs resumeRuneCheck).
+      dispatch({ type: 'RUNECHECK_RESUME' });
     }
     else if (target.matches('#attack-save-btn')) {
       // REQ-35 (PR6): commit the ATTACK settings form (targeting choice +
@@ -548,6 +666,7 @@
 
   render();
   startPolling();
+  refreshHotkeys(); // REQ-46 (B): hotkey surface read — ignored until connected (server 409)
 
   window.__mbPanel = {
     dispatch: dispatch,

@@ -10,6 +10,7 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
+const { JSDOM } = require('jsdom');
 
 const { createAntibotModule } = require('../../../src/agent/modules/antibot');
 
@@ -37,7 +38,7 @@ function makeModule(overrides = {}) {
     config: Object.assign({ on: true, replies: [] }, overrides.config),
     playerName: overrides.playerName || (() => 'Flamamex'),
     gameClient: overrides.gameClient !== undefined ? overrides.gameClient : gcWith([]),
-    document: null,
+    document: overrides.document !== undefined ? overrides.document : null,
     readContext: overrides.readContext || (() => ({ position: null, teleported: null, health: null, damageTint: null })),
     readSend: overrides.readSend !== undefined
       ? overrides.readSend
@@ -266,4 +267,150 @@ test('REQ-33: alerts are bounded (spammy channel cannot grow the list unboundedl
   mod.observe();
   assert.ok(mod.getState().alerts.length <= 20, 'bounded by ALERTS_CAP');
   assert.equal(mod.getState().counters.speaks, 30, 'counter still counts everything');
+});
+
+/* -------------------- REQ-38 — chat rune-check detection (D-A2) -------------------- */
+
+test('REQ-38: Cipfried type-2 verification wording -> ONE runecheck event (alert + state)', () => {
+  const { mod } = makeModule({
+    gameClient: gcWith([entry('Cipfried', 'Please verify you are human by clicking the correct images', { type: 2, time: 5 })]),
+  });
+  mod.observe();
+  const st = mod.getState();
+  assert.equal(st.alerts.filter((a) => a.kind === 'runecheck').length, 1, 'one runecheck alert');
+  assert.equal(st.alerts[st.alerts.length - 1].kind, 'runecheck', 'runecheck rides the pushAlert seq');
+  assert.deepEqual(st.runeCheck, { active: true, at: 1000000, kind: 'chat', lastSeenAt: 1000000 });
+});
+
+test('REQ-38: repeated verification wording never double-counts — lastSeenAt refreshes', () => {
+  const contents = [entry('Cipfried', 'Please verify you are human', { type: 2, time: 5 })];
+  const { mod, now } = makeModule({ gameClient: gcWith(contents) });
+  mod.observe();
+  assert.equal(mod.getState().alerts.filter((a) => a.kind === 'runecheck').length, 1);
+  now.t += 1000;
+  contents[0] = entry('Cipfried', 'Please verify you are human', { type: 2, time: 6 });
+  mod.observe();
+  const st = mod.getState();
+  assert.equal(st.alerts.filter((a) => a.kind === 'runecheck').length, 1, 'one event total (bounded, per-id)');
+  assert.equal(st.runeCheck.active, true);
+  assert.equal(st.runeCheck.lastSeenAt, 1001000, 'lastSeenAt refreshed while active (cooldown input)');
+  assert.equal(st.runeCheck.kind, 'chat');
+});
+
+test('REQ-38: exploring spam never raises a runecheck event', () => {
+  const { mod } = makeModule({
+    gameClient: gcWith([
+      entry('Cipfried', 'Make sure you do not go exploring...', { type: 2, time: 1 }),
+      entry('Cipfried', 'IMPORTANT: exploring is not allowed right now', { type: 2, time: 2 }),
+    ]),
+  });
+  mod.observe();
+  const st = mod.getState();
+  assert.equal(st.alerts.filter((a) => a.kind === 'runecheck').length, 0, 'spam never triggers');
+  assert.equal(st.runeCheck, null);
+});
+
+test('REQ-38: runecheck is gated on type-2 entries (live-probed server/GM speak)', () => {
+  const { mod } = makeModule({
+    gameClient: gcWith([
+      entry('Cipfried', 'Please verify you are human', { type: 0, time: 1 }),
+      entry('Cipfried', 'Please verify you are human', { type: null, time: 2 }),
+    ]),
+  });
+  mod.observe();
+  const st = mod.getState();
+  assert.equal(st.alerts.filter((a) => a.kind === 'runecheck').length, 0, 'type 0/null never gates runecheck');
+  assert.equal(st.runeCheck, null);
+});
+
+test('REQ-38: a verification-wording message from the player themselves never triggers', () => {
+  const { mod } = makeModule({
+    gameClient: gcWith([entry('Flamamex', 'please verify my account settings', { type: 2, time: 1 })]),
+  });
+  mod.observe();
+  const st = mod.getState();
+  assert.equal(st.alerts.filter((a) => a.kind === 'runecheck').length, 0, 'own message excluded');
+  assert.equal(st.runeCheck, null);
+});
+
+test('REQ-38: clearRuneCheck resets the state (manual/auto resume input)', () => {
+  const { mod } = makeModule({
+    gameClient: gcWith([entry('Cipfried', 'select the right images to verify', { type: 2, time: 5 })]),
+  });
+  mod.observe();
+  assert.equal(mod.getState().runeCheck.active, true);
+  const res = mod.clearRuneCheck();
+  assert.equal(res.ok, true);
+  assert.equal(mod.getState().runeCheck, null);
+  assert.equal(mod.clearRuneCheck().already, true, 'idempotent when already clear');
+});
+
+/* -------------------- REQ-39 — DOM overlay scan (config-gated, D-A2) -------------------- */
+
+function domWith(html) {
+  return new JSDOM('<!DOCTYPE html><html><body>' + html + '</body></html>').window.document;
+}
+
+function overlayHtml(imgs, text) {
+  return '<div class="overlay">'
+    + Array.from({ length: imgs }, (_, i) => '<img src="t' + i + '.png">').join('')
+    + '<p>' + text + '</p><span class="count">0:45</span></div>';
+}
+
+test('REQ-39: DOM scan detects >=6 imgs + wording + countdown when enabled', () => {
+  const doc = domWith(overlayHtml(8, 'select all images to verify you are human'));
+  const { mod } = makeModule({ document: doc, config: { on: true, replies: [], domRuneCheck: true } });
+  mod.observe();
+  const st = mod.getState();
+  assert.equal(st.alerts.filter((a) => a.kind === 'runecheck').length, 1, 'one runecheck alert');
+  assert.deepEqual(st.runeCheck, { active: true, at: 1000000, kind: 'dom', lastSeenAt: 1000000 });
+});
+
+test('REQ-39: DOM scan stays disabled by default — no scan, no events', () => {
+  const doc = domWith(overlayHtml(8, 'select all images to verify you are human'));
+  const { mod } = makeModule({ document: doc }); // default config: domRuneCheck absent
+  mod.observe();
+  const st = mod.getState();
+  assert.equal(st.alerts.filter((a) => a.kind === 'runecheck').length, 0, 'disabled by default');
+  assert.equal(st.runeCheck, null);
+});
+
+test('REQ-39: World-Map overlay (imgs > 40 AND btns > 300) is suppressed', () => {
+  const html = '<div class="worldmap">'
+    + Array.from({ length: 76 }, (_, i) => '<img src="t' + i + '.png">').join('')
+    + Array.from({ length: 499 }, (_, i) => '<button type="button">b' + i + '</button>').join('')
+    + '<p>verify your position on the map</p><span>12</span></div>';
+  const { mod } = makeModule({
+    document: domWith(html),
+    config: { on: true, replies: [], domRuneCheck: true },
+  });
+  mod.observe();
+  const st = mod.getState();
+  assert.equal(st.alerts.filter((a) => a.kind === 'runecheck').length, 0, 'World-Map layout suppressed');
+  assert.equal(st.runeCheck, null);
+});
+
+test('REQ-39: fewer than 6 imgs never matches even with wording + digits', () => {
+  const { mod } = makeModule({
+    document: domWith(overlayHtml(3, 'verify you are human')),
+    config: { on: true, replies: [], domRuneCheck: true },
+  });
+  mod.observe();
+  assert.equal(mod.getState().runeCheck, null);
+});
+
+test('REQ-39: DOM scan while a chat runecheck is already active never double-counts', () => {
+  const { mod, now } = makeModule({
+    gameClient: gcWith([entry('Cipfried', 'Please verify you are human', { type: 2, time: 5 })]),
+    document: domWith(overlayHtml(8, 'select all images to verify you are human')),
+    config: { on: true, replies: [], domRuneCheck: true },
+  });
+  mod.observe();
+  assert.equal(mod.getState().alerts.filter((a) => a.kind === 'runecheck').length, 1);
+  assert.equal(mod.getState().runeCheck.kind, 'chat', 'chat detection won the event');
+  now.t += 500;
+  mod.observe();
+  const st = mod.getState();
+  assert.equal(st.alerts.filter((a) => a.kind === 'runecheck').length, 1, 'one event across surfaces');
+  assert.equal(st.runeCheck.lastSeenAt, 1000500, 'DOM match refreshed the cooldown');
 });

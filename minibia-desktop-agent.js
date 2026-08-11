@@ -1087,6 +1087,11 @@ const { randomDelay } = require('core/jitter');
  *    the skipped normals — it never drops them).
  *  - No bypass: the queue is the ONLY dispatch path; the wiring guarantees
  *    game-handler invocations happen exclusively inside dispatched closures.
+ *  - Pause gate (REQ-40, D-A3): setPaused(true) makes drain() a NO-OP — every
+ *    entry STAYS pending (defer, never drop) and the throttle/jitter code is
+ *    untouched: pause is a drain gate, NEVER a min-interval/jitter bypass.
+ *    Resume recomputes fire times against the SAME lastDispatchAt, so the
+ *    global interval holds even when wall time passed while paused.
  *
  * Injectable `now` (fake clock) + `rng` (seeded) make the queue fully
  * deterministic and unit-testable in node without real timers.
@@ -1094,10 +1099,12 @@ const { randomDelay } = require('core/jitter');
  * createQueue(opts) -> {
  *   enqueue(action, { kind, priority, jitterMs }) -> entry,
  *   drain() -> Array<entry>,              // dispatched eligible prefix
+ *   setPaused(isPaused) -> boolean,
+ *   isPaused() -> boolean,
  *   hasPending(predicate) -> boolean,
  *   pendingCount() -> number,
  *   stats() -> { enqueued, urgentEnqueued, dispatched, failed, pending,
- *                pendingUrgent, lastDispatchAt, minInterval }
+ *                pendingUrgent, lastDispatchAt, minInterval, paused }
  * }
  */
 
@@ -1132,6 +1139,7 @@ function createQueue(opts = {}) {
 
   let lastDispatchAt = null; // timestamp of the last actually dispatched action
   let pending = [];          // FIFO-by-class of { action, kind, priority, jitterMs, fireAt }
+  let paused = false;        // REQ-40 (D-A3): pause gate — drain() no-ops while true
   const counters = { enqueued: 0, urgentEnqueued: 0, dispatched: 0, failed: 0 };
 
   /** Coerce the priority option: only 'urgent' is a class; anything else
@@ -1193,9 +1201,16 @@ function createQueue(opts = {}) {
    * against the running last-dispatch slot, so spacing is ALWAYS
    * >= minInterval + jitter even when entries were enqueued long ago.
    *
+   * REQ-40 (D-A3): while PAUSED the drain is a NO-OP — every entry stays
+   * pending (defer, never drop). The throttle/jitter code below is never
+   * touched by the pause: on resume, fire times recompute against the SAME
+   * lastDispatchAt, so the global interval holds even when wall time passed
+   * during the pause (pause is a gate, never a no-bypass violation).
+   *
    * @returns {Array} the entries actually dispatched this call
    */
   function drain() {
+    if (paused) return []; // REQ-40: pause gate — entries stay pending
     const now = nowFn();
     const dispatched = [];
     let slot = lastDispatchAt === null ? null : lastDispatchAt + minInterval;
@@ -1229,6 +1244,19 @@ function createQueue(opts = {}) {
     return pending.length;
   }
 
+  /** REQ-40 (D-A3): pause/resume the dispatch gate. `true` freezes drain()
+   *  (entries stay pending); `false` restores normal dispatch. The pause
+   *  NEVER touches the throttle/jitter pacing — no-bypass (REQ-12). */
+  function setPaused(isPaused) {
+    paused = isPaused === true;
+    return paused;
+  }
+
+  /** @returns {boolean} whether the dispatch gate is paused (REQ-40) */
+  function isPaused() {
+    return paused;
+  }
+
   /** @returns {object} counters + pacing state */
   function stats() {
     return {
@@ -1240,10 +1268,11 @@ function createQueue(opts = {}) {
       pendingUrgent: pending.reduce(function (n, e) { return n + (e.priority === 'urgent' ? 1 : 0); }, 0),
       lastDispatchAt,
       minInterval,
+      paused, // REQ-40: pause gate state (snapshot/panel observability)
     };
   }
 
-  return { enqueue, drain, hasPending, pendingCount, stats };
+  return { enqueue, drain, setPaused, isPaused, hasPending, pendingCount, stats };
 }
 
 module.exports = { createQueue, DEFAULT_MIN_INTERVAL, DEFAULT_JITTER };
@@ -2355,6 +2384,21 @@ const require = __mbRequire;
  * Fully injectable: `ctx = { gameClient, document }`.
  */
 
+/** Normalize the raw `__time` to epoch ms (REQ-37, D-A1): real client
+ *  entries carry a Date OBJECT (live probe: {message, __time: Date, ...})
+ *  while the antibot/learning watermark dedupe expects numeric timestamps —
+ *  a raw passthrough left the watermarks dead on real data. Date objects ->
+ *  getTime(); numeric passthrough; missing/null/invalid -> null (null-safe,
+ *  never throws). */
+function normalizeTime(t) {
+  if (t === null || t === undefined) return null;
+  if (t instanceof Date) {
+    const ms = t.getTime();
+    return Number.isFinite(ms) ? ms : null;
+  }
+  return typeof t === 'number' && Number.isFinite(t) ? t : null;
+}
+
 /** Normalize one channel entry to the canonical read shape. `type` is the
  *  raw speak-type field when the game exposes it (PR5/REQ-33: speak types 0
  *  and 2); null when absent (the anti-bot watcher treats a null type as a
@@ -2363,7 +2407,7 @@ function fromChannelEntry(entry) {
   return {
     name: entry?.name ?? null,
     message: entry?.message ?? '',
-    time: entry?.__time ?? null,
+    time: normalizeTime(entry?.__time),
     type: entry?.type ?? null,
     source: 'channel',
   };
@@ -4634,6 +4678,16 @@ const require = __mbRequire;
  *      the injected `timers` (bootstrap state.timers) — they survive config
  *      rebuilds and reset on agent restart.
  *
+ *   3. Rune-check detection (REQ-38/39, D-A2): a type-2 (server/GM speak —
+ *      live-probed) message with verification wording (human/verify/click/
+ *      select/countdown) raises ONE `runecheck` event: alert via pushAlert
+ *      + the module `runeCheck` state {active, at, kind, lastSeenAt}. While
+ *      active, further verification wording only refreshes lastSeenAt (the
+ *      auto-resume cooldown input, D-A4) — NEVER a second alert (bounded,
+ *      per-id seq). The periodic "Make sure you do not go exploring…" spam
+ *      is filtered out and MUST NOT trigger. An optional DOM overlay scan
+ *      (`antibot.domRuneCheck`, default OFF) runs the same event path.
+ *
  * Auto-reply fires ONLY inside a queue-dispatched closure (REQ-12 no-bypass)
  * and ONLY through the feature-detected Default-channel send surface (the
  * open probe): when no send surface exists the module degrades to ALERT-ONLY
@@ -4646,12 +4700,19 @@ const ALERTS_CAP = 20;
 const PENDING_CAP = 3;
 const SEEN_KEYS_CAP = 500;
 
+/** Rune-check verification wording (REQ-38, D-A2): the anti-bot screen the
+ *  server pushes through the Default channel (live probe: type-2 entries
+ *  from Cipfried). Mirrors the matchesPattern /regex/ style below. */
+const VERIFY_WORDING = /human|verify|click|select|countdown/i;
+
 /**
  * Create the anti-bot watcher module.
  *
  * @param {object} opts
  * @param {object} opts.config - normalized antibot config
- *   { on: boolean, replies: Array<{pattern: string, reply: string}> }
+ *   { on: boolean, replies: Array<{pattern: string, reply: string}>,
+ *     domRuneCheck?: boolean } — domRuneCheck (REQ-39) gates the DOM overlay
+ *   scan; absent/false = chat-only detection (default)
  * @param {() => string|null} [opts.playerName] - current player name accessor
  * @param {object|null} [opts.gameClient] - page gameClient (chat reads)
  * @param {Document|null} [opts.document] - page DOM (chat DOM fallback)
@@ -4671,6 +4732,7 @@ const SEEN_KEYS_CAP = 500;
  *   fire: (decision: object) => boolean,
  *   getState: () => object,
  *   isEnabled: () => boolean,
+ *   clearRuneCheck: () => {ok: boolean, already?: boolean},
  * }}
  */
 function createAntibotModule(opts = {}) {
@@ -4706,6 +4768,10 @@ function createAntibotModule(opts = {}) {
     lastTeleported: false,
     lastHealth: null,
     lastDamageTint: false,
+    // REQ-38/39 (D-A2): rune-check state {active, at, kind, lastSeenAt} —
+    // null when no check is active. `lastSeenAt` refreshes while the
+    // detection surface keeps matching (auto-resume cooldown input, D-A4).
+    runeCheck: null,
   };
 
   /** Push a bounded alert with a monotonic id (the panel beeps per new id). */
@@ -4762,6 +4828,9 @@ function createAntibotModule(opts = {}) {
       state.counters.speaks += 1;
       const short = msg.length > 80 ? msg.slice(0, 80) + '…' : msg;
       pushAlert('speak', String(entry.name) + ' speaks: "' + short + '"');
+      // REQ-38 (D-A2): chat rune-check detection — same deduped entry, one
+      // event path (alert + runeCheck state; spam never fires it).
+      handleRuneCheck(entry, msg);
       handlePatterns(msg);
     }
   }
@@ -4801,6 +4870,90 @@ function createAntibotModule(opts = {}) {
       timers.antibotPendingQueue.push({ pattern, at: now() });
       warn('antibot: pattern "' + pattern + '" first seen — confirmation pending (REQ-34)');
     }
+  }
+
+  /**
+   * Rune-check spam filter (REQ-38): the periodic "Make sure you do not go
+   * exploring…" message MUST never raise a runecheck event. Both the exact
+   * string and the /exploring/i family are filtered — belt and braces (the
+   * ellipsis shape may vary between builds).
+   */
+  function isRuneCheckSpam(msg) {
+    if (msg === 'Make sure you do not go exploring...') return true;
+    return /exploring/i.test(msg);
+  }
+
+  /**
+   * Chat-based rune-check detection (REQ-38, D-A2): a type-2 entry (server/
+   * GM speak — live-probed; the player-name exclusion already gates own
+   * messages via isSpeakEntry) carrying verification wording raises ONE
+   * runecheck event. While already active, further wording only refreshes
+   * lastSeenAt (the auto-resume cooldown input) — never a second alert
+   * (bounded, per-id pushAlert seq). Exploring spam is filtered first.
+   * @param {object} entry - normalized channel entry ({name, message, time, type})
+   * @param {string} msg - trimmed message
+   * @returns {boolean} true when a runecheck event is (or stays) active
+   */
+  function handleRuneCheck(entry, msg) {
+    if (entry.type !== 2) return false; // live-probed server/GM speak gate
+    if (isRuneCheckSpam(msg)) return false;
+    if (!VERIFY_WORDING.test(msg)) return false;
+    if (state.runeCheck && state.runeCheck.active === true) {
+      state.runeCheck.lastSeenAt = now(); // keep the cooldown fresh — no re-alert
+      return true;
+    }
+    state.runeCheck = { active: true, at: now(), kind: 'chat', lastSeenAt: now() };
+    pushAlert('runecheck', 'Rune check detected — botting paused (solve the check to resume)');
+    info('antibot: rune check detected (chat, type-2) — botting paused (REQ-38)');
+    return true;
+  }
+
+  /** Clear the rune-check state — the manual resume RPC (resumeRuneCheck,
+   *  REQ-41) and the auto-resume reconcile (D-A4) both land here. */
+  function clearRuneCheck() {
+    if (!state.runeCheck) return { ok: true, already: true };
+    state.runeCheck = null;
+    info('antibot: rune check cleared (manual/auto resume) (REQ-40/41)');
+    return { ok: true };
+  }
+
+  /**
+   * DOM overlay scan (REQ-39, D-A2, belt-and-braces): config-gated
+   * (`antibot.domRuneCheck`, default OFF — ships chat-only until the live
+   * capture probe finalizes the overlay selectors). Criteria: >= 6 imgs AND
+   * verification wording AND countdown digits; the World-Map overlay (76
+   * imgs / 499 btns live probe) is suppressed by the imgs > 40 AND btns >
+   * 300 rule. A match runs the SAME single runecheck event path (alert +
+   * state); while already active only lastSeenAt refreshes (no double-count
+   * across surfaces). A DOM read failure degrades to no-op — never crashes.
+   * @returns {boolean} true when a runecheck event is (or stays) active
+   */
+  function scanDomRuneCheck() {
+    if (!doc || typeof doc.querySelectorAll !== 'function') return false;
+    if (!config || config.domRuneCheck !== true) return false; // default OFF
+    let imgs = 0;
+    let btns = 0;
+    let text = '';
+    try {
+      imgs = doc.querySelectorAll('img').length;
+      btns = doc.querySelectorAll('button').length;
+      const body = doc.body;
+      text = body && typeof body.textContent === 'string' ? body.textContent : '';
+    } catch (e) {
+      return false; // DOM read failed — the watcher never crashes on it
+    }
+    if (imgs > 40 && btns > 300) return false; // World-Map suppression
+    if (imgs < 6) return false;
+    if (!VERIFY_WORDING.test(text)) return false;
+    if (!/\d/.test(text)) return false; // countdown digits
+    if (state.runeCheck && state.runeCheck.active === true) {
+      state.runeCheck.lastSeenAt = now(); // keep the cooldown fresh — no re-alert
+      return true;
+    }
+    state.runeCheck = { active: true, at: now(), kind: 'dom', lastSeenAt: now() };
+    pushAlert('runecheck', 'Rune check detected — botting paused (solve the check to resume)');
+    info('antibot: rune check detected (DOM overlay) — botting paused (REQ-39)');
+    return true;
   }
 
   /**
@@ -4868,6 +5021,9 @@ function createAntibotModule(opts = {}) {
     }
     observeChat(entries);
     observeContext();
+    // REQ-39 (D-A2): config-gated DOM overlay scan (default OFF) — the same
+    // single runecheck event path; chat-only detection ships regardless.
+    scanDomRuneCheck();
     return { alerts: state.alerts.slice() };
   }
 
@@ -4953,6 +5109,7 @@ function createAntibotModule(opts = {}) {
       sendAvailable: state.sendAvailable,
       sendReason: state.sendReason,
       replyPendingCount: state.pendingReplies.length,
+      runeCheck: state.runeCheck ? Object.assign({}, state.runeCheck) : null,
     };
   }
 
@@ -4961,7 +5118,7 @@ function createAntibotModule(opts = {}) {
     return Boolean(config && config.on === true);
   }
 
-  return { observe, confirm, decide, fire, getState, isEnabled };
+  return { observe, confirm, decide, fire, getState, isEnabled, clearRuneCheck };
 }
 
 module.exports = { createAntibotModule, ALERTS_CAP, PENDING_CAP };
@@ -5645,6 +5802,9 @@ const require = __mbRequire;
  * Exposes window.__mbAgent with the REQ-04 surface:
  *   { readStats, readCooldown, fireSlot, eatFood, getChat,
  *     getRuneState, getWalkState, getPlayerInfo, applyConfig }
+ * Plus RPC extensions: confirmAntibot (REQ-34), resumeRuneCheck (REQ-41 —
+ * manual unpause of the rune-check queue gate), getSpellCatalog (REQ-28),
+ * walkTo/cavebot RPCs (REQ-23/36).
  *
  * In-page tick cadence: self-scheduling jittered setTimeout (50-400ms via
  * core/jitter), the SAME pattern the userscript uses (no Worker — the
@@ -5686,6 +5846,10 @@ const ROUTES_MOD = require('agent/modules/routes');
 const ATTACK_MOD = require('agent/modules/attack');
 const CAVEBOT_MOD = require('agent/modules/cavebot');
 
+/** REQ-40/41 (D-A4): auto-resume cooldown — the queue stays paused until no
+ *  fresh verification wording has been seen for this long. */
+const RUNECHECK_RESUME_COOLDOWN_MS = 10000;
+
 /** Minimal slice-2 config shape (per-character store lands in slice 3). */
 const DEFAULT_CONFIG = {
   queue: { minIntervalMs: 150 },
@@ -5710,7 +5874,10 @@ const DEFAULT_CONFIG = {
   spawns: { on: false },
   huntStats: { on: false },
   learning: { knownWords: [] },       // REQ-25: observation always runs while armed
-  antibot: { on: false, replies: [] }, // PR5 (D9): anti-bot watcher + confirm-once replies (REQ-33/34)
+  // PR5 (D9): anti-bot watcher + confirm-once replies (REQ-33/34). REQ-38/39
+  // (D-A2): `domRuneCheck` gates the DOM overlay scan — default OFF (chat-only
+  // detection ships until the live capture probe finalizes the selectors).
+  antibot: { on: false, replies: [], domRuneCheck: false },
   routes: { on: false },               // REQ-23 (slice 6): native autowalk read + walk-to; recording = FUTURE
   // PR6 (REQ-35/36, D10): state-only skeleton modules — ALL OFF by default
   // (opt-in). attack: targeting choice (lowest-hp/nearest) + offensive
@@ -5774,7 +5941,7 @@ function normalizeConfig(raw) {
     spawns: { on: false },
     huntStats: { on: false },
     learning: { knownWords: [] },
-    antibot: { on: false, replies: [] },
+    antibot: { on: false, replies: [], domRuneCheck: false },
     routes: { on: false },
     attack: { on: false, targeting: 'lowest-hp', sid: null, runeSlot: null },
     cavebot: { on: false, paused: false, route: [] },
@@ -5873,6 +6040,7 @@ function normalizeConfig(raw) {
   // non-empty trimmed parts; malformed entries are dropped (never crash).
   const ab = moduleSource(src, 'antibot');
   if (typeof ab.on === 'boolean') cfg.antibot.on = ab.on;
+  if (typeof ab.domRuneCheck === 'boolean') cfg.antibot.domRuneCheck = ab.domRuneCheck; // REQ-39 (D-A2)
   if (Array.isArray(ab.replies)) {
     cfg.antibot.replies = ab.replies
       .filter((r) => r && typeof r === 'object'
@@ -5979,6 +6147,10 @@ function createAgent(opts = {}) {
     // reset on agent restart): the trade cadence anchor (REQ-18 "toggle
     // resets on logout") + the kill observer baseline.
     timers: { tradeLastSentAt: 0 },
+    // REQ-40/41 (D-A3/A4): rune-check pause state {active, at, kind,
+    // lastSeenAt} — null when no check is active. Carried in getState() so
+    // the panel renders the banner + resume button (REQ-41).
+    runeCheck: null,
     // D8 (slice 1a): readable activity log ring (cap 200) — fed by the log
     // sinks above and the fire closures below; carried in getState() so the
     // panel renders formatted rows (REQ-26, never raw JSON).
@@ -6028,6 +6200,13 @@ function createAgent(opts = {}) {
   function readHotbar() {
     const gc = state.gameClient;
     return gc && ((gc.interface && gc.interface.hotbarManager) || gc.hotbarManager) || null;
+  }
+
+  /** Live-probed keyboard surface (firing keyboard mode, obs 10320):
+   *  gameClient.interface.keyboard holds `__hotbarKeybinds` (slot -> keyCode). */
+  function readKeyboard() {
+    const gc = state.gameClient;
+    return gc && ((gc.interface && gc.interface.keyboard) || gc.keyboard) || null;
   }
 
   /** Live-probed vocation gate hotbarManager.__canPlayerCastSpell(sid)
@@ -6962,6 +7141,41 @@ function createAgent(opts = {}) {
     };
   }
 
+  /** REQ-40/41 (D-A3/A4): reconcile the rune-check pause against the anti-bot
+   *  module every tick:
+   *   - detection active -> queue.setPaused(true) + carry snapshot.runeCheck
+   *   - cooldown (10s, D-A4) with no fresh verification wording -> AUTO-RESUME
+   *     (clears the module state + unpauses)
+   *   - module already cleared (manual resumeRuneCheck RPC) -> mirror the clear.
+   *  The queue pause is a drain gate ONLY — throttle/jitter are never touched
+   *  (REQ-12 no-bypass: entries stay pending, pacing recomputes from the same
+   *  lastDispatchAt). */
+  function reconcileRuneCheck() {
+    const m = state.modules && state.modules.antibot;
+    if (!m || typeof m.getState !== 'function') return;
+    const rc = m.getState().runeCheck || null;
+    if (rc && rc.active === true) {
+      const lastSeen = Number.isFinite(Number(rc.lastSeenAt)) ? Number(rc.lastSeenAt)
+        : (Number.isFinite(Number(rc.at)) ? Number(rc.at) : 0);
+      if (nowFn() - lastSeen >= RUNECHECK_RESUME_COOLDOWN_MS) {
+        // Cooldown elapsed without fresh verification wording -> auto-resume.
+        if (typeof m.clearRuneCheck === 'function') m.clearRuneCheck();
+        state.queue.setPaused(false);
+        state.runeCheck = null;
+        logEvent('antibot', 'runecheck', 'auto-resumed');
+        return;
+      }
+      state.queue.setPaused(true);
+      state.runeCheck = { active: true, at: rc.at, kind: rc.kind, lastSeenAt: rc.lastSeenAt };
+      return;
+    }
+    if (state.runeCheck && state.runeCheck.active === true) {
+      // Module cleared (manual resume RPC) — mirror the clear.
+      state.queue.setPaused(false);
+      state.runeCheck = null;
+    }
+  }
+
   /** One tree tick + queue drain. At most one action enqueued per tick
    *  (the tree halts after the first executed action; actions are
    *  queue-aware and enqueue themselves — REQ-12 no-bypass). No tick while
@@ -6988,6 +7202,10 @@ function createAgent(opts = {}) {
       // echo/learning (REQ-24 MODIFIED) + the player context; alerts ride the
       // snapshot, confirmed patterns queue auto-replies for the tree node.
       if (m.antibot) m.antibot.observe();
+      // REQ-40/41 (D-A3/A4): rune-check pause reconcile — pause on detection,
+      // auto-resume after the 10s cooldown without fresh verification wording
+      // (reconciled every tick; manual resume via the resumeRuneCheck RPC).
+      reconcileRuneCheck();
       const result = state.tree.tick(ctx);
       state.lastPath = result.path;
       state.lastDispatch = state.queue.drain(); // eligible entries fire here, in the queue
@@ -7118,6 +7336,18 @@ function createAgent(opts = {}) {
         if (!m) return { ok: false, reason: 'not ready' };
         return m.confirm(pattern);
       },
+      resumeRuneCheck: function () {
+        // REQ-41 (D-A4): manual resume of a paused rune check — clears the
+        // module + snapshot rune-check state and unpauses the queue gate.
+        // The pause is a drain gate ONLY — no pacing bypass (REQ-12).
+        if (!state.armed) return { ok: false, reason: 'not connected' };
+        const m = state.modules && state.modules.antibot;
+        if (m && typeof m.clearRuneCheck === 'function') m.clearRuneCheck();
+        state.queue.setPaused(false);
+        state.runeCheck = null;
+        logEvent('antibot', 'runecheck', 'manual-resumed');
+        return { ok: true };
+      },
       getWalkState: function () {
         // REQ-23: real routes-v1 module state (slice 6) — autowalk read
         // (+ destination) or the honest "no pathfinder data" degrade.
@@ -7206,6 +7436,43 @@ function createAgent(opts = {}) {
         if (!state.gameClient) return null;
         return GC_MOD.enumerateSpellCatalog(state.gameClient, { maxUnknown: 30, limit: 400 });
       },
+      getHotbarKeybinds: function () {
+        // REQ-46 (D-B3): read keyboard.__hotbarKeybinds — feature-detected;
+        // { available:false } when the surface is absent so the panel
+        // degrades to display-only with an honest note (never invented keys).
+        try {
+          const kb = readKeyboard();
+          if (!kb || typeof kb.__hotbarKeybinds !== 'object' || kb.__hotbarKeybinds === null) {
+            return { available: false };
+          }
+          return { available: true, keybinds: kb.__hotbarKeybinds };
+        } catch (e) {
+          return { available: false };
+        }
+      },
+      setHotbarKeybind: function (opts) {
+        // REQ-46 (D-B3): write keyboard.__hotbarKeybinds[slot] = keyCode so
+        // the panel's Rune/Fallback hotkey assignments reach the game. REQ-02
+        // gate (mutates the game surface, like fireSlot) + feature-detect:
+        // an absent keyboard surface returns ok:false (display-only degrade).
+        if (!state.armed) return { ok: false, reason: 'not connected' };
+        const slot = Number(opts && opts.slot);
+        const keyCode = Number(opts && opts.keyCode);
+        if (!Number.isInteger(slot) || slot < 1 || slot > 12) return { ok: false, reason: 'invalid slot' };
+        if (!Number.isInteger(keyCode)) return { ok: false, reason: 'invalid keyCode' };
+        try {
+          const kb = readKeyboard();
+          if (!kb) return { ok: false, reason: 'keyboard unavailable' };
+          if (typeof kb.__hotbarKeybinds !== 'object' || kb.__hotbarKeybinds === null) {
+            kb.__hotbarKeybinds = {};
+          }
+          kb.__hotbarKeybinds[slot] = keyCode;
+          logEvent('agent', 'hotkey', 'slot ' + slot + ' -> key ' + keyCode);
+          return { ok: true };
+        } catch (e) {
+          return { ok: false, reason: 'keyboard unavailable' };
+        }
+      },
       applyConfig: applyConfig,
     };
   }
@@ -7241,6 +7508,7 @@ function createAgent(opts = {}) {
       health: state.ctx.health,
       mana: state.ctx.mana,
       queue: state.queue ? state.queue.stats() : null,
+      runeCheck: state.runeCheck ? Object.assign({}, state.runeCheck) : null, // REQ-40/41 (D-A3): pause state -> panel banner
       lastPath: state.lastPath,
       castsSinceFood: state.ctx.castsSinceFood || 0,
       modules: {

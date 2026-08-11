@@ -51,7 +51,14 @@ function defaultConfig(characterName) {
       runes: { on: false, attackSlot: null, healSlot: null, reserve: 0,
         capMode: 'strict', capFullThreshold: 1.0, fallbackSlot: null, fallbackManaPct: 0.5 },
       training: { on: false, slot: null, word: null, sid: null, reserve: 0,
-        eatWithMagic: { enabled: false, slot: null, sid: null } },
+        eatWithMagic: { enabled: false, slot: null, sid: null },
+        // Slice B (REQ-46, D-B3): per-character hotkey assignments (F-keys)
+        // persisted so a reload restores the Rune/Fallback hotbar keybinds.
+        hotkeys: { runeKey: 'F4', fallbackKey: 'F5' },
+        // Slice B (REQ-44, D-B4): the rune-making stop flags — either ON ends
+        // at the runes module off only (heal/eat continue); persisted so the
+        // panel restores the stop state + banner after a reload.
+        stopRuneMaking: false, stopBotting: false },
       eat: { on: false, everyCasts: null, warningWindowSec: 60, fallbackIntervalSec: 10 },
       trade: { on: false, message: '', intervalMs: 180000 },
       loot: { on: false, defaultDest: null, perMonster: {} },

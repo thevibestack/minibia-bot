@@ -138,3 +138,21 @@ test('REQ-25: unknown-word entries without a time are deduped by a bounded key s
   assert.equal(mod.observeChat().length, 0, 'identical untimed entries dedupe to one observation');
   assert.equal(mod.getState().offers.length, 0);
 });
+
+test('REQ-25 (REQ-37): Date-object __time entries normalize to ms — watermark dedupe lives on real client data', () => {
+  const { mod, now, setContents } = makeModule();
+  const d = (ms) => new Date(ms);
+  setContents([{ name: 'Flamamex', message: 'exura', __time: d(1) }]);
+  mod.observeChat();
+  assert.equal(mod.getState().offers.length, 0, 'first sighting is not an offer');
+  setContents([
+    { name: 'Flamamex', message: 'exura', __time: d(1) },
+    { name: 'Flamamex', message: 'exura', __time: d(2) },
+  ]);
+  now.t = 2;
+  assert.equal(mod.observeChat().length, 1, 'Date entries -> numeric watermark -> second sighting offers');
+  assert.equal(mod.getState().offers[0].word, 'exura');
+  // Same Date entries re-read: the numeric watermark skips them (no double-count).
+  assert.equal(mod.observeChat().length, 0, 're-read never double-counts (REQ-25)');
+  assert.equal(mod.getState().offers.length, 1);
+});
