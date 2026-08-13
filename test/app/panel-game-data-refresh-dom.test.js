@@ -25,7 +25,13 @@ function makePanel() {
     const round = hits[pathname];
     const responses = {
       '/api/identity': { identity: IDENTITY },
-      '/api/snapshot': { stats: { health: 200, maxHealth: 200, mana: 270, maxMana: 270 } },
+      // REQ-10 (slice C): the live snapshot carries the real module state —
+      // healMagic ON here while the SAVED config says OFF, so the panel can
+      // prove the live state is the single truth (REQ-09).
+      '/api/snapshot': {
+        stats: { health: 200, maxHealth: 200, mana: 270, maxMana: 270 },
+        agent: { modules: { healMagic: { on: true, threshold: 150, slot: 2, sid: 61 } } },
+      },
       '/api/connect': { ok: true, config: CONFIG },
       '/api/character-config': { ok: true, config: CONFIG },
       '/api/profiles': { ok: true, profiles: ['Flamamex'] },
@@ -88,6 +94,41 @@ test('Refresh game data re-reads spell catalog, F1-F12, BP and creatures without
 
     dom.window.__mbPanel.dispatch({ type: 'SET_LANG', lang: 'es' });
     assert.match(dom.window.document.getElementById('refresh-game-data-btn').textContent, /Actualizar datos del juego/);
+  } finally {
+    await close(dom);
+  }
+});
+
+test('REQ-09/10 (T3): heal live line shows the SNAPSHOT state (On) even when the saved config says Off', async () => {
+  const { dom } = makePanel();
+  try {
+    dom.window.__mbPanel.dispatch({ type: 'PROBE_START' });
+    dom.window.__mbPanel.dispatch({ type: 'PROBE_RESULT', identity: IDENTITY });
+    dom.window.__mbPanel.dispatch({ type: 'CONNECT' });
+    await settle();
+
+    const live = dom.window.document.getElementById('live-state');
+    assert.ok(live, 'live state section rendered');
+    assert.match(live.textContent, /Heal magic on/,
+      'live snapshot module state is the single truth — not the saved config (off)');
+    assert.doesNotMatch(live.textContent, /Heal magic off/);
+  } finally {
+    await close(dom);
+  }
+});
+
+test('REQ-09 (T3): a panel toggle mirrors into config.modules so the next push persists the shown state', async () => {
+  const { dom } = makePanel();
+  try {
+    dom.window.__mbPanel.dispatch({ type: 'PROBE_START' });
+    dom.window.__mbPanel.dispatch({ type: 'PROBE_RESULT', identity: IDENTITY });
+    dom.window.__mbPanel.dispatch({ type: 'CONNECT' });
+    await settle();
+
+    dom.window.__mbPanel.dispatch({ type: 'TOGGLE_MODULE', module: 'healMagic', on: true });
+    const state = dom.window.__mbPanel.getState();
+    assert.equal(state.modules.healMagic, true, 'toggle applied');
+    assert.equal(state.config.modules.healMagic.on, true, 'config mirrors the toggle — no stale divergence');
   } finally {
     await close(dom);
   }

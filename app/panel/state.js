@@ -1451,8 +1451,20 @@
         if (MODULE_IDS.indexOf(action.module) === -1) return { state, effects: [] };
         const modules = Object.assign({}, state.modules);
         modules[action.module] = action.on === true;
+        // REQ-09 (slice C, PR 1): single toggle truth — the toggle ALSO
+        // writes config.modules[id].on, so the config the push-config effect
+        // persists is exactly what the panel shows. Config and live state
+        // never diverge.
+        const config = Object.assign({}, state.config, {
+          modules: Object.assign({}, state.config && state.config.modules, {
+            [action.module]: Object.assign(
+              {}, state.config && state.config.modules && state.config.modules[action.module],
+              { on: action.on === true },
+            ),
+          }),
+        });
         return {
-          state: Object.assign({}, state, { modules, refusal: null }),
+          state: Object.assign({}, state, { modules, config, refusal: null }),
           effects: [{ type: 'push-config' }],
         };
       }
@@ -2527,16 +2539,21 @@
       return t(state, 'dashboard.eat.none');
     }
     if (card.id === 'healMagic') {
+      // REQ-09/10 (slice C): the LIVE snapshot module state is the single
+      // truth; the saved config is the fallback when the snapshot carries no
+      // healMagic entry yet (pre-T2 agent or disconnected).
+      const hmLive = modules.healMagic;
       const hmCfg = state.config && state.config.modules && state.config.modules.healMagic;
-      if (!hmCfg) return '—';
-      if (hmCfg.on !== true) return t(state, 'heal.liveOff');
+      const hm = hmLive || hmCfg;
+      if (!hm) return '—';
+      if (hm.on !== true) return t(state, 'heal.liveOff');
       if (stats.health !== null && stats.maxHealth !== null && stats.maxHealth > 0) {
         const hpPct = Math.round(stats.health / stats.maxHealth * 100);
-        const tAbs = Number(hmCfg.threshold);
+        const tAbs = Number(hm.threshold);
         const tPct = Number.isFinite(tAbs) && tAbs >= 0 ? Math.round(tAbs / stats.maxHealth * 100) : null;
         return tVar(state, 'heal.liveOn', {
           pct: hpPct, max: stats.maxHealth,
-          t: tPct, slot: hmCfg.slot === null || hmCfg.slot === undefined ? '—' : hmCfg.slot,
+          t: tPct, slot: hm.slot === null || hm.slot === undefined ? '—' : hm.slot,
         });
       }
       return t(state, 'dashboard.status.armed');
@@ -3143,15 +3160,20 @@
         }
         parts.push('<div class="stats-line">' + bits.join(' · ') + '</div>');
       }
-      // Slice 2 (PR3, REQ-29): HEAL live line — module on/off + hp% vs the
-      // configured threshold (percent view of the saved absolute threshold).
+      // REQ-09/10 (slice C): the LIVE snapshot module state is the single
+      // truth; the saved config is the fallback when the snapshot carries no
+      // healMagic entry yet (pre-T2 agent or disconnected).
+      const modules = state.snapshot.agent && state.snapshot.agent.modules
+        ? state.snapshot.agent.modules : null;
+      const hmLive = modules && modules.healMagic;
       const hmCfg = state.config && state.config.modules && state.config.modules.healMagic;
-      if (hmCfg && stats.health !== null && stats.maxHealth !== null && stats.maxHealth > 0) {
+      const hm = hmLive || hmCfg;
+      if (hm && stats.health !== null && stats.maxHealth !== null && stats.maxHealth > 0) {
         const hpPct = Math.round(stats.health / stats.maxHealth * 100);
-        const tAbs = Number(hmCfg.threshold);
+        const tAbs = Number(hm.threshold);
         const tPct = Number.isFinite(tAbs) && tAbs >= 0 ? Math.round(tAbs / stats.maxHealth * 100) : null;
-        parts.push('<div class="heal-state">' + (hmCfg.on === true
-          ? escapeHtml(tVar(state, 'heal.liveOn', { pct: hpPct, max: stats.maxHealth, t: tPct, slot: hmCfg.slot === null || hmCfg.slot === undefined ? '—' : hmCfg.slot }))
+        parts.push('<div class="heal-state">' + (hm.on === true
+          ? escapeHtml(tVar(state, 'heal.liveOn', { pct: hpPct, max: stats.maxHealth, t: tPct, slot: hm.slot === null || hm.slot === undefined ? '—' : hm.slot }))
           : escapeHtml(t(state, 'heal.liveOff'))) + '</div>');
       }
       const blocked = premiumBlockedModules(state.snapshot);
@@ -3169,8 +3191,7 @@
       }
       // Slice-6 polish (REQ-17/23): module alert states wired into the live
       // view — the eat 3-fail pause alert and the routes autowalk read.
-      const modules = state.snapshot.agent && state.snapshot.agent.modules
-        ? state.snapshot.agent.modules : null;
+      // (`modules` is resolved above the heal line — slice C, REQ-09/10.)
       const trainerStatus = renderTrainerRuntimeStatus(state, modules && modules.training, stats);
       if (trainerStatus) parts.push('<div class="module-alert alert-training-wait">' + escapeHtml(trainerStatus) + '</div>');
       if (modules && modules.eat && modules.eat.paused === true) {

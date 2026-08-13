@@ -286,3 +286,67 @@ test('gate label helper covers all states', () => {
   assert.equal(P.gateLabel({ gate: P.GATE_CONFIRMED }), 'Confirming connection');
   assert.equal(P.gateLabel({ gate: P.GATE_ARMED }), 'Connected');
 });
+
+/* -------------------- PR 1 (slice C) — single toggle truth (REQ-09/10) -------------------- */
+
+test('REQ-09 (T3): TOGGLE_MODULE mirrors the toggle into config.modules — config and state never diverge', () => {
+  const r = run([
+    { type: 'PROBE_START' },
+    { type: 'PROBE_RESULT', identity: FLAMAMEX },
+    { type: 'CONNECT' },
+    { type: 'PREFILL_CONFIG', config: { modules: { healMagic: { on: false, threshold: 150 }, trade: { on: false } } } },
+    { type: 'TOGGLE_MODULE', module: 'healMagic', on: true },
+  ]);
+  assert.equal(r.state.modules.healMagic, true, 'live toggle state flips');
+  assert.equal(r.state.config.modules.healMagic.on, true, 'config mirrors the toggle (single truth)');
+  assert.equal(r.state.config.modules.trade.on, false, 'other modules untouched');
+
+  const off = P.panelReducer(r.state, { type: 'TOGGLE_MODULE', module: 'healMagic', on: false });
+  assert.equal(off.state.modules.healMagic, false);
+  assert.equal(off.state.config.modules.healMagic.on, false, 'config follows the OFF toggle too');
+});
+
+test('REQ-09/10 (T3): dashboard healMagic status line reads the LIVE snapshot state, falling back to config', () => {
+  const r = run([
+    { type: 'PROBE_START' },
+    { type: 'PROBE_RESULT', identity: FLAMAMEX },
+    { type: 'CONNECT' },
+    { type: 'PREFILL_CONFIG', config: { modules: { healMagic: { on: false, threshold: 150, slot: 2 } } } },
+    {
+      type: 'SNAPSHOT',
+      data: {
+        agent: { modules: { healMagic: { on: true, threshold: 150, slot: 2, sid: 61 } } },
+        stats: { health: 200, maxHealth: 200, mana: 270, maxMana: 270 },
+      },
+    },
+  ]);
+  const line = P.dashboardStatusLine(r.state, { id: 'healMagic' });
+  assert.match(line, /Heal magic on/, 'live snapshot state wins over the saved config (off)');
+});
+
+test('REQ-09/10 (T3): dashboard healMagic line falls back to the saved config when the snapshot has no module state', () => {
+  const r = run([
+    { type: 'PROBE_START' },
+    { type: 'PROBE_RESULT', identity: FLAMAMEX },
+    { type: 'CONNECT' },
+    { type: 'PREFILL_CONFIG', config: { modules: { healMagic: { on: false, threshold: 150, slot: 2 } } } },
+    { type: 'SNAPSHOT', data: { stats: { health: 200, maxHealth: 200, mana: 270, maxMana: 270 } } },
+  ]);
+  const line = P.dashboardStatusLine(r.state, { id: 'healMagic' });
+  assert.match(line, /Heal magic off/, 'config fallback keeps the honest state when no snapshot module data');
+});
+
+test('REQ-09/10 (T3): renderLiveState heal line reads the LIVE snapshot state, falling back to config', () => {
+  const r = run([
+    {
+      type: 'SNAPSHOT',
+      data: {
+        agent: { modules: { healMagic: { on: true, threshold: 150, slot: 2, sid: 61 } } },
+        stats: { health: 200, maxHealth: 200, mana: 270, maxMana: 270 },
+      },
+    },
+  ]);
+  const html = P.renderLiveState(r.state);
+  assert.match(html, /Heal magic on/, 'live snapshot state surfaces in the live view');
+  assert.doesNotMatch(html, /Heal magic off/);
+});
