@@ -779,6 +779,9 @@ main {
   overflow-wrap: anywhere;
 }
 .dashboard-card.is-on .dashboard-card-status { color: var(--accent-2); }
+/* Comida card status (REQ-07): warm food tone distinct from the rune/training lines. */
+.dashboard-card-status--food { color: var(--warn); }
+.dashboard-card.is-on .dashboard-card-status--food { color: var(--accent-2); }
 .dashboard-go-btn {
   align-self: flex-start;
   border: 1px solid var(--border-strong);

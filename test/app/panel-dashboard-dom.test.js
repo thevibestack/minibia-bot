@@ -205,6 +205,54 @@ test('DASHBOARD: card status lines render human-readable live data from the snap
   }
 });
 
+test('REQ-07: the Comida card shows food created / next meal / last ate from the live eat getState; Runes card stays runes-only', async () => {
+  const { dom } = makePanel(ROUTES);
+  try {
+    await connect(dom);
+    const status = (id) => dom.window.document
+      .querySelector('.dashboard-card[data-dashboard-card="' + id + '"] .dashboard-card-status').textContent;
+
+    // Full unified eat getState (PR 3 shape): cumulative foodCreated, the
+    // safety-net nextMealAt and the last-eat clock anchor.
+    dom.window.__mbPanel.dispatch({ type: 'SNAPSHOT', data: {
+      stats: { health: 150, mana: 200, maxMana: 300, maxHealth: 300 },
+      agent: { modules: {
+        training: { on: true, capFull: false, waitingForMana: false, requiredMana: 210, successfulRuneCreations: 7, foodCycle: 'idle' },
+        runes: { on: true, available: true, reason: 'ok' },
+        eat: {
+          on: true, paused: false, failures: 0, alert: null,
+          lastEatAt: 1700000000000, foodCreated: 3,
+          nextMealAt: 1700000000000 + 20 * 60 * 1000,
+          safetyNetMinutes: 20, magicSid: 12, source: 'magic',
+        },
+      } },
+    } });
+    const eatStatus = status('eat');
+    assert.match(eatStatus, /Food created: 3/, 'Comida card shows the cumulative created count');
+    assert.match(eatStatus, /Next meal/, 'Comida card shows the next safety-net meal');
+    assert.match(eatStatus, /Last ate/, 'Comida card shows the last-eat time');
+    assert.ok(eatStatus.includes('·'), 'the three facts render as one joined status line');
+
+    const runesStatus = status('runes');
+    assert.match(runesStatus, /Rune data ready/);
+    assert.doesNotMatch(runesStatus, /Food|Comida|created|Next meal|Last ate/,
+      'Runes card stays runes-only (REQ-07)');
+
+    // No-meal-yet window: honest line, no invented times.
+    dom.window.__mbPanel.dispatch({ type: 'SNAPSHOT', data: {
+      stats: { health: 150, mana: 200, maxMana: 300, maxHealth: 300 },
+      agent: { modules: {
+        training: { on: true, capFull: false, waitingForMana: false, requiredMana: 210, successfulRuneCreations: 7, foodCycle: 'idle' },
+        runes: { on: true, available: true, reason: 'ok' },
+        eat: { on: true, paused: false, lastEatAt: 0, foodCreated: 0, nextMealAt: null },
+      } },
+    } });
+    assert.match(status('eat'), /No food actions yet/, 'empty window shows the honest no-actions line');
+  } finally {
+    await teardown(dom);
+  }
+});
+
 test('Hidden modules: no toggle/card/tab/config surface; config survives a push untouched', async () => {
   const { dom, requests } = makePanel(ROUTES);
   try {

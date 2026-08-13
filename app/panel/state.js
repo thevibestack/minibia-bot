@@ -144,6 +144,9 @@
       'dashboard.runes.unavailable': 'No native rune data (display only)',
       'dashboard.eat.lastAte': 'Last ate %time%',
       'dashboard.eat.none': 'No food actions yet',
+      'dashboard.eat.created': 'Food created: %count%',
+      'dashboard.eat.nextMeal': 'Next meal %time%',
+      'dashboard.eat.nextMealNone': 'No next meal yet',
       'configuration': 'Configuration',
       'configLocked': 'Configuration unlocks after Connect.',
       'liveState': 'Live state',
@@ -400,6 +403,9 @@
       'dashboard.runes.unavailable': 'Sin datos nativos de runas (solo lectura)',
       'dashboard.eat.lastAte': 'Última comida %time%',
       'dashboard.eat.none': 'Todavía sin acciones de comida',
+      'dashboard.eat.created': 'Comida creada: %count%',
+      'dashboard.eat.nextMeal': 'Siguiente comida %time%',
+      'dashboard.eat.nextMealNone': 'Sin próxima comida todavía',
       'configuration': 'Configuración',
       'configLocked': 'La configuración se desbloquea al conectar.',
       'liveState': 'Estado en vivo',
@@ -2528,15 +2534,28 @@
         : t(state, 'dashboard.runes.ready');
     }
     if (card.id === 'eat') {
+      // REQ-07 (PR 4): the Comida card reads the LIVE eat getState (unified
+      // PR 3 shape) — never the saved config. One escaped line:
+      // "N created · next HH:MM · last HH:MM". The Runes card stays runes-only.
       const eat = modules.eat;
       if (!eat) return '—';
       if (eat.on !== true) return t(state, 'dashboard.status.off');
       if (eat.paused === true) return t(state, 'eat.pausedAlert');
+      const parts = [];
+      const created = Number(eat.foodCreated);
+      if (Number.isInteger(created) && created > 0) {
+        parts.push(tVar(state, 'dashboard.eat.created', { count: created }));
+      }
       const at = Number(eat.lastEatAt);
       if (Number.isFinite(at) && at > 0) {
-        return tVar(state, 'dashboard.eat.lastAte', { time: new Date(at).toLocaleTimeString() });
+        const next = Number(eat.nextMealAt);
+        parts.push(Number.isFinite(next) && next > 0
+          ? tVar(state, 'dashboard.eat.nextMeal', { time: new Date(next).toLocaleTimeString() })
+          : t(state, 'dashboard.eat.nextMealNone'));
+        parts.push(tVar(state, 'dashboard.eat.lastAte', { time: new Date(at).toLocaleTimeString() }));
       }
-      return t(state, 'dashboard.eat.none');
+      if (parts.length === 0) return t(state, 'dashboard.eat.none');
+      return parts.join(' · ');
     }
     if (card.id === 'healMagic') {
       // REQ-09/10 (slice C): the LIVE snapshot module state is the single
@@ -2584,7 +2603,7 @@
         + ' aria-label="' + escapeHtml(label) + '">'
         + '<span class="dashboard-toggle-track" aria-hidden="true"></span></label>'
         + '</div>'
-        + '<p class="dashboard-card-status">' + escapeHtml(status) + '</p>'
+        + '<p class="dashboard-card-status' + (card.id === 'eat' ? ' dashboard-card-status--food' : '') + '">' + escapeHtml(status) + '</p>'
         + '<button type="button" class="dashboard-go-btn" data-dashboard-go="' + card.configTab + '">'
         + escapeHtml(t(state, 'dashboard.goConfig')) + '</button>'
         + '</article>');
