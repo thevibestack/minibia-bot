@@ -55,21 +55,28 @@ function destroy(dom) {
   dom.window.close();
 }
 
-test('bundled agent confirms the full MiniTibia HMM → exevo pan → created-food consume loop', async () => {
+test('PR 3 (REQ-06): the trainer confirms runes but NO LONGER arms food magic — the eat request is decoupled (T9 wires it)', async () => {
   const { dom, clicks } = page();
   try {
     const handle = dom.window.__mbAgentHandle;
     assert.equal(await waitFor(() => handle.isReady()), true);
+    // PR 3 unified shape: the legacy training.eatWithMagic is gone; the food
+    // magic config rides modules.eat.magic (injected foodMagicConfig, T8).
     dom.window.__mbAgent.applyConfig({
       queue: { minIntervalMs: 10 }, jitter: { min: 5, max: 5 }, armed: true,
       survival: { on: false }, healItems: { on: false }, manaItems: { on: false }, healMagic: { on: false },
-      runes: { on: false, capMode: 'off' }, rotation: { spells: [] }, eat: { on: false },
-      training: { on: true, slot: 3, sid: 35, reserve: 30, eatWithMagic: { enabled: true, slot: 4, sid: 24, everyRunes: 1 } },
+      runes: { on: false, capMode: 'off' }, rotation: { spells: [] },
+      eat: { on: true, everyCasts: 0, warningWindowSec: 60, fallbackIntervalSec: 10, slot: null, cids: [],
+        safetyNetMinutes: 20, magic: { enabled: true, slot: 4, sid: 24 } },
+      training: { on: true, slot: 3, sid: 35, reserve: 30 },
     });
-    const completed = await waitFor(() => handle.getState().modules.training.lastReason === 'created-food-consumed');
-    assert.equal(completed, true, JSON.stringify({ clicks, training: handle.getState().modules.training }));
-    assert.deepEqual(clicks.slice(0, 2), [3, 4]);
-    assert.equal(handle.getState().modules.training.successfulRuneCreations, 1);
+    // The trainer casts HMM (slot 3)...
+    assert.equal(await waitFor(() => clicks.includes(3)), true);
+    // ...but the everyRunes coupling is GONE: food magic stays dormant until
+    // the EAT module requests it (the bootstrap food node lands in T9).
+    await new Promise((r) => setTimeout(r, 700));
+    assert.deepEqual(clicks, [3], 'no food cast without an eat request (REQ-06 decoupling)');
+    assert.equal(handle.getState().modules.training.foodMagicPending, false);
   } finally {
     destroy(dom);
   }

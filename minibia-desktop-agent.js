@@ -3640,6 +3640,9 @@ function createTraining(opts = {}) {
     canCastSpell = null, readCooldown = null, readHotbarSlotSid = null,
     now = Date.now, log = {}, readVisibleSlots = null, consumeItem = null,
     foodArrivalTimeoutMs = 4000, actionConfirmationTimeoutMs = 2500,
+    // PR 3 (REQ-01): the food-magic config is INJECTED from the unified
+    // modules.eat.magic — the machine never reads config.eatWithMagic.
+    foodMagicConfig = null,
   } = opts;
   const warn = typeof log.warn === 'function' ? log.warn : () => {};
   const warned = new Set();
@@ -3763,7 +3766,7 @@ function createTraining(opts = {}) {
         reason: 'consume-created-food' };
     }
     if (!state.foodMagicPending) return null;
-    const ew = config.eatWithMagic && typeof config.eatWithMagic === 'object' ? config.eatWithMagic : {};
+    const ew = typeof foodMagicConfig === 'function' ? (foodMagicConfig() || {}) : {}; // PR 3: injected unified source
     const slot = Number(ew.slot);
     const sid = Number(ew.sid);
     if (ew.enabled !== true || !Number.isInteger(slot) || slot < 1 || slot > 12 || !Number.isInteger(sid)) {
@@ -3895,12 +3898,43 @@ function createTraining(opts = {}) {
     return true;
   }
 
-  /** A rune counts only after the mana snapshot confirmed its cast. */
+  /** A rune counts only after the mana snapshot confirmed its cast. PR 3:
+   * the Runes card counter stays; the everyRunes food-magic arming is gone
+   * (REQ-06 — food magic is requested explicitly by the eat module). */
   function noteRuneCreated() {
-    const ew = config.eatWithMagic && typeof config.eatWithMagic === 'object' ? config.eatWithMagic : {};
     state.successfulRuneCreations += 1;
-    const every = Math.max(1, Math.floor(Number(ew.everyRunes) || 1));
-    if (ew.enabled === true && state.successfulRuneCreations % every === 0) state.foodMagicPending = true;
+  }
+
+  /* -------- PR 3 thin food facade (REQ-01/02) — the machine itself is
+   * never rewritten; these are additive entry points the bootstrap food
+   * node uses so eat can drive the SAME confirmation machine. -------- */
+
+  /** Explicit magic-food request (replaces the everyRunes arming). */
+  function requestFoodMagic() {
+    state.foodMagicPending = true;
+  }
+
+  /** One machine step: confirm a pending action first, else decide the next
+   * food-magic action. Mirrors exactly what training.decide would run for
+   * the food branch (confirmPending || foodMagicDecision). */
+  function foodStep(ctx) {
+    return confirmPending(ctx) || foodMagicDecision(ctx);
+  }
+
+  /** Clear the food cycle + any food-prefixed blocked reason (the eat module
+   * calls this when the machine blocks so the NORMAL food path can serve). */
+  function resetFoodCycle() {
+    state.foodMagicPending = false;
+    state.foodBaseline = null;
+    state.foodDeadlineAt = null;
+    state.createdFood = null;
+    state.foodCycle = 'idle';
+    if (state.pendingAction && /food|created-food/.test(state.pendingAction.kind)) {
+      state.pendingAction = null;
+    }
+    if (!state.blockedReason || /food|created-food/.test(state.blockedReason)) {
+      state.blockedReason = null;
+    }
   }
 
   // Compatibility entrypoints retained for direct module consumers. They do
@@ -3924,7 +3958,8 @@ function createTraining(opts = {}) {
   }
 
   return { decide, fire, noteRuneCreated, captureFoodBaseline, noteFoodMagicCast,
-    noteCreatedFoodConsumed, getState, isEnabled: () => Boolean(config && config.on === true) };
+    noteCreatedFoodConsumed, requestFoodMagic, foodStep, resetFoodCycle,
+    getState, isEnabled: () => Boolean(config && config.on === true) };
 }
 
 module.exports = { createTraining };
