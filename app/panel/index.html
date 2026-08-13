@@ -15,10 +15,11 @@
   -->
   <header id="status-bar" aria-live="polite"></header>
   <main>
-    <!-- REQ-26 (slice 1a): the tabbed product shell. renderModuleList draws
-         the tab nav + 5 tab panels (HEAL/ATTACK/TRAINER/CAVEBOT/OTHERS) into
-         #module-list; the readable activity log (never raw JSON) renders
-         into #activity-log from the snapshot's logBuffer. -->
+    <!-- renderModuleList draws the tab nav + one panel per tab into
+         #module-list: the DASHBOARD panel first (quick-access cards), then
+         HEAL/TRAINER/OTHERS with the visible module toggles. The readable
+         activity log (never raw JSON) renders into #activity-log from the
+         snapshot's logBuffer. -->
     <section id="module-list" aria-label="Modules"></section>
     <section id="config-form" aria-label="Configuration"></section>
     <section id="live-state" aria-label="Live state"></section>

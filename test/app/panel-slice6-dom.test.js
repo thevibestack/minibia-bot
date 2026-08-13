@@ -1,12 +1,11 @@
 'use strict';
 
 /**
- * PR 6 — ATTACK + CAVEBOT skeleton jsdom tests (REQ-35/36, D10): typing the
- * ATTACK settings form + Save posts /api/config with the targeting + rune
- * slot; the CAVEBOT controls post /api/cavebot (record/stop/start), the
- * record-stop result lands in the panel state so Save writes config.routes,
- * and pause posts the config with modules.cavebot.paused. The live-state
- * lines render from the snapshot.
+ * Hidden-module scope jsdom tests: ATTACK + CAVEBOT are removed from every
+ * panel surface (no tab, no toggle, no config deck, no live-state line, no
+ * spell-picker target) while their server-returned config survives a config
+ * push untouched (buildPushConfig keeps MODULE_IDS intact). The deprecated
+ * /api/cavebot RPC surface stays unused by the UI.
  */
 
 const { test } = require('node:test');
@@ -32,8 +31,8 @@ const BASE_CFG = {
     eat: { on: false, slot: null, everyCasts: 0 },
     loot: { on: false, defaultDest: null, perMonster: {} },
     antibot: { on: false, replies: [] },
-    attack: { on: false, targeting: 'lowest-hp', sid: null, runeSlot: null },
-    cavebot: { on: false, paused: false },
+    attack: { on: true, targeting: 'lowest-hp', sid: null, runeSlot: null },
+    cavebot: { on: true, paused: false, monsters: ['Rat'] },
   },
 };
 
@@ -70,26 +69,6 @@ async function teardown(dom) {
   dom.window.close();
 }
 
-function click(dom, selector) {
-  const el = dom.window.document.querySelector(selector);
-  assert.ok(el, 'element ' + selector + ' rendered');
-  el.dispatchEvent(new dom.window.Event('click', { bubbles: true }));
-}
-
-function type(dom, id, value) {
-  const el = dom.window.document.getElementById(id);
-  assert.ok(el, 'input ' + id + ' rendered');
-  el.value = value;
-  el.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
-}
-
-function change(dom, id, value) {
-  const el = dom.window.document.getElementById(id);
-  assert.ok(el, 'select ' + id + ' rendered');
-  el.value = value;
-  el.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
-}
-
 /** Connect through the real effect path. */
 async function connect(dom) {
   dom.window.__mbPanel.dispatch({ type: 'PROBE_START' });
@@ -110,105 +89,61 @@ const ROUTES = {
   '/api/config': () => ({ ok: true }),
   '/api/spell-catalog': () => ({ ok: true, catalog: [] }),
   '/api/profiles': () => ({ ok: true, profiles: [] }),
-  '/api/cavebot': (entry) => {
-    if (entry.body && entry.body.command === 'record-stop') {
-      return { ok: true, command: 'record-stop', result: { ok: true, points: [{ x: 10, y: 20 }, { x: 30, y: 40 }] } };
-    }
-    return { ok: true, result: { ok: true } };
-  },
+  '/api/cavebot': () => ({ ok: true, result: { ok: true } }),
 };
 
-test('REQ-35: ATTACK form save posts /api/config with targeting + rune slot', async () => {
-  const { dom, requests } = makePanel(ROUTES);
-  try {
-    await connect(dom);
-    change(dom, 'attack-targeting', 'nearest');
-    type(dom, 'attack-rune-slot', '4');
-    click(dom, '#attack-save-btn');
-    await new Promise((r) => setTimeout(r, 60));
-    const cfgReq = requests.filter((r) => r.url === '/api/config' && r.method === 'POST');
-    assert.ok(cfgReq.length >= 1, 'config pushed');
-    const last = cfgReq[cfgReq.length - 1];
-    assert.equal(last.body.config.modules.attack.targeting, 'nearest');
-    assert.equal(last.body.config.modules.attack.runeSlot, 4);
-  } finally {
-    teardown(dom);
-  }
-});
-
-test('ATTACK tab shows the toggle without a stale skeleton disclosure', async () => {
+test('Hidden-module scope: ATTACK + CAVEBOT have no tab, toggle or config deck in the DOM', async () => {
   const { dom } = makePanel(ROUTES);
   try {
-    await new Promise((r) => setTimeout(r, 40));
-    dom.window.__mbPanel.dispatch({ type: 'SET_TAB', tab: 'attack' });
+    await connect(dom);
     const doc = dom.window.document;
-    assert.ok(doc.querySelector('input[data-module="attack"]'), 'attack toggle');
-    assert.doesNotMatch(doc.querySelector('[data-tab-panel="attack"]').textContent, /Skeleton — limited/);
+    for (const id of ['attack', 'cavebot']) {
+      assert.equal(doc.querySelector('.tab-btn[data-tab="' + id + '"]'), null, 'no ' + id + ' tab');
+      assert.equal(doc.querySelector('input[data-module="' + id + '"]'), null, 'no ' + id + ' toggle');
+      assert.equal(doc.querySelector('[data-config-tab="' + id + '"]'), null, 'no ' + id + ' config deck');
+      assert.equal(doc.querySelector('[data-dashboard-card="' + id + '"]'), null, 'no ' + id + ' dashboard card');
+    }
+    // The live-state view must not surface the hidden modules either.
+    const live = doc.getElementById('live-state').textContent;
+    assert.doesNotMatch(live, /Cavebot:/, 'no cavebot live line');
+    assert.doesNotMatch(live, /Attack:/, 'no attack live line');
   } finally {
-    teardown(dom);
+    await teardown(dom);
   }
 });
 
-test('REQ-36: cavebot record -> /api/cavebot record-start; stop -> points land; save -> config.routes', async () => {
+test('Hidden-module scope: a visible push keeps attack/cavebot config as the server returned it', async () => {
   const { dom, requests } = makePanel(ROUTES);
   try {
     await connect(dom);
-    dom.window.__mbPanel.dispatch({ type: 'SET_TAB', tab: 'cavebot' });
-    click(dom, '[data-cavebot-command="record"]');
+    const runes = dom.window.document.querySelector('input[data-module="runes"]');
+    assert.ok(runes, 'visible runes toggle rendered');
+    runes.checked = true;
+    runes.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
     await new Promise((r) => setTimeout(r, 40));
-    click(dom, '[data-cavebot-command="stop"]');
-    await new Promise((r) => setTimeout(r, 60));
-    click(dom, '[data-cavebot-command="save"]');
-    await new Promise((r) => setTimeout(r, 60));
-    const cavebotReqs = requests.filter((r) => r.url === '/api/cavebot');
-    assert.deepEqual(cavebotReqs.map((r) => r.body.command), ['record-start', 'record-stop']);
-    const cfgReqs = requests.filter((r) => r.url === '/api/config' && r.method === 'POST');
-    const last = cfgReqs[cfgReqs.length - 1];
-    assert.deepEqual(last.body.config.routes, [{ x: 10, y: 20 }, { x: 30, y: 40 }],
-      'Save writes the recorded waypoints into config.routes');
+
+    const cfg = requests.filter((r) => r.url === '/api/config' && r.method === 'POST').at(-1).body.config;
+    assert.equal(cfg.modules.runes.on, true, 'visible toggle carried');
+    assert.equal(cfg.modules.attack.on, true, 'hidden attack config not forced off');
+    assert.equal(cfg.modules.attack.targeting, 'lowest-hp', 'hidden attack settings preserved');
+    assert.equal(cfg.modules.cavebot.on, true, 'hidden cavebot config not forced off');
+    assert.deepEqual(cfg.modules.cavebot.monsters, ['Rat'], 'hidden cavebot settings preserved');
   } finally {
-    teardown(dom);
+    await teardown(dom);
   }
 });
 
-test('REQ-36: cavebot start posts /api/cavebot start', async () => {
+test('Hidden-module scope: the panel never issues the cavebot RPC through the UI', async () => {
   const { dom, requests } = makePanel(ROUTES);
   try {
     await connect(dom);
-    dom.window.__mbPanel.dispatch({ type: 'SET_TAB', tab: 'cavebot' });
-    click(dom, '[data-cavebot-command="start"]');
-    await new Promise((r) => setTimeout(r, 40));
-    const cavebotReqs = requests.filter((r) => r.url === '/api/cavebot');
-    assert.deepEqual(cavebotReqs.map((r) => r.body.command), ['start']);
+    const doc = dom.window.document;
+    assert.equal(doc.querySelectorAll('[data-cavebot-command]').length, 0, 'no cavebot command buttons');
+    assert.equal(doc.querySelectorAll('[data-cavebot-monster]').length, 0, 'no cavebot monster pickers');
+    // Let a poll cycle run; only the UI-driven requests should exist.
+    await new Promise((r) => setTimeout(r, 200));
+    assert.equal(requests.filter((r) => r.url === '/api/cavebot').length, 0, 'no cavebot RPC from the UI');
   } finally {
-    teardown(dom);
-  }
-});
-
-test('REQ-36: pause posts the config with modules.cavebot.paused', async () => {
-  const { dom, requests } = makePanel(ROUTES);
-  try {
-    await connect(dom);
-    dom.window.__mbPanel.dispatch({ type: 'SET_TAB', tab: 'cavebot' });
-    click(dom, '[data-cavebot-command="pause"]');
-    await new Promise((r) => setTimeout(r, 60));
-    const cfgReqs = requests.filter((r) => r.url === '/api/config' && r.method === 'POST');
-    const last = cfgReqs[cfgReqs.length - 1];
-    assert.equal(last.body.config.modules.cavebot.paused, true);
-  } finally {
-    teardown(dom);
-  }
-});
-
-test('REQ-36: the live state renders the cavebot recording status from the snapshot', async () => {
-  const { dom } = makePanel(ROUTES);
-  try {
-    await new Promise((r) => setTimeout(r, 40));
-    dom.window.__mbPanel.dispatch({ type: 'SET_TAB', tab: 'cavebot' });
-    const html = dom.window.document.getElementById('live-state').textContent;
-    assert.match(html, /recording 7 waypoints/);
-    assert.match(html, /saved route 9 waypoints/);
-  } finally {
-    teardown(dom);
+    await teardown(dom);
   }
 });

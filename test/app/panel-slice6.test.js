@@ -174,11 +174,16 @@ test('REQ-36: renderCavebotForm without a snapshot shows the idle status (no cra
 
 /* ------------------------------ tab disclosure ----------------------------- */
 
-test('ATTACK + CAVEBOT tabs expose real module toggles without a skeleton disclosure', () => {
+test('Hidden-module scope: ATTACK + CAVEBOT never render a toggle, tab or picker target', () => {
   const state = armedState();
   const html = P.renderModuleList(state);
-  assert.match(html, /data-module="attack"/, 'attack toggle rendered');
-  assert.match(html, /data-module="cavebot"/, 'cavebot toggle rendered');
+  assert.doesNotMatch(html, /data-module="attack"/, 'attack toggle never rendered');
+  assert.doesNotMatch(html, /data-module="cavebot"/, 'cavebot toggle never rendered');
+  assert.doesNotMatch(html, /data-tab="attack"/, 'no attack tab');
+  assert.doesNotMatch(html, /data-tab="cavebot"/, 'no cavebot tab');
+  assert.doesNotMatch(P.renderConfigForm(state), /data-config-tab="attack"/, 'no attack config deck');
+  assert.doesNotMatch(P.renderConfigForm(state), /data-config-tab="cavebot"/, 'no cavebot config deck');
+  assert.doesNotMatch(P.renderSpellPicker(state), /data-picker-module-btn="attack"/, 'no offensive spell picker');
   assert.doesNotMatch(html, /Skeleton — limited/, 'no stale skeleton disclosure');
 });
 

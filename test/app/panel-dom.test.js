@@ -58,16 +58,19 @@ function clickById(dom, id) {
   btn.dispatchEvent(new dom.window.Event('click', { bubbles: true }));
 }
 
-test('REQ-08: panel boots into the shell — status bar, 13 toggles, config + live sections', () => {
+test('REQ-08: panel boots into the shell — status bar, dashboard + visible toggles, config + live sections', () => {
   const dom = makePanel();
   try {
     const doc = dom.window.document;
     assert.match(doc.getElementById('status-bar').textContent, /Disconnected/);
-    assert.equal(doc.querySelectorAll('input[data-module]').length, 13, 'all 13 module toggles including mana potions');
+    // 4 dashboard card toggles + healMagic + runes + training + eat tab toggles.
+    assert.equal(doc.querySelectorAll('input[data-module]').length, 8, '4 dashboard cards + 4 visible tab toggles');
+    assert.equal(doc.querySelectorAll('.dashboard-card').length, 4, 'dashboard grid renders 4 cards');
     assert.ok(doc.getElementById('config-form'));
     assert.ok(doc.getElementById('live-state'));
     assert.match(doc.getElementById('live-state').textContent, /No snapshot yet/);
     assert.equal(dom.window.__mbPanel.getState().gate, 'disconnected');
+    assert.equal(dom.window.__mbPanel.getState().tab, 'dashboard', 'dashboard is the default tab');
   } finally {
     teardown(dom);
   }
@@ -76,12 +79,12 @@ test('REQ-08: panel boots into the shell — status bar, 13 toggles, config + li
 test('REQ-02: toggles are refused pre-Connect — "not connected" surfaces in the UI', () => {
   const dom = makePanel();
   try {
-    toggleById(dom, 'healItems', true);
+    toggleById(dom, 'healMagic', true);
     const s = dom.window.__mbPanel.getState();
-    assert.equal(s.modules.healItems, false, 'toggle NOT applied pre-Connect');
+    assert.equal(s.modules.healMagic, false, 'toggle NOT applied pre-Connect');
     assert.equal(s.refusal.reason, 'not connected');
     assert.match(dom.window.document.getElementById('status-bar').textContent, /refused: not connected/);
-    const input = dom.window.document.querySelector('input[data-module="healItems"]');
+    const input = dom.window.document.querySelector('input[data-module="healMagic"]');
     assert.equal(input.checked, false, 'checkbox stays unchecked');
     assert.equal(input.disabled, true, 'toggle disabled pre-Connect');
   } finally {
@@ -130,10 +133,10 @@ test('REQ-02/09: full connect flow — click Connect, per-character config pre-f
     assert.equal(s.modules.trade, true, 'saved config pre-fills the toggle (REQ-09)');
 
     // Toggles now apply.
-    toggleById(dom, 'healItems', true);
-    assert.equal(dom.window.__mbPanel.getState().modules.healItems, true, 'armed toggle applies');
+    toggleById(dom, 'healMagic', true);
+    assert.equal(dom.window.__mbPanel.getState().modules.healMagic, true, 'armed toggle applies');
     assert.equal(dom.window.__mbPanel.getState().refusal, null);
-    const input = dom.window.document.querySelector('input[data-module="healItems"]');
+    const input = dom.window.document.querySelector('input[data-module="healMagic"]');
     assert.equal(input.disabled, false, 'toggles enabled when armed');
   } finally {
     teardown(dom);

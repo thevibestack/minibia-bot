@@ -62,7 +62,7 @@ test('REQ-29 (PR3): SAVE_HEAL_SETTINGS converts threshold % to absolute hp and p
 });
 
 
-test('Survival flow: item-only mode persists selected live item CIDs and disables magic', () => {
+test('Hidden-module scope: the survival form stays magic-only — items config is preserved untouched', () => {
   let state = armedState();
   state = Object.assign({}, state, {
     snapshot: { stats: { health: 30, maxHealth: 200, mana: 80, maxMana: 100 } },
@@ -73,10 +73,11 @@ test('Survival flow: item-only mode persists selected live item CIDs and disable
   state = P.panelReducer(state, { type: 'TOGGLE_HEAL_ITEM', cid: 7618 }).state;
   const r = P.panelReducer(state, { type: 'SAVE_HEAL_SETTINGS' });
   assert.deepEqual(r.effects, [{ type: 'push-config' }]);
-  assert.equal(r.state.modules.healMagic, false);
-  assert.equal(r.state.modules.healItems, true);
-  assert.equal(r.state.config.modules.healItems.threshold, 90);
-  assert.deepEqual(r.state.config.modules.healItems.slotCids, [7618]);
+  assert.equal(r.state.modules.healMagic, true, 'the form is magic-only; the items mode input is ignored');
+  assert.equal(r.state.modules.healItems, false, 'hidden healItems toggle never flipped on');
+  assert.equal(r.state.config.modules.healItems.on, false, 'hidden healItems config never rewritten');
+  assert.equal(r.state.config.modules.healItems.slotCids, undefined, 'no invented item CIDs');
+  assert.equal(r.state.config.modules.healMagic.threshold, 0, 'magic config still commits (magic-only)');
 });
 
 test('REQ-29 (PR3): SAVE_HEAL_SETTINGS refuses invalid values with a visible reason — no config write', () => {
@@ -102,7 +103,9 @@ test('REQ-29 (PR3): SAVE_HEAL_SETTINGS with unknown max health is refused — no
 test('REQ-29 (PR3): renderConfigForm shows the HEAL form when armed and hides it pre-Connect', () => {
   const armed = P.renderConfigForm(armedState());
   assert.match(armed, /id="heal-threshold"/);
-  assert.match(armed, /heal-mana-enabled/);
+  assert.doesNotMatch(armed, /heal-mana-enabled/, 'mana potion surface removed (hidden module)');
+  assert.doesNotMatch(armed, /heal-item-threshold/, 'HP item surface removed (hidden module)');
+  assert.doesNotMatch(armed, /data-heal-mode/, 'no mode buttons — magic-only form');
   assert.doesNotMatch(armed, /id="heal-slot"/, 'slot comes only from the live hotbar');
   assert.match(armed, /id="heal-reserve"/);
   assert.match(armed, /id="heal-save-btn"/);
@@ -155,19 +158,20 @@ test('REQ-29 (PR3): the healMagic toggle is independent — toggling healItems l
 });
 
 
-test('Survival flow: mana potions persist a distinct threshold and BP CID list', () => {
+test('Hidden-module scope: mana-potion config is preserved when the surface is hidden', () => {
   let state = armedState();
-  state = Object.assign({}, state, { snapshot: { stats: { health: 30, maxHealth: 200, mana: 80, maxMana: 100 } }, inventory: { loaded: true, containers: [{ items: [{ cid: 268, name: 'Mana Potion', count: 20 }] }], reason: null } });
-  state = P.panelReducer(state, { type: 'UPDATE_HEAL_INPUT', key: 'mode', value: 'items' }).state;
-  state = P.panelReducer(state, { type: 'UPDATE_HEAL_INPUT', key: 'itemThreshold', value: '50' }).state;
-  state = P.panelReducer(state, { type: 'TOGGLE_HEAL_ITEM', cid: 268, kind: 'hp' }).state;
+  state = Object.assign({}, state, {
+    snapshot: { stats: { health: 30, maxHealth: 200, mana: 80, maxMana: 100 } },
+    inventory: { loaded: true, containers: [{ items: [{ cid: 268, name: 'Mana Potion', count: 20 }] }], reason: null },
+  });
   state = P.panelReducer(state, { type: 'UPDATE_HEAL_INPUT', key: 'manaEnabled', value: 'true' }).state;
   state = P.panelReducer(state, { type: 'UPDATE_HEAL_INPUT', key: 'manaItemThreshold', value: '35' }).state;
   state = P.panelReducer(state, { type: 'TOGGLE_HEAL_ITEM', cid: 268, kind: 'mana' }).state;
   const r = P.panelReducer(state, { type: 'SAVE_HEAL_SETTINGS' });
   assert.deepEqual(r.effects, [{ type: 'push-config' }]);
-  assert.equal(r.state.config.modules.manaItems.threshold, 35);
-  assert.deepEqual(r.state.config.modules.manaItems.slotCids, [268]);
+  assert.equal(r.state.modules.manaItems, false, 'hidden manaItems toggle never flipped on');
+  assert.equal(r.state.config.modules.manaItems.on, false, 'hidden manaItems config never rewritten');
+  assert.equal(r.state.config.modules.manaItems.threshold, undefined, 'no invented mana threshold');
 });
 
 test('Survival flow refuses a selected healing spell that has no live hotbar slot', () => {

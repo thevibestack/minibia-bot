@@ -6,9 +6,10 @@
  *   - connect flow: PROBE_START -> poll /api/identity (500ms) -> the user
  *     clicks Connect -> POST /api/connect (server pushes applyConfig with
  *     armed:true to the in-page agent) -> per-character pre-fill (REQ-09);
- *   - module toggles (all 10) dispatch TOGGLE_MODULE — the reducer REFUSES
- *     them until the gate is armed ("not connected", REQ-02) and the effect
- *     executor pushes the config to the agent when armed;
+ *   - module toggles (the visible set: runes/training/eat/healMagic, both in
+ *     the tab panels and on the dashboard cards) dispatch TOGGLE_MODULE — the
+ *     reducer REFUSES them until the gate is armed ("not connected", REQ-02)
+ *     and the effect executor pushes the config to the agent when armed;
  *   - snapshot polling (~500ms, REQ-04) into the live state view.
  *
  * Testability: this file is evaluated in jsdom with a stubbed fetch (or no
@@ -633,6 +634,10 @@
     else if (target.matches('.tab-btn')) {
       // REQ-26: product-shell tab navigation (pure UI, no gate).
       dispatch({ type: 'SET_TAB', tab: target.getAttribute('data-tab') });
+    }
+    else if (target.matches('[data-dashboard-go]')) {
+      // Dashboard quick access: jump to the module's configuration tab.
+      dispatch({ type: 'SET_TAB', tab: target.getAttribute('data-dashboard-go') });
     }
     else if (target.matches('.lang-btn')) {
       // REQ-26: i18n ES/EN switcher.

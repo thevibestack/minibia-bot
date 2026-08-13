@@ -236,7 +236,7 @@ test('TRAINER DOM: Stop Botting confirms before disabling training while healing
   const { dom, requests } = makePanel(liveRoutes());
   try {
     await connect(dom);
-    const heal = dom.window.document.querySelector('input[data-module="healItems"]');
+    const heal = dom.window.document.querySelector('input[data-module="healMagic"]');
     heal.checked = true; heal.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
     await configureTrainer(dom);
     const stop = dom.window.document.getElementById('trainer-stop-botting');
@@ -250,7 +250,7 @@ test('TRAINER DOM: Stop Botting confirms before disabling training while healing
     await new Promise((r) => setTimeout(r, 40));
     const cfg = requests.filter((r) => r.url === '/api/config').at(-1).body.config;
     assert.equal(cfg.modules.training.on, false);
-    assert.equal(cfg.modules.healItems.on, true);
+    assert.equal(cfg.modules.healMagic.on, true);
   } finally { await teardown(dom); }
 });
 

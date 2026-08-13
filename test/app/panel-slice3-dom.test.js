@@ -121,7 +121,7 @@ test('REQ-29 (PR3, jsdom): typing the HEAL form + Save posts /api/config with th
   }
 });
 
-test('REQ-29 (PR3, jsdom): toggling healItems does NOT change the healMagic toggle', async () => {
+test('REQ-29 (PR3, jsdom): healMagic toggles (dashboard + HEAL tab) drive one shared toggle state', async () => {
   const { dom, requests } = makePanel(ROUTES);
   try {
     dom.window.__mbPanel.dispatch({ type: 'PROBE_START' });
@@ -129,20 +129,19 @@ test('REQ-29 (PR3, jsdom): toggling healItems does NOT change the healMagic togg
     dom.window.__mbPanel.dispatch({ type: 'CONNECT' });
     await new Promise((r) => setTimeout(r, 60));
 
-    const healMagicToggle = dom.window.document.querySelector('input[data-module="healMagic"]');
-    healMagicToggle.checked = true;
-    healMagicToggle.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
-    const healItemsToggle = dom.window.document.querySelector('input[data-module="healItems"]');
-    healItemsToggle.checked = true;
-    healItemsToggle.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+    const toggles = dom.window.document.querySelectorAll('input[data-module="healMagic"]');
+    assert.equal(toggles.length, 2, 'dashboard card + HEAL tab toggle');
+    toggles[0].checked = true;
+    toggles[0].dispatchEvent(new dom.window.Event('change', { bubbles: true }));
     await new Promise((r) => setTimeout(r, 40));
 
     const state = dom.window.__mbPanel.getState();
-    assert.equal(state.modules.healItems, true);
-    assert.equal(state.modules.healMagic, true, 'healMagic independent of the healItems flip');
+    assert.equal(state.modules.healMagic, true, 'toggle applied through the dashboard card');
+    assert.equal(dom.window.document.querySelectorAll('input[data-module="healItems"]').length, 0,
+      'hidden healItems toggle never renders');
     const cfg = requests.filter((r) => r.url === '/api/config').pop().body.config;
-    assert.equal(cfg.modules.healItems.on, true);
     assert.equal(cfg.modules.healMagic.on, true);
+    assert.equal(cfg.modules.healItems.on, false, 'hidden healItems stays as the server returned it');
   } finally {
     await teardown(dom);
   }
@@ -189,7 +188,7 @@ test('REQ-29 (PR3, jsdom): the HEAL settings form is NOT rendered before Connect
 });
 
 
-test('Survival UI: item cards select real backpack CIDs and persist item-only healing', async () => {
+test('Hidden-module scope: item-only healing surfaces are absent from the DOM', async () => {
   const { dom, requests } = makePanel(ROUTES);
   try {
     dom.window.__mbPanel.dispatch({ type: 'PROBE_START' });
@@ -197,18 +196,13 @@ test('Survival UI: item cards select real backpack CIDs and persist item-only he
     dom.window.__mbPanel.dispatch({ type: 'CONNECT' });
     await new Promise((r) => setTimeout(r, 80));
 
-    click(dom, '[data-heal-mode="items"]');
-    type(dom, 'heal-item-threshold', '45');
-    click(dom, '[data-heal-item-cid="7618"]');
-    click(dom, '#heal-save-btn');
-    await new Promise((r) => setTimeout(r, 40));
-
-    const cfg = requests.filter((r) => r.url === '/api/config').pop().body.config;
-    assert.equal(cfg.modules.healMagic.on, false);
-    assert.equal(cfg.modules.healItems.on, true);
-    assert.equal(cfg.modules.healItems.threshold, 90);
-    assert.deepEqual(cfg.modules.healItems.slotCids, [7618]);
-    assert.ok(requests.some((r) => r.url === '/api/inventory'), 'inventory loaded after Connect');
+    const doc = dom.window.document;
+    assert.equal(doc.querySelectorAll('[data-heal-mode]').length, 0, 'no healing-mode buttons');
+    assert.equal(doc.getElementById('heal-item-threshold'), null, 'no HP item threshold field');
+    assert.equal(doc.getElementById('heal-mana-enabled'), null, 'no mana potion toggle');
+    assert.ok(doc.getElementById('heal-threshold'), 'magic threshold still rendered');
+    assert.ok(doc.getElementById('heal-reserve'), 'magic reserve still rendered');
+    assert.ok(doc.getElementById('heal-save-btn'), 'magic save still rendered');
   } finally {
     await teardown(dom);
   }

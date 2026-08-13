@@ -56,18 +56,21 @@ const panelOf = (dom, id) => dom.window.document.querySelector('.tab-panel[data-
 
 /* ---------------------------------- tabs ---------------------------------- */
 
-test('1.6: shell renders 5 tabs, all 13 toggles in the DOM, heal panel active', async () => {
+test('1.6: shell renders the dashboard first + 3 config tabs, 4 visible toggles, dashboard panel active', async () => {
   const dom = makePanel();
   try {
     const doc = dom.window.document;
-    assert.equal(doc.querySelectorAll('.tab-btn').length, 5, '5 tab buttons');
-    for (const id of ['heal', 'attack', 'trainer', 'cavebot', 'others']) {
-      assert.ok(doc.querySelector(tabBtn(id)), 'tab ' + id + ' rendered');
+    assert.equal(doc.querySelectorAll('.tab-btn').length, 4, '4 tab buttons');
+    const ids = [...doc.querySelectorAll('.tab-btn')].map((b) => b.getAttribute('data-tab'));
+    assert.deepEqual(ids, ['dashboard', 'heal', 'trainer', 'others'], 'dashboard is the first tab');
+    for (const hidden of ['attack', 'cavebot']) {
+      assert.equal(doc.querySelector('.tab-btn[data-tab="' + hidden + '"]'), null, hidden + ' tab absent');
     }
-    assert.equal(doc.querySelectorAll('input[data-module]').length, 13, 'all 13 toggles present');
-    assert.equal(panelOf(dom, 'heal').hidden, false, 'heal panel visible by default');
+    assert.equal(doc.querySelectorAll('input[data-module]').length, 8, '4 dashboard cards + 4 visible tab toggles');
+    assert.equal(doc.querySelectorAll('.dashboard-card').length, 4, 'dashboard card grid rendered');
+    assert.equal(panelOf(dom, 'dashboard').hidden, false, 'dashboard panel visible by default');
     assert.equal(panelOf(dom, 'trainer').hidden, true, 'inactive panels hidden');
-    assert.match(doc.querySelector('.tab-panel[data-tab-panel="attack"]').textContent, /Attack/);
+    assert.match(doc.querySelector('.dashboard-card[data-dashboard-card="training"]').textContent, /Magic training/);
   } finally {
     await teardown(dom);
   }
@@ -91,16 +94,20 @@ test('1.6: clicking a tab switches the active panel and the reducer state (pre-C
   }
 });
 
-test('1.6: each tab panel holds its own module toggles (regrouped per tab)', async () => {
+test('1.6: each tab panel holds only the visible module toggles; hidden modules never render', async () => {
   const dom = makePanel();
   try {
     const doc = dom.window.document;
     const healModules = doc.querySelectorAll('.tab-panel[data-tab-panel="heal"] input[data-module]');
-    assert.deepEqual([...healModules].map((i) => i.getAttribute('data-module')), ['healItems', 'manaItems', 'healMagic']);
+    assert.deepEqual([...healModules].map((i) => i.getAttribute('data-module')), ['healMagic'],
+      'heal owns only healMagic (items + mana potions hidden)');
     const trainerModules = doc.querySelectorAll('.tab-panel[data-tab-panel="trainer"] input[data-module]');
     assert.deepEqual([...trainerModules].map((i) => i.getAttribute('data-module')), ['runes', 'training']);
     const othersModules = doc.querySelectorAll('.tab-panel[data-tab-panel="others"] input[data-module]');
-    assert.equal(othersModules.length, 6, 'others owns the remaining 6 modules');
+    assert.deepEqual([...othersModules].map((i) => i.getAttribute('data-module')), ['eat'], 'others owns only eat');
+    for (const hidden of ['attack', 'cavebot', 'trade', 'loot', 'spawns', 'huntStats', 'routes', 'healItems', 'manaItems']) {
+      assert.equal(doc.querySelector('input[data-module="' + hidden + '"]'), null, hidden + ' toggle absent');
+    }
   } finally {
     await teardown(dom);
   }
@@ -120,6 +127,7 @@ test('1.4: ES switcher re-renders the panel in Spanish; EN is the default', asyn
     click(dom, '.lang-btn[data-lang="es"]');
     assert.equal(dom.window.__mbPanel.getState().lang, 'es');
     assert.match(doc.getElementById('status-bar').textContent, /Esperando al juego…/, 'gate label ES');
+    assert.match(doc.querySelector('.tab-btn[data-tab="dashboard"]').textContent, /INICIO/, 'dashboard tab label ES');
     assert.match(doc.querySelector('.tab-btn[data-tab="heal"]').textContent, /CURAR/, 'tab label ES');
     assert.match(doc.querySelector('.tab-panel[data-tab-panel="heal"]').textContent, /Curar con magia/);
 

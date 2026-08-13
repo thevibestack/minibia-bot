@@ -44,23 +44,23 @@
   /* ------------------------------ slice 1a (REQ-26) ----------------------------- */
 
   /**
-   * Product tabs (design D7, REQ-26): HEAL/ATTACK/TRAINER/CAVEBOT/OTHERS.
-   * Each tab owns the module toggles that land there. ATTACK + CAVEBOT host
-   * the PR6 skeleton modules (REQ-35/36) — their tabs disclose
-   * "skeleton — limited" (`skeleton: true`) while the full behaviors arrive
-   * with later updates.
+   * Visible product tabs: DASHBOARD (quick-access cards) first, then the
+   * configuration tabs of the ACTIVE modules only. Every tab id here is a
+   * rendered tab button + panel. Hidden modules (see HIDDEN_MODULES) are
+   * deliberately absent from this list — no tab, no toggle, no config deck.
    */
   const TABS = [
-    // A bot is a survival system first. Everything else is lower priority.
-    { id: 'heal', modules: ['healItems', 'manaItems', 'healMagic'] },
-    { id: 'attack', modules: ['attack'] },
-    { id: 'cavebot', modules: ['cavebot'] },
+    { id: 'dashboard', modules: [] },
+    { id: 'heal', modules: ['healMagic'] },
     { id: 'trainer', modules: ['runes', 'training'] },
-    { id: 'others', modules: ['eat', 'trade', 'loot', 'spawns', 'huntStats', 'routes'] },
+    { id: 'others', modules: ['eat'] },
   ];
   const TAB_IDS = TABS.map((t) => t.id);
 
-  /** The 12 modules (design config "modules" map), regrouped per tab (REQ-26). */
+  /** The 13 modules (design config "modules" map). MODULE_DEFS/MODULE_IDS stay
+   * INTACT for config round-trip safety: buildPushConfig still iterates every
+   * id and hidden modules keep whatever `on`/settings the server returned.
+   * Hiding is render-time only — see HIDDEN_MODULES. */
   const MODULE_DEFS = [
     { id: 'healItems', label: 'Heal with items', tab: 'heal' },
     { id: 'manaItems', label: 'Mana potions', tab: 'heal' },
@@ -77,16 +77,40 @@
     { id: 'routes', label: 'Routes', tab: 'others' },
   ];
   const MODULE_IDS = MODULE_DEFS.map((m) => m.id);
+
+  /** Modules removed from every UI surface (tab, toggle, config deck, live
+   *  line) by the approved dashboard-first scope. Config for these modules is
+   *  still carried untouched through buildPushConfig. */
+  const HIDDEN_MODULES = new Set([
+    'attack', 'cavebot', 'trade', 'loot', 'spawns', 'huntStats', 'routes',
+    'healItems', 'manaItems',
+  ]);
+
+  /** Full MODULE_DEFS grouping (hidden included — render filters it). Built
+   * from MODULE_DEFS first so tabs that are no longer in TABS still resolve. */
   const MODULE_BY_TAB = (function () {
     const out = {};
-    for (const tab of TABS) out[tab.id] = [];
-    for (const def of MODULE_DEFS) out[def.tab].push(def);
+    for (const def of MODULE_DEFS) {
+      if (!out[def.tab]) out[def.tab] = [];
+      out[def.tab].push(def);
+    }
+    for (const tab of TABS) if (!out[tab.id]) out[tab.id] = [];
     return out;
   }());
 
+  /** Dashboard quick-access cards (visible modules only): module id -> the
+   * configuration tab the "Configurar" button jumps to. */
+  const DASHBOARD_CARDS = [
+    { id: 'training', configTab: 'trainer' },
+    { id: 'eat', configTab: 'others' },
+    { id: 'healMagic', configTab: 'heal' },
+    { id: 'runes', configTab: 'trainer' },
+  ];
+
   /* ----------------------- slice 1b (REQ-28, D5) ----------------------- */
-  /** Modules whose spell sid the picker can choose (heal + training). */
-  const PICKER_MODULES = ['healMagic', 'training', 'attack']; // PR6 (REQ-35): offensive spell picker
+  /** Modules whose spell sid the picker can choose (heal + training). The
+   * hidden attack module is not offered here. */
+  const PICKER_MODULES = ['healMagic', 'training'];
 
   /* ------------------------------ i18n (REQ-26) ------------------------------ */
   /* Default EN; ES is a full translation. `t(state, key)` resolves the key
@@ -109,6 +133,17 @@
       'tab.trainer': 'TRAINER',
       'tab.cavebot': 'CAVEBOT',
       'tab.others': 'OTHERS',
+      'tab.dashboard': 'DASHBOARD',
+      'dashboard.title': 'Quick access',
+      'dashboard.goConfig': 'Configure',
+      'dashboard.status.off': 'Off — no actions',
+      'dashboard.status.armed': 'Armed — waiting for live data',
+      'dashboard.training.created': 'Runes created: %count%',
+      'dashboard.training.ready': 'Ready to cast — waiting for the game cycle',
+      'dashboard.runes.ready': 'Rune data ready',
+      'dashboard.runes.unavailable': 'No native rune data (display only)',
+      'dashboard.eat.lastAte': 'Last ate %time%',
+      'dashboard.eat.none': 'No food actions yet',
       'configuration': 'Configuration',
       'configLocked': 'Configuration unlocks after Connect.',
       'liveState': 'Live state',
@@ -354,6 +389,17 @@
       'tab.trainer': 'ENTRENAR',
       'tab.cavebot': 'CAVEBOT',
       'tab.others': 'OTROS',
+      'tab.dashboard': 'INICIO',
+      'dashboard.title': 'Acceso rápido',
+      'dashboard.goConfig': 'Configurar',
+      'dashboard.status.off': 'Apagado — sin acciones',
+      'dashboard.status.armed': 'Activo — esperando datos vivos',
+      'dashboard.training.created': 'Runas creadas: %count%',
+      'dashboard.training.ready': 'Listo para lanzar — esperando el ciclo del juego',
+      'dashboard.runes.ready': 'Datos de runas listos',
+      'dashboard.runes.unavailable': 'Sin datos nativos de runas (solo lectura)',
+      'dashboard.eat.lastAte': 'Última comida %time%',
+      'dashboard.eat.none': 'Todavía sin acciones de comida',
       'configuration': 'Configuración',
       'configLocked': 'La configuración se desbloquea al conectar.',
       'liveState': 'Estado en vivo',
@@ -619,9 +665,6 @@
     { tab: null, key: 'tutorial.live.title', body: 'tutorial.live.body', target: '#live-state', requires: 'armed' },
     { tab: 'heal', key: 'tutorial.healSpell.title', body: 'tutorial.healSpell.body', target: '[data-picker-module-btn="healMagic"]', requires: 'catalog' },
     { tab: 'heal', key: 'tutorial.healRules.title', body: 'tutorial.healRules.body', target: '#heal-save-btn', requires: 'hotbar-inventory' },
-    { tab: 'attack', key: 'tutorial.attack.title', body: 'tutorial.attack.body', target: 'input[data-module="attack"]', requires: 'armed' },
-    { tab: 'cavebot', key: 'tutorial.caveMonsters.title', body: 'tutorial.caveMonsters.body', target: '[data-cavebot-monster]', requires: 'creatures' },
-    { tab: 'cavebot', key: 'tutorial.caveRoute.title', body: 'tutorial.caveRoute.body', target: '[data-cavebot-command="record"]', requires: 'armed' },
     { tab: 'trainer', key: 'tutorial.trainerRune.title', body: 'tutorial.trainerRune.body', target: '#trainer-rune-select', requires: 'hotbar' },
     { tab: 'trainer', key: 'tutorial.trainerFallback.title', body: 'tutorial.trainerFallback.body', target: '#trainer-fallback-select', requires: 'hotbar' },
     { tab: 'trainer', key: 'tutorial.trainerCap.title', body: 'tutorial.trainerCap.body', target: '#trainer-cap-mode', requires: 'armed' },
@@ -696,8 +739,8 @@
       walkTo: { x: '', y: '' }, // routes v1 form values (slice 6, REQ-23)
       refusal: null,           // last refused action {action, module, reason, at}
       lastError: null,
-      // Slice 1a (REQ-26): product shell state.
-      tab: 'heal',             // active tab id (TABS)
+      // Slice 1a (REQ-26): product shell state — dashboard opens first.
+      tab: 'dashboard',       // active tab id (TABS)
       lang: LANG_EN,           // 'en' | 'es' — default EN (REQ-26)
       soundEnabled: true,      // alert sound toggle — default ON (persisted 'mb-panel-sound')
       tutorial: null,          // null | {step: number} — first-run stepper
@@ -1791,10 +1834,16 @@
         const form = state.healForm || {};
         const derived = healFormFromConfig(state);
         const val = (key) => (form[key] !== '' && form[key] !== undefined ? form[key] : derived[key]);
-        const mode = String(val('mode') || 'magic');
+        // Hidden-module scope: the HP-potion + mana-potion surfaces are gone
+        // from the UI, so the survival form is ALWAYS magic-only. The items /
+        // mana configs are left exactly as the server returned them — saving
+        // healMagic settings never flips a hidden module off or wipes it.
+        const itemsHidden = HIDDEN_MODULES.has('healItems');
+        const manaHidden = HIDDEN_MODULES.has('manaItems');
+        const mode = itemsHidden && manaHidden ? 'magic' : String(val('mode') || 'magic');
         const magicOn = mode === 'magic' || mode === 'both';
-        const itemsOn = mode === 'items' || mode === 'both';
-        const manaItemsOn = String(val('manaEnabled')) === 'true';
+        const itemsOn = itemsHidden ? false : (mode === 'items' || mode === 'both');
+        const manaItemsOn = manaHidden ? false : String(val('manaEnabled')) === 'true';
         const at = Date.now();
         if (!magicOn && !itemsOn) {
           return { state: Object.assign({}, state, { refusal: { action: 'SAVE_HEAL_SETTINGS', module: 'healMagic', reason: 'invalid survival settings — choose magic, items or both', at } }), effects: [] };
@@ -1834,25 +1883,27 @@
           return { state: Object.assign({}, state, { refusal: { action: 'SAVE_HEAL_SETTINGS', module: 'manaItems', reason: 'invalid mana potion setup — select at least one backpack item and set mana 0-100%', at } }), effects: [] };
         }
         config.modules.healMagic = hm;
-        config.modules.healItems = config.modules.healItems || {};
-        config.modules.manaItems = config.modules.manaItems || {};
         config.modules.healMagic.on = magicOn;
-        config.modules.healItems.on = itemsOn;
-        config.modules.manaItems.on = manaItemsOn;
         if (magicOn) {
           config.modules.healMagic.threshold = Math.max(0, Math.round(maxHp * thresholdPct / 100));
           config.modules.healMagic.slot = magicSlot;
           config.modules.healMagic.reserve = Math.max(0, Math.round(maxMana * manaPct / 100));
         }
         if (itemsOn) {
+          config.modules.healItems = config.modules.healItems || {};
+          config.modules.healItems.on = itemsOn;
           config.modules.healItems.threshold = Math.max(0, Math.round(maxHp * itemThresholdPct / 100));
           config.modules.healItems.slotCids = itemCids;
         }
         if (manaItemsOn) {
+          config.modules.manaItems = config.modules.manaItems || {};
+          config.modules.manaItems.on = manaItemsOn;
           config.modules.manaItems.threshold = Math.max(0, Math.round(maxMana * manaItemThresholdPct / 100));
           config.modules.manaItems.slotCids = manaItemCids;
         }
-        const modules = Object.assign({}, state.modules, { healMagic: magicOn, healItems: itemsOn, manaItems: manaItemsOn });
+        const modules = Object.assign({}, state.modules, { healMagic: magicOn });
+        if (!itemsHidden) modules.healItems = itemsOn;
+        if (!manaHidden) modules.manaItems = manaItemsOn;
         return {
           state: Object.assign({}, state, {
             modules, config,
@@ -2043,8 +2094,17 @@
         if (!config.modules.antibot || typeof config.modules.antibot !== 'object') config.modules.antibot = {};
         config.modules.eat.slot = foodSlot;
         config.modules.eat.everyCasts = everyCasts;
-        config.modules.loot.defaultDest = rawDest === '' ? null : rawDest;
-        config.modules.antibot.replies = parsed.entries;
+        // The loot destination + anti-bot replies surfaces are removed from
+        // this UI generation, so an empty form PRESERVES the server-returned
+        // hidden config instead of wiping it on a food-only save.
+        const savedLoot = state.config && state.config.modules && state.config.modules.loot;
+        const savedAntibot = state.config && state.config.modules && state.config.modules.antibot;
+        config.modules.loot.defaultDest = rawDest !== ''
+          ? rawDest
+          : (savedLoot && savedLoot.defaultDest !== undefined ? savedLoot.defaultDest : null);
+        config.modules.antibot.replies = rawReplies !== ''
+          ? parsed.entries
+          : (savedAntibot && Array.isArray(savedAntibot.replies) ? savedAntibot.replies : parsed.entries);
         return {
           state: Object.assign({}, state, {
             config,
@@ -2384,12 +2444,12 @@
   }
 
   /**
-   * Tabbed module list (REQ-26, design D7): 5 tab buttons (HEAL/ATTACK/
-   * TRAINER/CAVEBOT/OTHERS) + one panel per tab holding that tab's module
-   * toggles. ALL panels render in the DOM (the active one is visible via the
-   * `hidden` attribute) — the reducer keeps every toggle state live, and
-   * tab switching is pure CSS/attribute work. Skeleton tabs (ATTACK/CAVEBOT)
-   * reserve their space and disclose "skeleton — limited".
+   * Tabbed module list: the DASHBOARD tab first (quick-access cards, default
+   * tab), then one panel per visible configuration tab holding that tab's
+   * module toggles. HIDDEN_MODULES are filtered out here — they never render
+   * as a tab, a toggle or a panel. ALL panels render in the DOM (the active
+   * one is visible via the `hidden` attribute) — the reducer keeps every
+   * toggle state live, and tab switching is pure CSS/attribute work.
    */
   function renderModuleList(state) {
     const nav = '<div class="tab-nav" role="tablist">'
@@ -2403,21 +2463,20 @@
 
     const panels = TABS.map((tab) => {
       const hidden = state.tab === tab.id ? '' : ' hidden';
-      const defs = MODULE_BY_TAB[tab.id] || [];
       let body;
-      if (defs.length === 0) {
-        body = '<div class="tab-empty">' + escapeHtml(t(state, 'skeleton.note')) + '</div>';
+      if (tab.id === 'dashboard') {
+        body = renderDashboard(state);
       } else {
-        body = defs.map((def) => {
-          const checked = state.modules[def.id] === true;
-          const disabled = state.gate !== GATE_ARMED ? ' disabled' : '';
-          return '<label class="module-toggle"><input type="checkbox" data-module="' + def.id + '"'
-            + (checked ? ' checked' : '') + disabled + '> ' + escapeHtml(moduleLabel(state, def)) + '</label>';
-        }).join('');
-        // PR6 (REQ-35/36): skeleton tabs keep the "skeleton — limited"
-        // disclosure visible under their toggles.
-        if (tab.skeleton) {
-          body += '<div class="tab-skeleton">' + escapeHtml(t(state, 'skeleton.note')) + '</div>';
+        const defs = (MODULE_BY_TAB[tab.id] || []).filter((def) => !HIDDEN_MODULES.has(def.id));
+        if (defs.length === 0) {
+          body = '<div class="tab-empty">' + escapeHtml(t(state, 'skeleton.note')) + '</div>';
+        } else {
+          body = defs.map((def) => {
+            const checked = state.modules[def.id] === true;
+            const disabled = state.gate !== GATE_ARMED ? ' disabled' : '';
+            return '<label class="module-toggle"><input type="checkbox" data-module="' + def.id + '"'
+              + (checked ? ' checked' : '') + disabled + '> ' + escapeHtml(moduleLabel(state, def)) + '</label>';
+          }).join('');
         }
       }
       return '<section class="tab-panel" data-tab-panel="' + tab.id + '" role="tabpanel"' + hidden + '>'
@@ -2425,6 +2484,96 @@
     }).join('');
 
     return '<div class="module-list">' + nav + panels + '</div>';
+  }
+
+  /** One readable dashboard status line per card — derived ONLY from the live
+   *  snapshot (or the saved config where the snapshot exposes no module state,
+   *  e.g. healMagic). Never raw JSON; honest '—' when there is no snapshot. */
+  function dashboardStatusLine(state, card) {
+    if (!state.snapshot || typeof state.snapshot !== 'object') return '—';
+    const modules = state.snapshot.agent && state.snapshot.agent.modules
+      ? state.snapshot.agent.modules : {};
+    const stats = snapshotStats(state.snapshot);
+    if (card.id === 'training') {
+      const training = modules.training;
+      if (!training) return '—';
+      if (training.on !== true) return t(state, 'dashboard.status.off');
+      if (training.capFull === true) return t(state, 'trainer.capFullAlert');
+      const runtime = renderTrainerRuntimeStatus(state, training, stats);
+      if (runtime) return runtime;
+      const created = Number(training.successfulRuneCreations);
+      if (Number.isInteger(created) && created > 0) {
+        return tVar(state, 'dashboard.training.created', { count: created });
+      }
+      return t(state, 'dashboard.training.ready');
+    }
+    if (card.id === 'runes') {
+      const runes = modules.runes;
+      if (!runes) return '—';
+      if (runes.on !== true) return t(state, 'dashboard.status.off');
+      return runes.available === false
+        ? t(state, 'dashboard.runes.unavailable')
+        : t(state, 'dashboard.runes.ready');
+    }
+    if (card.id === 'eat') {
+      const eat = modules.eat;
+      if (!eat) return '—';
+      if (eat.on !== true) return t(state, 'dashboard.status.off');
+      if (eat.paused === true) return t(state, 'eat.pausedAlert');
+      const at = Number(eat.lastEatAt);
+      if (Number.isFinite(at) && at > 0) {
+        return tVar(state, 'dashboard.eat.lastAte', { time: new Date(at).toLocaleTimeString() });
+      }
+      return t(state, 'dashboard.eat.none');
+    }
+    if (card.id === 'healMagic') {
+      const hmCfg = state.config && state.config.modules && state.config.modules.healMagic;
+      if (!hmCfg) return '—';
+      if (hmCfg.on !== true) return t(state, 'heal.liveOff');
+      if (stats.health !== null && stats.maxHealth !== null && stats.maxHealth > 0) {
+        const hpPct = Math.round(stats.health / stats.maxHealth * 100);
+        const tAbs = Number(hmCfg.threshold);
+        const tPct = Number.isFinite(tAbs) && tAbs >= 0 ? Math.round(tAbs / stats.maxHealth * 100) : null;
+        return tVar(state, 'heal.liveOn', {
+          pct: hpPct, max: stats.maxHealth,
+          t: tPct, slot: hmCfg.slot === null || hmCfg.slot === undefined ? '—' : hmCfg.slot,
+        });
+      }
+      return t(state, 'dashboard.status.armed');
+    }
+    return '—';
+  }
+
+  /** DASHBOARD quick-access grid: one card per active module with a direct
+   *  ON/OFF switch (same TOGGLE_MODULE dispatch as the tab toggles, gated on
+   *  the armed gate) + a live status line + a "Configurar" shortcut that
+   *  dispatches SET_TAB to the module's configuration tab. */
+  function renderDashboard(state) {
+    const parts = ['<div class="dashboard-grid">'];
+    for (const card of DASHBOARD_CARDS) {
+      const def = MODULE_DEFS.filter((d) => d.id === card.id)[0];
+      if (!def) continue;
+      const checked = state.modules[card.id] === true;
+      const disabled = state.gate !== GATE_ARMED ? ' disabled' : '';
+      const label = moduleLabel(state, def);
+      const status = dashboardStatusLine(state, card);
+      parts.push('<article class="dashboard-card' + (checked ? ' is-on' : '')
+        + '" data-dashboard-card="' + card.id + '">'
+        + '<div class="dashboard-card-head">'
+        + '<h3>' + escapeHtml(label) + '</h3>'
+        + '<label class="dashboard-toggle" title="' + escapeHtml(label) + '">'
+        + '<input type="checkbox" data-module="' + card.id + '"'
+        + (checked ? ' checked' : '') + disabled
+        + ' aria-label="' + escapeHtml(label) + '">'
+        + '<span class="dashboard-toggle-track" aria-hidden="true"></span></label>'
+        + '</div>'
+        + '<p class="dashboard-card-status">' + escapeHtml(status) + '</p>'
+        + '<button type="button" class="dashboard-go-btn" data-dashboard-go="' + card.configTab + '">'
+        + escapeHtml(t(state, 'dashboard.goConfig')) + '</button>'
+        + '</article>');
+    }
+    parts.push('</div>');
+    return parts.join('');
   }
 
   /**
@@ -2563,6 +2712,9 @@
    * chosen with the spell picker below (REQ-28); the module toggle lives in
    * the HEAL tab module list. The agent compares health against the SAVED
    * absolute threshold — the form converts percent <-> absolute here.
+   * Hidden-module scope: with HP/mana potions removed from the UI the form is
+   * ALWAYS magic-only — the mode buttons and the items/mana sections do not
+   * render (the healMagic config stays fully functional).
    * @param {object} state
    * @returns {string}
    */
@@ -2570,10 +2722,12 @@
     const form = state.healForm || {};
     const derived = healFormFromConfig(state);
     const val = (key) => (form[key] !== '' && form[key] !== undefined ? form[key] : derived[key]);
-    const mode = val('mode') || 'magic';
+    const itemsHidden = HIDDEN_MODULES.has('healItems');
+    const manaHidden = HIDDEN_MODULES.has('manaItems');
+    const mode = itemsHidden && manaHidden ? 'magic' : (val('mode') || 'magic');
     const magicOn = mode === 'magic' || mode === 'both';
-    const itemsOn = mode === 'items' || mode === 'both';
-    const manaItemsOn = String(val('manaEnabled')) === 'true';
+    const itemsOn = !itemsHidden && (mode === 'items' || mode === 'both');
+    const manaItemsOn = !manaHidden && String(val('manaEnabled')) === 'true';
     const hm = state.config && state.config.modules && state.config.modules.healMagic || {};
     const hpSelected = selectedHealItemCids(state, form);
     const manaSelected = selectedManaItemCids(state, form);
@@ -2598,8 +2752,10 @@
       : '<p class="trainer-note">' + escapeHtml(tVar(state, 'heal.hotbarMapped', { slot: magicSlot })) + '</p>';
     return '<div class="heal-form survival-form">'
       + '<h3>' + escapeHtml(t(state, 'heal.formTitle')) + '</h3>'
-      + '<div class="heal-mode-row"><span>' + escapeHtml(t(state, 'heal.mode')) + '</span>'
-      + modeButton('magic') + modeButton('items') + modeButton('both') + '</div>'
+      + (!itemsHidden || !manaHidden
+        ? '<div class="heal-mode-row"><span>' + escapeHtml(t(state, 'heal.mode')) + '</span>'
+          + modeButton('magic') + modeButton('items') + modeButton('both') + '</div>'
+        : '')
       + '<div class="survival-grid">'
       + (magicOn ? '<section class="survival-card"><h4>' + escapeHtml(t(state, 'heal.magicTitle')) + '</h4>'
         + renderSpellCard(state, 'healMagic', t(state, 'picker.module.healMagic'), hm.sid) + hotbarNote
@@ -2613,13 +2769,14 @@
         + '<p class="trainer-note">' + escapeHtml(t(state, 'heal.inventoryHint')) + '</p>'
         + '<div class="heal-items-head"><span>' + escapeHtml(tVar(state, 'heal.itemsSelected', { count: hpSelected.length })) + '</span>'
         + '<button type="button" id="heal-items-refresh">' + escapeHtml(t(state, 'heal.itemsRefresh')) + '</button></div>' + cards('hp', hpSelected) + '</section>' : '')
-      + '<section class="survival-card"><h4>' + escapeHtml(t(state, 'heal.manaTitle')) + '</h4>'
-      + '<label class="toggle"><input type="checkbox" id="heal-mana-enabled"' + (manaItemsOn ? ' checked' : '') + '> ' + escapeHtml(t(state, 'heal.manaEnabled')) + '</label>'
-      + (manaItemsOn ? '<label class="heal-field">' + escapeHtml(t(state, 'heal.manaThreshold'))
-        + ' <input type="number" id="heal-mana-item-threshold" min="0" max="100" step="1" value="' + escapeHtml(val('manaItemThreshold')) + '"></label>'
-        + '<p class="trainer-note">' + escapeHtml(t(state, 'heal.inventoryHint')) + '</p>'
-        + '<div class="heal-items-head"><span>' + escapeHtml(tVar(state, 'heal.itemsSelected', { count: manaSelected.length })) + '</span></div>' + cards('mana', manaSelected) : '')
-      + '</section></div><button type="button" id="heal-save-btn">' + escapeHtml(t(state, 'heal.save')) + '</button></div>';
+      + (!manaHidden ? '<section class="survival-card"><h4>' + escapeHtml(t(state, 'heal.manaTitle')) + '</h4>'
+        + '<label class="toggle"><input type="checkbox" id="heal-mana-enabled"' + (manaItemsOn ? ' checked' : '') + '> ' + escapeHtml(t(state, 'heal.manaEnabled')) + '</label>'
+        + (manaItemsOn ? '<label class="heal-field">' + escapeHtml(t(state, 'heal.manaThreshold'))
+          + ' <input type="number" id="heal-mana-item-threshold" min="0" max="100" step="1" value="' + escapeHtml(val('manaItemThreshold')) + '"></label>'
+          + '<p class="trainer-note">' + escapeHtml(t(state, 'heal.inventoryHint')) + '</p>'
+          + '<div class="heal-items-head"><span>' + escapeHtml(tVar(state, 'heal.itemsSelected', { count: manaSelected.length })) + '</span></div>' + cards('mana', manaSelected) : '')
+        + '</section>' : '')
+      + '</div><button type="button" id="heal-save-btn">' + escapeHtml(t(state, 'heal.save')) + '</button></div>';
   }
 
   /**
@@ -2727,12 +2884,11 @@
   }
 
   /**
-   * OTHERS settings form (PR5, REQ-33/34): food (slot + every-N-casts), the
-   * auto-loot default destination (auto-loot fires ONLY with a configured
-   * list — REQ-33) and the anti-bot `pattern => reply` list (confirm-once
-   * config, REQ-34). Values come from the pure-UI othersForm state (survive
-   * re-renders) falling back to the saved config. The module toggles live in
-   * the OTHERS tab module list.
+   * OTHERS settings form: the food section (slot + every-N-casts). The
+   * auto-loot destination and the anti-bot `pattern => reply` list are
+   * removed from this UI generation — the reducer still preserves their
+   * server-returned config on save. Values come from the pure-UI othersForm
+   * state (survive re-renders) falling back to the saved config.
    * @param {object} state
    * @returns {string}
    */
@@ -2747,12 +2903,6 @@
       + ' <input type="number" id="others-food-slot" min="1" step="1" value="' + escapeHtml(val('foodSlot')) + '"></label>'
       + '<label class="others-field">' + escapeHtml(t(state, 'others.everyCasts'))
       + ' <input type="number" id="others-every-casts" min="0" step="1" value="' + escapeHtml(val('everyCasts')) + '"></label>'
-      + '<h4>' + escapeHtml(t(state, 'others.lootTitle')) + '</h4>'
-      + '<label class="others-field">' + escapeHtml(t(state, 'others.lootDest'))
-      + ' <input type="text" id="others-loot-dest" value="' + escapeHtml(val('lootDest')) + '"></label>'
-      + '<h4>' + escapeHtml(t(state, 'others.antibotTitle')) + '</h4>'
-      + '<label class="others-field">' + escapeHtml(t(state, 'others.antibotReplies'))
-      + ' <textarea id="others-replies" rows="4" spellcheck="false">' + escapeHtml(val('antibotReplies')) + '</textarea></label>'
       + '<button type="button" id="others-save-btn">' + escapeHtml(t(state, 'others.save')) + '</button>'
       + '</div>';
   }
@@ -2851,32 +3001,20 @@
     return parts.join('');
   }
 
-  /** Config form: module settings shell + the Routes v1 walk-to form
-   *  (REQ-23, slice 6) + the slice-1b profile loader and spell picker.
-   *  Route RECORDING is explicitly marked FUTURE — out of v1 scope per the
-   *  spec; v1 issues walk-to through the native autowalk primitive only
-   *  (values survive re-renders via state.walkTo). */
+  /** Config form: module settings shell (heal/trainer/others — the visible
+   *  modules only) + the slice-1b profile loader and spell picker. Hidden
+   *  modules never get a deck section here. */
   function renderConfigForm(state) {
     const head = '<h2>' + escapeHtml(t(state, 'configuration')) + '</h2>';
-    const activeTab = state.tab || 'heal';
+    const activeTab = state.tab || 'dashboard';
     const deck = (id, html) => '<section class="config-tab config-tab-' + id + (activeTab === id ? ' active' : '')
       + '" data-config-tab="' + id + '">' + html + '</section>';
     let body;
     if (state.gate === GATE_ARMED) {
-      const wt = state.walkTo || { x: '', y: '' };
-      const routeTools = '<div class="routes-form">'
-        + '<h3>' + escapeHtml(t(state, 'routes.title')) + '</h3>'
-        + '<label class="route-coord">X <input type="number" id="route-x" value="' + escapeHtml(wt.x) + '" step="any"></label>'
-        + '<label class="route-coord">Y <input type="number" id="route-y" value="' + escapeHtml(wt.y) + '" step="any"></label>'
-        + '<button type="button" id="route-walk-btn">' + escapeHtml(t(state, 'routes.walkTo')) + '</button>'
-        + '<p class="routes-future">' + escapeHtml(t(state, 'routes.recordingFuture')) + '</p>'
-        + '</div>';
       body = '<div class="control-console">'
         + '<div class="control-stage">'
         + deck('heal', renderHealForm(state))
         + deck('trainer', renderTrainerForm(state))
-        + deck('attack', renderAttackForm(state))
-        + deck('cavebot', renderCavebotForm(state) + routeTools)
         + deck('others', renderOthersForm(state))
         + '</div>'
         + '<aside class="control-side" aria-label="Catalog and profiles">'
@@ -3084,7 +3222,7 @@
         }
         parts.push('</div>');
       }
-      if (modules && modules.routes) {
+      if (modules && modules.routes && !HIDDEN_MODULES.has('routes')) {
         const r = modules.routes;
         let line;
         if (r.available !== true) {
@@ -3106,10 +3244,9 @@
         }
         parts.push('<div class="routes-state">' + escapeHtml(line) + '</div>');
       }
-      // PR6 (REQ-35/36): skeleton module lines — the attack targeting +
-      // picker config and the cavebot recording/saved-route/pause status
-      // ride the snapshot like every other module line.
-      if (modules && modules.attack) {
+      // PR6 (REQ-35/36): skeleton module lines — hidden-module scope removes
+      // the attack + cavebot live lines from the visible UI.
+      if (modules && modules.attack && !HIDDEN_MODULES.has('attack')) {
         const a = modules.attack;
         const targeting = attackTargetingLabel(state, a.targeting);
         const hasSpell = a.on === true && a.spell && a.spell.sid !== null && a.spell.sid !== undefined;
@@ -3130,7 +3267,7 @@
         }
         parts.push('<div class="attack-state">' + escapeHtml(line) + '</div>');
       }
-      const cavebot = snapshotCavebot(state.snapshot);
+      const cavebot = HIDDEN_MODULES.has('cavebot') ? null : snapshotCavebot(state.snapshot);
       if (cavebot) {
         let detail = cavebot.recording && cavebot.recording.active === true
           ? tVar(state, 'cavebot.stateRecording', { count: cavebot.recording.points })
@@ -3302,6 +3439,8 @@
     MODULE_DEFS,
     MODULE_IDS,
     MODULE_BY_TAB,
+    HIDDEN_MODULES,
+    DASHBOARD_CARDS,
     PICKER_MODULES,
     I18N,
     TUTORIAL_STEPS,
@@ -3326,6 +3465,8 @@
     renderAlerts,
     renderStatusBar,
     renderModuleList,
+    renderDashboard,
+    dashboardStatusLine,
     renderProfileLoader,
     renderSpellPicker,
     renderConfigForm,

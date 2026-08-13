@@ -27,14 +27,17 @@ function run(actions, fromState) {
 
 /* ---------------------------------- tabs ---------------------------------- */
 
-test('1.3: initial state has 5 tabs, heal active, all 10 modules regrouped', () => {
+test('1.3: initial state has 4 visible tabs, dashboard active, full module registry intact', () => {
   const s = P.createInitialState();
-  assert.deepEqual(P.TAB_IDS, ['heal', 'attack', 'cavebot', 'trainer', 'others']);
-  assert.equal(s.tab, 'heal', 'heal tab active by default');
-  assert.equal(P.MODULE_IDS.length, 13, 'all 13 module ids (PR6: attack + cavebot)');
+  assert.deepEqual(P.TAB_IDS, ['dashboard', 'heal', 'trainer', 'others']);
+  assert.equal(s.tab, 'dashboard', 'dashboard tab active by default');
+  assert.equal(P.MODULE_IDS.length, 13, 'all 13 module ids stay in the registry (config round-trip safety)');
   const flat = P.TABS.flatMap((t) => t.modules).sort();
-  assert.deepEqual(flat, P.MODULE_IDS.slice().sort(), 'every module lands in exactly one tab');
-  // REQ-26 per-module On/Off: heal tab owns the heal modules; trainer owns runes/training.
+  assert.deepEqual(flat, ['eat', 'healMagic', 'runes', 'training'], 'only the visible modules land in a tab');
+  for (const id of ['attack', 'cavebot', 'trade', 'loot', 'spawns', 'huntStats', 'routes', 'healItems', 'manaItems']) {
+    assert.equal(P.HIDDEN_MODULES.has(id), true, id + ' is hidden');
+  }
+  // REQ-26 per-module On/Off: the FULL grouping stays intact for the render filter.
   assert.deepEqual(P.MODULE_BY_TAB.heal.map((d) => d.id), ['healItems', 'manaItems', 'healMagic']);
   assert.deepEqual(P.MODULE_BY_TAB.trainer.map((d) => d.id), ['runes', 'training']);
 });
@@ -43,19 +46,24 @@ test('1.3: SET_TAB switches the active tab; unknown ids ignored', () => {
   const r = run([{ type: 'SET_TAB', tab: 'trainer' }]);
   assert.equal(r.state.tab, 'trainer');
   const r2 = run([{ type: 'SET_TAB', tab: 'nope' }]);
-  assert.equal(r2.state.tab, 'heal', 'unknown tab ignored');
+  assert.equal(r2.state.tab, 'dashboard', 'unknown tab ignored');
   assert.equal(r2.effects.length, 0);
 });
 
-test('1.3: renderModuleList renders 5 tab buttons + 13 toggles, active panel visible only', () => {
+test('1.3: renderModuleList renders the dashboard first + 3 config tabs; hidden modules never render', () => {
   const html = P.renderModuleList(P.createInitialState());
-  assert.equal((html.match(/class="tab-btn/g) || []).length, 5, '5 tab buttons');
-  assert.equal((html.match(/class="module-toggle"/g) || []).length, 13, 'all 13 toggles in the DOM');
-  for (const tab of P.TABS) assert.match(html, new RegExp('data-tab="' + tab.id + '"'));
-  assert.ok(html.includes('data-tab-panel="heal"') && !html.includes('data-tab-panel="heal" hidden'),
-    'active panel not hidden');
+  assert.equal((html.match(/class="tab-btn/g) || []).length, 4, '4 tab buttons');
+  assert.equal((html.match(/class="module-toggle"/g) || []).length, 4, 'only the 4 visible tab toggles');
+  assert.equal((html.match(/data-dashboard-card="/g) || []).length, 4, '4 dashboard quick-access cards');
+  assert.ok(html.indexOf('data-tab="dashboard"') !== -1 && html.indexOf('data-tab="dashboard"') < html.indexOf('data-tab="heal"'),
+    'dashboard is the first tab button');
+  for (const id of P.HIDDEN_MODULES) {
+    assert.doesNotMatch(html, new RegExp('data-module="' + id + '"'), id + ' toggle never rendered');
+  }
+  assert.ok(html.includes('data-tab-panel="dashboard"') && !html.includes('data-tab-panel="dashboard" hidden'),
+    'dashboard panel visible by default');
   assert.match(html, /data-tab-panel="trainer"[^>]*hidden/, 'inactive panels hidden');
-  assert.doesNotMatch(html, /Skeleton — limited/, 'operational modules do not claim to be skeletons');
+  assert.doesNotMatch(html, /Skeleton — limited/, 'no stale skeleton disclosure');
 });
 
 test('1.3: toggle state survives tab switching (same reducer state, panel hidden in DOM)', () => {
@@ -142,7 +150,7 @@ test('ATTACH_FIRST enters probing and emits the attach-first effect', () => {
 test('1.5: TUTORIAL_START opens the ordered interactive guide; Next walks real-control tabs and finishes with tutorial-seen', () => {
   const r = run([{ type: 'TUTORIAL_START' }]);
   assert.deepEqual(r.state.tutorial, { step: 0 }, 'starts at the intro step');
-  assert.equal(P.TUTORIAL_STEPS.length, 11, 'connection, survival, combat, trainer and verification steps');
+  assert.equal(P.TUTORIAL_STEPS.length, 8, 'connect, survival, trainer and verification steps');
 
   let state = r.state;
   const seenTabs = [];
@@ -152,8 +160,8 @@ test('1.5: TUTORIAL_START opens the ordered interactive guide; Next walks real-c
     assert.equal(state.tutorial.step, i, 'step ' + i);
     if (P.TUTORIAL_STEPS[i].tab !== null) seenTabs.push(state.tab);
   }
-  assert.deepEqual([...new Set(seenTabs)], ['heal', 'attack', 'cavebot', 'trainer'],
-    'the guide walks every configuration tab with a real control');
+  assert.deepEqual([...new Set(seenTabs)], ['heal', 'trainer'],
+    'the guide walks every visible configuration tab with a real control');
 
   const done = P.panelReducer(state, { type: 'TUTORIAL_NEXT' });
   assert.equal(done.state.tutorial, null, 'last step closes the tour');
@@ -221,7 +229,7 @@ test('1.5: renderTutorial shows the step card with localized title, progress and
   assert.match(html, /data-tutorial-action="next"/);
   assert.match(html, /data-tutorial-action="back"/);
   assert.match(html, /data-tutorial-action="dismiss"/);
-  assert.match(html, /2 \/ 11/, 'progress');
+  assert.match(html, /2 \/ 8/, 'progress');
   assert.match(html, /Load live data/, 'step title is actionable');
   assert.equal(P.renderTutorial(P.createInitialState()), '', 'no overlay when not running');
 });

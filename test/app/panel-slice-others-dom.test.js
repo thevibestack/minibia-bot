@@ -29,8 +29,8 @@ const BASE_CFG = {
     runes: { on: false },
     training: { on: false },
     eat: { on: false, slot: null, everyCasts: 0 },
-    loot: { on: false, defaultDest: null, perMonster: {} },
-    antibot: { on: false, replies: [] },
+    loot: { on: true, defaultDest: 'Dust bag', perMonster: {} },
+    antibot: { on: false, replies: [{ pattern: 'hi', reply: 'hello' }] },
   },
 };
 
@@ -116,21 +116,20 @@ const ROUTES = {
   '/api/antibot-confirm': () => ({ ok: true, pattern: 'verify your account', confirmed: ['verify your account'] }),
 };
 
-test('REQ-33/34 (PR5, jsdom): typing the OTHERS form + Save posts /api/config with parsed replies', async () => {
+test('Hidden-module scope (PR5, jsdom): the OTHERS form is food-only and preserves the hidden loot/antibot config', async () => {
   const { dom, requests } = makePanel(ROUTES);
   try {
     await connect(dom);
 
     type(dom, 'others-food-slot', '2');
     type(dom, 'others-every-casts', '5');
-    type(dom, 'others-loot-dest', 'Loot bag');
-    type(dom, 'others-replies', 'verify your account => ok then\n/^stop bot/i => sorry');
 
     // A snapshot re-render must not wipe the typed values.
     await new Promise((r) => setTimeout(r, 600));
     assert.equal(dom.window.document.getElementById('others-food-slot').value, '2', 'food slot survives re-render');
-    assert.equal(dom.window.document.getElementById('others-loot-dest').value, 'Loot bag', 'dest survives re-render');
-    assert.equal(dom.window.document.getElementById('others-replies').value, 'verify your account => ok then\n/^stop bot/i => sorry', 'replies survive re-render');
+    assert.equal(dom.window.document.getElementById('others-every-casts').value, '5', 'cadence survives re-render');
+    assert.equal(dom.window.document.getElementById('others-loot-dest'), null, 'no loot destination field');
+    assert.equal(dom.window.document.getElementById('others-replies'), null, 'no anti-bot replies field');
 
     click(dom, '#others-save-btn');
     await new Promise((r) => setTimeout(r, 40));
@@ -140,11 +139,9 @@ test('REQ-33/34 (PR5, jsdom): typing the OTHERS form + Save posts /api/config wi
     const cfg = cfgReqs[cfgReqs.length - 1].body.config;
     assert.equal(cfg.modules.eat.slot, 2);
     assert.equal(cfg.modules.eat.everyCasts, 5);
-    assert.equal(cfg.modules.loot.defaultDest, 'Loot bag');
-    assert.deepEqual(cfg.modules.antibot.replies, [
-      { pattern: 'verify your account', reply: 'ok then' },
-      { pattern: '/^stop bot/i', reply: 'sorry' },
-    ]);
+    assert.equal(cfg.modules.loot.defaultDest, 'Dust bag', 'hidden loot config preserved on a food-only save');
+    assert.deepEqual(cfg.modules.antibot.replies, [{ pattern: 'hi', reply: 'hello' }],
+      'hidden anti-bot config preserved');
     assert.equal(dom.window.__mbPanel.getState().refusal, null, 'valid save not refused');
   } finally {
     await teardown(dom);

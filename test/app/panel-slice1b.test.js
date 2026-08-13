@@ -57,7 +57,7 @@ test('2.5: initial state carries the slice-1b shape (profiles/catalog/picker/pro
   assert.deepEqual(s.catalog, { spells: [], loaded: false, reason: null });
   assert.deepEqual(s.picker, { module: 'healMagic', query: '' });
   assert.equal(s.profileLoad, null);
-  assert.deepEqual(P.PICKER_MODULES, ['healMagic', 'training', 'attack'], 'PR6 (REQ-35): offensive spell picker');
+  assert.deepEqual(P.PICKER_MODULES, ['healMagic', 'training'], 'visible picker targets (attack hidden)');
 });
 
 test('2.5: PROFILES_LOADED stores the sorted profile names', () => {
@@ -155,7 +155,8 @@ test('2.7: renderSpellPicker lists castable spells by selected category', () => 
 
   const attack = P.panelReducer(armedState(), { type: 'PICKER_SET_MODULE', module: 'attack' }).state;
   const attackHtml = P.renderSpellPicker(attack);
-  assert.match(attackHtml, /Force Strike/, 'attack category lists offensive spells');
+  assert.match(attackHtml, /Intense Healing/, 'hidden attack module is not a picker target — list stays on the heal category');
+  assert.doesNotMatch(attackHtml, /Force Strike/, 'no offensive picker for the hidden attack module');
 });
 
 test('2.7: PICKER_SEARCH narrows the rendered list; PICKER_SET_MODULE switches target', () => {
@@ -237,5 +238,5 @@ test('2.7: picker + loader render inside the config form only when armed', () =>
   const armed = P.renderConfigForm(armedState());
   assert.match(armed, /class="spell-picker"/);
   assert.match(armed, /class="profile-loader"/);
-  assert.match(armed, /id="route-walk-btn"/, 'existing routes form kept');
+  assert.doesNotMatch(armed, /route-walk-btn/, 'routes form removed with the hidden routes module');
 });

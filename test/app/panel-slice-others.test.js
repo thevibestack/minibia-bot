@@ -89,13 +89,26 @@ test('REQ-33/34 (PR5): SAVE_OTHERS_SETTINGS refuses malformed replies with a vis
   }
 });
 
-test('REQ-33/34 (PR5): an empty OTHERS form clears the config fields (loot gate stays closed)', () => {
-  const r = saveOthers(armedState(), { foodSlot: '', everyCasts: '', lootDest: '', antibotReplies: '' });
+test('Hidden-module scope: an empty OTHERS form preserves the hidden loot/antibot config', () => {
+  let state = armedState();
+  state = P.panelReducer(state, {
+    type: 'PREFILL_CONFIG',
+    config: {
+      character: 'Flamamex',
+      modules: {
+        eat: { on: false, slot: null, everyCasts: 0 },
+        loot: { on: false, defaultDest: 'Dust bag', perMonster: {} },
+        antibot: { on: false, replies: [{ pattern: 'hi', reply: 'hello' }] },
+      },
+    },
+  }).state;
+  const r = P.panelReducer(state, { type: 'SAVE_OTHERS_SETTINGS' });
   assert.deepEqual(r.effects, [{ type: 'push-config' }]);
   assert.equal(r.state.config.modules.eat.slot, null);
   assert.equal(r.state.config.modules.eat.everyCasts, 0);
-  assert.equal(r.state.config.modules.loot.defaultDest, null);
-  assert.deepEqual(r.state.config.modules.antibot.replies, []);
+  assert.equal(r.state.config.modules.loot.defaultDest, 'Dust bag', 'hidden loot config preserved');
+  assert.deepEqual(r.state.config.modules.antibot.replies, [{ pattern: 'hi', reply: 'hello' }],
+    'hidden anti-bot replies preserved');
 });
 
 test('REQ-34 (PR5): CONFIRM_ANTIBOT is armed-gated and emits the antibot-confirm effect', () => {
@@ -124,14 +137,14 @@ test('REQ-33/34 (PR5): othersFormFromConfig derives the form from the saved conf
   });
 });
 
-test('REQ-33/34 (PR5): renderConfigForm shows the OTHERS form when armed and hides it pre-Connect', () => {
+test('Hidden-module scope: renderConfigForm shows the food-only OTHERS form when armed', () => {
   const armed = P.renderConfigForm(armedState());
   assert.match(armed, /id="others-food-slot"/);
   assert.match(armed, /id="others-every-casts"/);
-  assert.match(armed, /id="others-loot-dest"/);
-  assert.match(armed, /id="others-replies"/);
   assert.match(armed, /id="others-save-btn"/);
-  assert.match(armed, /Anti-bot chat replies/);
+  assert.doesNotMatch(armed, /others-loot-dest/, 'loot destination hidden');
+  assert.doesNotMatch(armed, /others-replies/, 'anti-bot replies hidden');
+  assert.doesNotMatch(armed, /Anti-bot chat replies/, 'no anti-bot section');
   const unarmed = P.renderConfigForm(P.createInitialState());
   assert.match(unarmed, /Configuration unlocks after Connect/);
   assert.ok(!unarmed.includes('others-save-btn'), 'no OTHERS form pre-Connect');

@@ -186,12 +186,19 @@ test('REQ-09: PREFILL_CONFIG pre-Connect is refused', () => {
 
 /* ------------------------------ render (REQ-08) --------------------------- */
 
-test('REQ-08: renderPanel shows the status bar, 13 toggles, config shell, live view', () => {
+test('REQ-08: renderPanel shows the status bar, the visible toggles, config shell, live view', () => {
   const html = P.renderPanel(P.createInitialState());
   assert.match(html, /Disconnected/, 'gate label rendered');
   const count = (html.match(/class="module-toggle"/g) || []).length;
-  assert.equal(count, 13, 'all 13 module toggles present');
-  for (const def of P.MODULE_DEFS) assert.match(html, new RegExp(def.id));
+  assert.equal(count, 4, 'only the 4 visible module toggles render');
+  assert.equal((html.match(/data-dashboard-card="/g) || []).length, 4, '4 dashboard quick-access cards');
+  for (const def of P.MODULE_DEFS) {
+    if (P.HIDDEN_MODULES.has(def.id)) {
+      assert.doesNotMatch(html, new RegExp('data-module="' + def.id + '"'), def.id + ' never renders a toggle');
+    } else {
+      assert.match(html, new RegExp('data-module="' + def.id + '"'), def.id + ' renders its toggle');
+    }
+  }
   assert.match(html, /Configuration/, 'config form shell');
   assert.match(html, /Live state/, 'live state view placeholder');
   assert.match(html, /No snapshot yet/, 'placeholder state');
