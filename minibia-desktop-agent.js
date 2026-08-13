@@ -8485,6 +8485,9 @@ function createAgent(opts = {}) {
       modules: {
         manaItems: modules.manaItems ? { on: modules.manaItems.isEnabled() } : null,
         runes: modules.runes ? modules.runes.getState() : null,
+        // REQ-10: live healMagic state — runtime lastReason/lastFireAt, never
+        // a config-derived guess (slice C, PR 1).
+        healMagic: modules.healMagic ? modules.healMagic.getState() : null,
         // REQ-30 (D3): the trainer's cap state (capFull) rides the snapshot
         // so the panel raises the ALERT + beep on the rising edge.
         training: modules.training ? modules.training.getState() : null,

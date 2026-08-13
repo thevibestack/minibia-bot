@@ -343,3 +343,42 @@ test('live contract: an unmapped SID is absent instead of receiving an invented 
     handle.destroy();
   }
 });
+
+test('REQ-10 (T2): snapshot exposes live healMagic state (runtime, not config guess)', () => {
+  const gameClient = {
+    player: {
+      name: 'Flamamex',
+      state: { mana: 270, maxMana: 270, health: 215, maxHealth: 215 },
+    },
+    interface: {
+      getSpell: (sid) => ({ name: 'Light', words: 'utevo lux', cost: 20 }),
+      hotbarManager: { slots: Array.from({ length: 12 }, () => null), __handleClick: () => true },
+    },
+  };
+  const handle = createAgent({
+    gameClient,
+    autoStart: false,
+    config: {
+      armed: true,
+      healMagic: { on: true, threshold: 150, slot: 2, sid: 61, word: null, reserve: 0 },
+    },
+    setInterval: () => 1,
+    clearInterval: () => {},
+    setTimeout: () => 1,
+    clearTimeout: () => {},
+    log: { error: () => {}, warn: () => {}, info: () => {} },
+  });
+  try {
+    handle.poll();
+    const hm = handle.getState().modules.healMagic;
+    assert.ok(hm, 'healMagic state is surfaced in the snapshot modules map');
+    assert.equal(hm.on, true);
+    assert.equal(hm.threshold, 150);
+    assert.equal(hm.slot, 2);
+    assert.equal(hm.sid, 61);
+    assert.equal(hm.lastReason, null, 'runtime field starts honest-null');
+    assert.equal(hm.lastFireAt, 0);
+  } finally {
+    handle.destroy();
+  }
+});
