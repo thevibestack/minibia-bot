@@ -30,6 +30,7 @@
   var prefilledFor = null; // last character whose saved config was pre-fetched
   var lastCapFull = false; // PR4 (REQ-30, D3): rising-edge detection for the cap-full alert
   var lastAntibotSeq = 0;  // PR5 (REQ-33): per-alert-id latch — each NEW anti-bot alert rings once
+  var lastConfigSelectAt = 0; // last mousedown on a native select inside #config-form
 
   /* ------------------------------- render ------------------------------- */
 
@@ -45,6 +46,13 @@
     // down. A late render must become a harmless no-op, not an unhandled
     // rejection that fails the panel after a successful interaction.
     if (typeof document === 'undefined' || !document) return false;
+    // Native <select> dropdowns are browser popups, not DOM: clicking one
+    // moves document.activeElement to BODY while the menu is open. A polling
+    // render would then replace #config-form and destroy the open popup ("I
+    // click a select and it closes itself"). Treat a recent mousedown on a
+    // config select as editing so the subtree stays intact while the user
+    // actually picks an option (REQ-26 preserve-on-focus contract).
+    if (Date.now() - lastConfigSelectAt < 3000) return true;
     var active = document.activeElement;
     var configForm = document.getElementById('config-form');
     if (!active || !configForm || !configForm.contains(active)) return false;
@@ -523,6 +531,17 @@
   }
 
   /* ------------------------------ DOM wiring ----------------------------- */
+
+  // Native-select dropdown guard (REQ-26 preserve contract): a real click on
+  // a <select> opens a browser popup and moves document.activeElement to
+  // BODY. Mark the timestamp so the polling render keeps #config-form intact
+  // while the user picks an option (see isEditingConfig).
+  document.addEventListener('mousedown', function (e) {
+    var target = e.target;
+    if (target && target.matches && target.matches('#config-form select')) {
+      lastConfigSelectAt = Date.now();
+    }
+  });
 
   document.addEventListener('change', function (e) {
     var target = e.target;

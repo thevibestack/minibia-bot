@@ -235,3 +235,36 @@ test('Hidden modules: no toggle/card/tab/config surface; config survives a push 
     await teardown(dom);
   }
 });
+
+test('Native select dropdown: a real mousedown keeps #config-form intact across polling renders', async () => {
+  const { dom } = makePanel(ROUTES);
+  try {
+    await connect(dom);
+    const doc = dom.window.document;
+    // Open the TRAINER config tab so the rune select exists.
+    dom.window.__mbPanel.dispatch({ type: 'SET_TAB', tab: 'trainer' });
+    await new Promise((r) => setTimeout(r, 30));
+    const select = doc.getElementById('trainer-rune-select');
+    assert.ok(select, 'trainer rune select rendered');
+
+    // User clicks the native select: the browser moves activeElement to BODY
+    // (the dropdown popup is not DOM). Without the mousedown guard the next
+    // polling render would replace #config-form and close the open dropdown.
+    const previous = doc.getElementById('config-form');
+    select.dispatchEvent(new dom.window.Event('mousedown', { bubbles: true }));
+    select.dispatchEvent(new dom.window.Event('focus', { bubbles: true }));
+    // Simulate the browser popup behavior: focus leaves the document.
+    doc.activeElement.blur();
+    assert.notEqual(doc.activeElement, select, 'precondition: open native select has no DOM focus');
+
+    // A polling render (snapshot) must NOT replace #config-form while the
+    // select was recently clicked.
+    dom.window.__mbPanel.dispatch({ type: 'SNAPSHOT', data: { stats: { health: 150, mana: 200, maxMana: 300, maxHealth: 300 } } });
+    await new Promise((r) => setTimeout(r, 30));
+    assert.equal(doc.getElementById('config-form'), previous, 'config-form subtree preserved after a recent select mousedown');
+    const stillThere = doc.getElementById('trainer-rune-select');
+    assert.equal(stillThere, select, 'the clicked select node was not replaced');
+  } finally {
+    await teardown(dom);
+  }
+});
