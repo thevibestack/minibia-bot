@@ -11,8 +11,9 @@
  *     lookups from there (fs remains the dev/tests fallback; Bun also
  *     embeds the project tree's files as a virtual FS, so the panel's
  *     static serving and the fs asset path keep working in the binary).
- *  2. BOOT: calls runMain (the app lifecycle: dedicated Chrome launch /
- *     target scan, attach+inject, control panel on 127.0.0.1) and prints
+ *  2. BOOT: calls runMain (the app lifecycle: attach-first scan, then
+ *     dedicated Chrome launch fallback, attach+inject, control panel on
+ *     127.0.0.1) and prints
  *     the panel URL when the server is ready.
  *
  * Bun-only by design (requires ./main.ts); Node cannot execute this file —
@@ -72,6 +73,7 @@ const store = {
 const PROBE_EXPRESSION = 'window.__mbAgent && typeof window.__mbAgent.readStats === "function" ? true : false';
 
 main.runMain({
+  attachFirst: true,
   panel: true,
   store,
   injectionSource: resolveAgentBundle(),
@@ -83,13 +85,17 @@ main.runMain({
     }
   },
 }).then((handle) => {
-  if (!handle.session) {
+  if (!handle.session && !handle.panel) {
     // eslint-disable-next-line no-console
     console.error('[minibia-desktop-bot] no game target found — launch and scan both failed. '
       + 'Make sure minibia.com/play is reachable and no Cloudflare challenge is blocking the window.');
     process.exit(1);
   }
-  // Keep running: the Chrome child + panel server hold the event loop.
+  if (!handle.session && handle.panel) {
+    // eslint-disable-next-line no-console
+    console.warn('[minibia-desktop-bot] no game linked yet — open the panel and click Link first PWA.');
+  }
+  // Keep running: the Chrome child and/or panel server hold the event loop.
 }).catch((err) => {
   // eslint-disable-next-line no-console
   console.error('[minibia-desktop-bot] startup failed: ' + (err && err.message ? err.message : err));

@@ -5,6 +5,7 @@
  * injected fakes — no real Chrome, no real processes.
  *
  * - primary launch path spawns with the VALIDATED port + allowlist flags
+ *   while attachFirst can prefer an existing debug-capable game window;
  *   (REQ-03) and attaches to our game window;
  * - port-in-use -> next free port picked and retried (REQ-03);
  * - launch failure falls back to the secondary scan (REQ-01);
@@ -118,6 +119,55 @@ test('REQ-03/05: primary launch spawns with the validated port and allowlist fla
 
   await handle.stop();
   assert.strictEqual(env.kills.length, 1, 'stop() terminates the child (SIGTERM)');
+});
+
+
+test('REQ-01/03: attachFirst uses an existing debug-capable minibia target before launching', async () => {
+  const env = makeCdpEnv({ list: [MINIBIA_TARGET] });
+  const states = [];
+  const handle = await main.runMain({
+    execPath: '/fake/chrome',
+    port: 9222,
+    attachFirst: true,
+    launch: true,
+    scanPorts: [9222, 9223, 9224],
+    spawnImpl: env.spawnImpl,
+    fetchImpl: env.fetchImpl,
+    WebSocketCtor: env.ws.ctor,
+    onState: (s) => states.push(s),
+  });
+
+  assert.strictEqual(env.calls.length, 0, 'existing debug target prevents opening another Chrome');
+  assert.ok(handle.session, 'attached to existing target');
+  assert.strictEqual(handle.child, null);
+  assert.strictEqual(handle.port, null);
+  assert.deepStrictEqual(states.map((s) => s.phase).slice(0, 3), ['scanning', 'targets-found', 'attached']);
+  assert.ok(!states.map((s) => s.phase).includes('launching'), 'launch path was skipped');
+  await handle.stop();
+});
+
+test('REQ-01/03: attachFirst falls back to launching when no existing debug target is found', async () => {
+  const env = makeCdpEnv({ list: (port) => (port === 9222 ? [MINIBIA_TARGET] : []) });
+  const states = [];
+  const handle = await main.runMain({
+    execPath: '/fake/chrome',
+    port: 9222,
+    attachFirst: true,
+    launch: true,
+    scanPorts: [9333],
+    spawnImpl: env.spawnImpl,
+    fetchImpl: env.fetchImpl,
+    WebSocketCtor: env.ws.ctor,
+    onState: (s) => states.push(s),
+  });
+
+  assert.strictEqual(env.calls.length, 1, 'no existing target -> owned Chrome launched');
+  assert.ok(handle.session, 'attached after launch fallback');
+  assert.strictEqual(handle.port, 9222);
+  const phases = states.map((s) => s.phase);
+  assert.deepStrictEqual(phases.slice(0, 2), ['scanning', 'launching']);
+  assert.ok(phases.includes('endpoint-ready'));
+  await handle.stop();
 });
 
 test('REQ-03: port in use -> next free port picked and retried', async () => {

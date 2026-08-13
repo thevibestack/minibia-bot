@@ -34,6 +34,16 @@ test('REQ-04: attachTarget opens the session and resolves', async () => {
   ws.close();
 });
 
+
+test('REQ-04/05: attachTarget accepts IPv6 loopback debugger URLs', async () => {
+  const ipv6Url = 'ws://[::1]:9222/devtools/page/IPV6';
+  const { ctor, instances } = makeMockWebSocket();
+  const session = await bridge.attachTarget({ url: ipv6Url, WebSocketCtor: ctor });
+  assert.strictEqual(instances[0].url, ipv6Url);
+  assert.strictEqual(typeof session.send, 'function');
+  instances[0].close();
+});
+
 test('REQ-04/05: attachTarget rejects non-local and malformed debugger URLs', async () => {
   await assert.rejects(() => bridge.attachTarget({ url: 'ws://evil.example:9222/devtools/page/X', WebSocketCtor: MockWebSocket }), /invalid webSocketDebuggerUrl/);
   await assert.rejects(() => bridge.attachTarget({ url: 'ws://127.0.0.2:9222/devtools/page/X', WebSocketCtor: MockWebSocket }), /invalid webSocketDebuggerUrl/);

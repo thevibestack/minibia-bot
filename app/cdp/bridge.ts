@@ -44,11 +44,20 @@ function isLocalDebuggerUrl(url) {
   const rest = url.slice('ws://'.length);
   const slash = rest.indexOf('/');
   const authority = slash === -1 ? rest : rest.slice(0, slash);
-  const colon = authority.lastIndexOf(':');
-  if (colon === -1) return false;
-  const host = authority.slice(0, colon);
-  const port = authority.slice(colon + 1);
-  if (host !== '127.0.0.1' && host !== 'localhost') return false;
+  let host = '';
+  let port = '';
+  if (authority.indexOf('[') === 0) {
+    const end = authority.indexOf(']');
+    if (end === -1 || authority[end + 1] !== ':') return false;
+    host = authority.slice(0, end + 1);
+    port = authority.slice(end + 2);
+  } else {
+    const colon = authority.lastIndexOf(':');
+    if (colon === -1) return false;
+    host = authority.slice(0, colon);
+    port = authority.slice(colon + 1);
+  }
+  if (host !== '127.0.0.1' && host !== 'localhost' && host !== '[::1]') return false;
   return validateDebugPort(port) !== null;
 }
 
@@ -63,7 +72,7 @@ function attachTarget(opts) {
   const timeoutMs = opts.timeoutMs !== undefined ? opts.timeoutMs : DEFAULT_TIMEOUT_MS;
   if (!WebSocketCtor) return Promise.reject(new Error('no WebSocket implementation available'));
   if (!isLocalDebuggerUrl(url)) {
-    return Promise.reject(new Error('invalid webSocketDebuggerUrl (must be ws://127.0.0.1:<port>/...): ' + JSON.stringify(url)));
+    return Promise.reject(new Error('invalid webSocketDebuggerUrl (must be local loopback ws://127.0.0.1:<port>/... or ws://[::1]:<port>/...): ' + JSON.stringify(url)));
   }
   return new Promise((resolve, reject) => {
     let ws;

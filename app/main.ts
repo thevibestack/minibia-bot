@@ -144,7 +144,8 @@ async function waitForEndpoint(port, opts = {}) {
  * @param {number} [opts.port] preferred debug port (default 9222)
  * @param {string} [opts.userDataDir] app-owned profile dir (default defaultUserDataDir())
  * @param {number[]} [opts.scanPorts] secondary scan set (default DEFAULT_SCAN_PORTS)
- * @param {boolean} [opts.launch] primary launch path (default true)
+ * @param {boolean} [opts.launch] launch fallback path (default true)
+ * @param {boolean} [opts.attachFirst] scan existing debug windows before launching (default false)
  * @param {string} [opts.injectionSource] agent bundle (slice 2); empty = no injection
  * @param {string} [opts.probeExpression] surface re-establish probe
  * @param {Function} [opts.fetchImpl] injectable fetch (tests)
@@ -158,6 +159,7 @@ async function waitForEndpoint(port, opts = {}) {
  */
 async function runMain(opts) {
   const launchEnabled = opts.launch !== false;
+  const attachFirst = opts.attachFirst === true;
   const preferredPort = opts.port !== undefined ? opts.port : 9222;
   const userDataDir = opts.userDataDir || defaultUserDataDir();
   const scanPorts = opts.scanPorts || targets.DEFAULT_SCAN_PORTS;
@@ -177,6 +179,14 @@ async function runMain(opts) {
   let panel = null;
 
   function emit(state) { onState(Object.assign({ port: chosenPort }, state)); }
+
+  function hasOpenSession() {
+    return session && (typeof session._isClosed !== 'function' || session._isClosed() !== true);
+  }
+
+  function dropClosedSession() {
+    if (session && typeof session._isClosed === 'function' && session._isClosed() === true) session = null;
+  }
 
   async function attachAndInject(webSocketDebuggerUrl) {
     session = await bridge.attachTarget({ url: webSocketDebuggerUrl, WebSocketCtor: opts.WebSocketCtor });
@@ -205,41 +215,64 @@ async function runMain(opts) {
     return session;
   }
 
+  /** Scan configured debug ports for an already-open game target and attach. */
+  async function scanAndAttach() {
+    emit({ phase: 'scanning' });
+    const { targets: found, errors } = await targets.scanPorts(scanPorts, { fetchImpl });
+    if (found.length > 0) {
+      emit({ phase: 'targets-found', targets: found });
+      try {
+        await attachAndInject(found[0].webSocketDebuggerUrl);
+        await startPanel();
+        return { attached: true, found, errors };
+      } catch (err) {
+        emit({ phase: 'attach-failed', error: (err && err.message) || String(err) });
+      }
+    }
+    return { attached: false, found, errors };
+  }
+
   /** Start the control-panel server (slice 3, REQ-05/08): 127.0.0.1 only,
-   *  serves the panel shell and the gate/config/snapshot API. */
+   *  serves the panel shell and the gate/config/snapshot API. The panel can
+   *  boot BEFORE a session exists; every RPC feature-detects `session` so the
+   *  user can click "Link first PWA" after opening the game. */
   async function startPanel() {
-    if (!enablePanel || !session || !store) return null;
-    const applyConfig = (config) => bridge.evaluate(
-      session,
+    if (!enablePanel || !store) return null;
+    if (panel) return panel;
+    const evaluate = (expression) => {
+      dropClosedSession();
+      return hasOpenSession() ? bridge.evaluate(session, expression) : null;
+    };
+    const applyConfig = (config) => evaluate(
       'window.__mbAgent && window.__mbAgent.applyConfig(' + JSON.stringify(config) + ')',
     );
     panel = await panelServer.createPanelServer({
       staticDir: panelStaticDir,
-      identity: () => bridge.getPlayerIdentity(session),
+      identity: () => {
+        dropClosedSession();
+        return hasOpenSession() ? bridge.getPlayerIdentity(session) : null;
+      },
       applyConfig,
+      attachFirst: async () => attachFirstFromPanel(),
       // REQ-25: offer decisions reach the in-page learning module via RPC
       // (decline = session-silent; confirm goes through the config push path).
-      respondOffer: (action, word) => bridge.evaluate(
-        session,
+      respondOffer: (action, word) => evaluate(
         'window.__mbAgent && window.__mbAgent.respondOffer(' + JSON.stringify(action) + ',' + JSON.stringify(word) + ')',
       ),
       // REQ-34 (PR5): anti-bot pattern confirmation reaches the in-page
       // watcher via RPC (session-confirmed -> later occurrences auto-reply).
-      confirmAntibot: (pattern) => bridge.evaluate(
-        session,
+      confirmAntibot: (pattern) => evaluate(
         'window.__mbAgent && window.__mbAgent.confirmAntibot(' + JSON.stringify(pattern) + ')',
       ),
       // REQ-23 (slice 6): panel walk-to -> in-page walkTo RPC -> Action Queue
       // -> the game's native autowalk primitive (never synthetic input).
-      walkTo: (x, y) => bridge.evaluate(
-        session,
+      walkTo: (x, y) => evaluate(
         'window.__mbAgent && window.__mbAgent.walkTo(' + JSON.stringify(x) + ',' + JSON.stringify(y) + ')',
       ),
       // REQ-36 (PR6): cavebot skeleton controls -> in-page cavebot RPCs
       // (startRouteRecording / stopRouteRecording / cavebotStart), each
       // armed-gated and queue-dispatched inside the agent.
-      cavebotRpc: (command) => bridge.evaluate(
-        session,
+      cavebotRpc: (command) => evaluate(
         '(function (c) { var a = window.__mbAgent; if (!a) return null;'
           + ' if (c === "record-start") return a.startRouteRecording();'
           + ' if (c === "record-stop") return a.stopRouteRecording();'
@@ -249,15 +282,40 @@ async function runMain(opts) {
       ),
       // REQ-28 (slice 1b): client spell catalog RPC — the server filters the
       // raw list by the current character's vocation + level (design D5).
-      spellCatalog: () => bridge.evaluate(
-        session,
+      spellCatalog: () => evaluate(
         'window.__mbAgent && typeof window.__mbAgent.getSpellCatalog === "function" ? window.__mbAgent.getSpellCatalog() : null',
       ),
-      snapshot: () => bridge.evaluate(session, SNAPSHOT_EXPRESSION),
+      inventory: () => evaluate(
+        'window.__mbAgent && typeof window.__mbAgent.getContainerItems === "function" ? window.__mbAgent.getContainerItems() : null',
+      ),
+      hotbar: () => evaluate(
+        'window.__mbAgent && typeof window.__mbAgent.getHotbarCatalog === "function" ? window.__mbAgent.getHotbarCatalog() : null',
+      ),
+      creatures: () => evaluate(
+        'window.__mbAgent && typeof window.__mbAgent.getCreatureCatalog === "function" ? window.__mbAgent.getCreatureCatalog() : null',
+      ),
+      snapshot: () => evaluate(SNAPSHOT_EXPRESSION),
       store,
     });
     emit({ phase: 'panel-ready', url: panel.url });
     return panel;
+  }
+
+  async function attachFirstFromPanel() {
+    dropClosedSession();
+    if (hasOpenSession()) return { ok: true, attached: true };
+    const scanned = await scanAndAttach();
+    if (scanned.attached) return { ok: true, attached: true };
+    const picker = targets.describePickerResult({ targets: scanned.found, errors: scanned.errors, ports: scanPorts });
+    return { ok: false, reason: picker.message, errors: scanned.errors };
+  }
+
+  /* ---- OPTIONAL: prefer an already-open debug-capable game window ---- */
+  if (launchEnabled && attachFirst) {
+    const scanned = await scanAndAttach();
+    if (scanned.attached) return { child, session, port: null, stop, identity, panel };
+    // No attachable existing window (or attach failed): fall back to the
+    // owned Chrome path below. A normal PWA without CDP cannot be injected.
   }
 
   /* ---- PRIMARY: launch own dedicated instance (REQ-01/03) ---- */
@@ -291,20 +349,11 @@ async function runMain(opts) {
   }
 
   /* ---- SECONDARY: scan 9222-9224 and attach (REQ-01) ---- */
-  emit({ phase: 'scanning' });
-  const { targets: found, errors } = await targets.scanPorts(scanPorts, { fetchImpl });
-  if (found.length > 0) {
-    emit({ phase: 'targets-found', targets: found });
-    try {
-      await attachAndInject(found[0].webSocketDebuggerUrl);
-      await startPanel();
-      return { child, session, port: null, stop, identity, panel }; // ws url carries the port in scan mode
-    } catch (err) {
-      emit({ phase: 'attach-failed', error: (err && err.message) || String(err) });
-    }
-  }
-  const picker = targets.describePickerResult({ targets: found, errors, ports: scanPorts });
+  const scanned = await scanAndAttach();
+  if (scanned.attached) return { child, session, port: null, stop, identity, panel }; // ws url carries the port in scan mode
+  const picker = targets.describePickerResult({ targets: scanned.found, errors: scanned.errors, ports: scanPorts });
   emit({ phase: 'no-target', message: picker.message });
+  await startPanel();
   return { child: null, session: null, port: null, stop, identity, panel };
 
   /* ---- cleanup (REQ-03 kill-on-quit + explicit stop) ---- */
@@ -319,7 +368,8 @@ async function runMain(opts) {
 
   /** Interconnection contract (REQ-02 prep): reads name + vocation in page. */
   async function identity() {
-    if (!session) return null;
+    dropClosedSession();
+    if (!hasOpenSession()) return null;
     return bridge.getPlayerIdentity(session);
   }
 }

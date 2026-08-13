@@ -22,19 +22,32 @@ const DEFAULT_SCAN_PORTS = Object.freeze([9222, 9223, 9224]);
 /** Game origin used to filter candidate targets. @readonly */
 const GAME_ORIGIN = 'minibia.com';
 
+/** Local loopback hosts to scan. Chrome may bind DevTools to IPv4 or IPv6. */
+const LOOPBACK_HOSTS = Object.freeze(['127.0.0.1', '[::1]']);
+
+/** Validate that a scan host is loopback-only. */
+function normalizeLoopbackHost(host) {
+  if (host === undefined || host === null || host === '') return '127.0.0.1';
+  const value = String(host);
+  if (value === '127.0.0.1') return '127.0.0.1';
+  if (value === '::1' || value === '[::1]') return '[::1]';
+  throw new RangeError('scan host must be local loopback, got ' + JSON.stringify(host));
+}
+
 /**
  * Build the /json/list scan URL for a port. Throws RangeError for any
- * invalid port — scan URLs are ONLY built from validated ports and always
- * point at 127.0.0.1 (threat row a + REQ-05).
+ * invalid port/host — scan URLs are ONLY built from validated ports and
+ * loopback hosts (127.0.0.1 or [::1], REQ-05 local-only boundary).
  * @param {number|string} port
+ * @param {string} [host='127.0.0.1']
  * @returns {string}
  */
-function buildScanUrl(port) {
+function buildScanUrl(port, host) {
   const validated = validateDebugPort(port);
   if (validated === null) {
     throw new RangeError('scan port must be an integer in 1024..65535, got ' + JSON.stringify(port));
   }
-  return 'http://127.0.0.1:' + validated + '/json/list';
+  return 'http://' + normalizeLoopbackHost(host) + ':' + validated + '/json/list';
 }
 
 /**
@@ -74,33 +87,38 @@ function filterTargets(list, opts = {}) {
 async function scanPorts(ports, opts = {}) {
   const fetchImpl = opts.fetchImpl || (typeof fetch === 'function' ? fetch : null);
   const origin = opts.origin || GAME_ORIGIN;
+  const hosts = (Array.isArray(opts.hosts) && opts.hosts.length > 0 ? opts.hosts : LOOPBACK_HOSTS)
+    .map((h) => normalizeLoopbackHost(h));
   const targets = [];
   const errors = [];
   for (const port of ports) {
     const validated = validateDebugPort(port);
     if (validated === null) {
-      errors.push({ port: Number(port) || port, message: 'invalid port ' + JSON.stringify(port) + ' — must be 1024..65535' });
+      errors.push({ port: Number(port) || port, host: null, message: 'invalid port ' + JSON.stringify(port) + ' — must be 1024..65535' });
       continue;
     }
     if (!fetchImpl) {
-      errors.push({ port: validated, message: 'no fetch available — cannot scan port ' + validated });
+      errors.push({ port: validated, host: null, message: 'no fetch available — cannot scan port ' + validated });
       continue;
     }
-    const url = buildScanUrl(validated);
-    try {
-      const res = await fetchImpl(url);
-      if (!res || typeof res.ok !== 'undefined' && res.ok === false) {
-        errors.push({ port: validated, message: 'port ' + validated + ' answered with HTTP ' + (res && res.status !== undefined ? res.status : '?') + ' — no CDP endpoint there' });
-        continue;
+    for (const host of hosts) {
+      const url = buildScanUrl(validated, host);
+      try {
+        const res = await fetchImpl(url);
+        if (!res || typeof res.ok !== 'undefined' && res.ok === false) {
+          errors.push({ port: validated, host, message: host + ':' + validated + ' answered with HTTP ' + (res && res.status !== undefined ? res.status : '?') + ' — no CDP endpoint there' });
+          continue;
+        }
+        const body = typeof res.json === 'function' ? await res.json() : res;
+        const found = filterTargets(body, { origin });
+        targets.push(...found);
+      } catch (e) {
+        errors.push({
+          port: validated,
+          host,
+          message: host + ':' + validated + ' not reachable (' + ((e && e.message) || e || 'connection refused') + ') — no debug-capable target there',
+        });
       }
-      const body = typeof res.json === 'function' ? await res.json() : res;
-      const found = filterTargets(body, { origin });
-      targets.push(...found);
-    } catch (e) {
-      errors.push({
-        port: validated,
-        message: 'port ' + validated + ' not reachable (' + ((e && e.message) || e || 'connection refused') + ') — no debug-capable target there',
-      });
     }
   }
   return { targets, errors };
@@ -134,6 +152,8 @@ function describePickerResult({ targets, errors, ports }) {
 module.exports = {
   DEFAULT_SCAN_PORTS,
   GAME_ORIGIN,
+  LOOPBACK_HOSTS,
+  normalizeLoopbackHost,
   buildScanUrl,
   filterTargets,
   scanPorts,

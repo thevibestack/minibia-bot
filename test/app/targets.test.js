@@ -4,7 +4,7 @@
  * Tests for app/cdp/targets.ts (task 1.5, REQ-01/05).
  *
  * - scan URLs are built ONLY from validated ports and ALWAYS against
- *   127.0.0.1 (threat row a, REQ-05 local-only boundary);
+ *   loopback hosts (127.0.0.1 / [::1], REQ-05 local-only boundary);
  * - filter keeps minibia.com `type:"page"` targets only;
  * - scanPorts never throws; per-port failures become actionable errors;
  * - the picker error is actionable (REQ-01 "GIVEN no target found...").
@@ -26,22 +26,27 @@ const SAMPLE_LIST = [
   null,
 ];
 
-test('REQ-01: buildScanUrl builds 127.0.0.1 URLs from validated ports only', () => {
+test('REQ-01: buildScanUrl builds loopback URLs from validated ports only', () => {
   assert.strictEqual(targets.buildScanUrl(9222), 'http://127.0.0.1:9222/json/list');
   assert.strictEqual(targets.buildScanUrl('9223'), 'http://127.0.0.1:9223/json/list');
+  assert.strictEqual(targets.buildScanUrl(9222, '[::1]'), 'http://[::1]:9222/json/list');
+  assert.strictEqual(targets.buildScanUrl(9222, '::1'), 'http://[::1]:9222/json/list');
   for (const bad of [0, 80, 1023, 65536, 'abc', '9222.5', null, undefined, -1]) {
     assert.throws(() => targets.buildScanUrl(bad), RangeError, `port ${JSON.stringify(bad)} must be rejected`);
   }
+  for (const badHost of ['localhost', '0.0.0.0', 'example.com', '192.168.1.1']) {
+    assert.throws(() => targets.buildScanUrl(9222, badHost), RangeError, `host ${badHost} must be rejected`);
+  }
 });
 
-test('REQ-01: every URL a scan can fetch starts with http://127.0.0.1:', async () => {
+test('REQ-01: every URL a scan can fetch is loopback-only', async () => {
   const fetched = [];
   await targets.scanPorts([9222, 9223, 9224], {
     fetchImpl: async (url) => { fetched.push(url); return []; },
   });
-  assert.strictEqual(fetched.length, 3);
+  assert.strictEqual(fetched.length, 6);
   for (const url of fetched) {
-    assert.ok(url.startsWith('http://127.0.0.1:'), 'scan URL must be local-only: ' + url);
+    assert.ok(url.startsWith('http://127.0.0.1:') || url.startsWith('http://[::1]:'), 'scan URL must be local-only: ' + url);
   }
 });
 
@@ -64,14 +69,34 @@ test('REQ-01: filterTargets tolerates malformed payloads without throwing', () =
 test('REQ-01: scanPorts collects targets from reachable ports', async () => {
   const { targets: found, errors } = await targets.scanPorts([9222, 9223], {
     fetchImpl: async (url) => {
-      if (url.includes(':9222')) return SAMPLE_LIST;
+      if (url.includes('127.0.0.1:9222')) return SAMPLE_LIST;
       throw new Error('connection refused');
     },
   });
   assert.strictEqual(found.length, 2);
-  assert.strictEqual(errors.length, 1);
-  assert.strictEqual(errors[0].port, 9223);
+  assert.strictEqual(errors.length, 3);
+  assert.strictEqual(errors[0].port, 9222);
+  assert.strictEqual(errors[1].port, 9223);
   assert.match(errors[0].message, /not reachable/);
+});
+
+test('REQ-01: scanPorts finds Chrome when DevTools binds only to IPv6 loopback', async () => {
+  const ipv6List = [{
+    type: 'page',
+    title: 'Minibia',
+    url: 'https://minibia.com/play',
+    webSocketDebuggerUrl: 'ws://[::1]:9222/devtools/page/A',
+  }];
+  const { targets: found, errors } = await targets.scanPorts([9222], {
+    fetchImpl: async (url) => {
+      if (url.startsWith('http://127.0.0.1:')) return { ok: false, status: 404 };
+      if (url.startsWith('http://[::1]:')) return ipv6List;
+      throw new Error('unexpected url ' + url);
+    },
+  });
+  assert.strictEqual(found.length, 1);
+  assert.strictEqual(found[0].webSocketDebuggerUrl, 'ws://[::1]:9222/devtools/page/A');
+  assert.strictEqual(errors.length, 1, 'IPv4 miss is recorded, IPv6 hit still succeeds');
 });
 
 test('REQ-01: scanPorts never throws — total failure resolves with errors', async () => {
@@ -79,7 +104,7 @@ test('REQ-01: scanPorts never throws — total failure resolves with errors', as
     fetchImpl: async () => { throw new Error('ECONNREFUSED'); },
   });
   assert.deepStrictEqual(found, []);
-  assert.strictEqual(errors.length, 3);
+  assert.strictEqual(errors.length, 6);
 });
 
 test('REQ-01: scanPorts reports invalid configured ports without fetching them', async () => {
@@ -87,7 +112,7 @@ test('REQ-01: scanPorts reports invalid configured ports without fetching them',
   const { targets: found, errors } = await targets.scanPorts([80, 'abc', 9222], {
     fetchImpl: async () => { fetched += 1; return []; },
   });
-  assert.strictEqual(fetched, 1, 'only the valid port is fetched');
+  assert.strictEqual(fetched, 2, 'only the valid port is fetched on both loopback hosts');
   assert.strictEqual(found.length, 0);
   assert.strictEqual(errors.length, 2);
 });
@@ -97,7 +122,7 @@ test('REQ-01: scanPorts turns non-JSON answers into actionable errors', async ()
     fetchImpl: async () => ({ status: 403, ok: false }),
   });
   assert.strictEqual(found.length, 0);
-  assert.strictEqual(errors.length, 1);
+  assert.strictEqual(errors.length, 2);
   assert.match(errors[0].message, /HTTP 403/);
 });
 
