@@ -3643,6 +3643,8 @@ function createTraining(opts = {}) {
     // PR 3 (REQ-01): the food-magic config is INJECTED from the unified
     // modules.eat.magic — the machine never reads config.eatWithMagic.
     foodMagicConfig = null,
+    // PR 3 (REQ-06): confirmed-cast notification (bootstrap noteCastConfirmed).
+    onCastConfirmed = null,
   } = opts;
   const warn = typeof log.warn === 'function' ? log.warn : () => {};
   const warned = new Set();
@@ -3714,10 +3716,11 @@ function createTraining(opts = {}) {
       if (spent) {
         state.pendingAction = null;
         noteRuneCreated();
-        // The general Eat module keeps its own every-N confirmed-casts rule.
-        // Advance it only after MiniTibia has proved the rune consumed mana;
-        // a handler click by itself must never make normal eating fire.
-        ctx.castsSinceFood = (Number(ctx.castsSinceFood) || 0) + 1;
+    // PR 3 (REQ-06): the general Eat module keeps its own every-N confirmed
+    // casts rule — self-contained now. The trainer only REPORTS the confirmed
+    // cast through the injected hook (bootstrap noteCastConfirmed); it no
+    // longer mutates the shared ctx.castsSinceFood (hidden coupling dropped).
+    if (typeof onCastConfirmed === 'function') onCastConfirmed();
         state.lastReason = 'rune-cast-confirmed';
         return { fire: false, reason: 'rune-cast-confirmed' };
       }
@@ -3729,6 +3732,7 @@ function createTraining(opts = {}) {
     if (pending.kind === 'fallback') {
       if (spent) {
         state.pendingAction = null;
+        if (typeof onCastConfirmed === 'function') onCastConfirmed(); // REQ-06 (PR 3)
         state.lastReason = 'fallback-cast-confirmed';
         return { fire: false, reason: 'fallback-cast-confirmed' };
       }
@@ -7509,6 +7513,16 @@ function createAgent(opts = {}) {
     }));
   }
 
+  /**
+   * REQ-06: self-contained everyCasts — ANY confirmed cast advances the
+   * shared food cadence counter (eat.decide reads it). Wired at the training
+   * + fallback confirm sites and the healMagic/runes fire sites; the trainer
+   * no longer mutates ctx.castsSinceFood directly (hidden coupling dropped).
+   */
+  function noteCastConfirmed() {
+    state.ctx.castsSinceFood = (Number(state.ctx.castsSinceFood) || 0) + 1;
+  }
+
   /** Rebuild tree + queue + modules from the current config (applyConfig path). */
   function rebuild(cfg) {
     state.config = cfg;
@@ -7557,6 +7571,12 @@ function createAgent(opts = {}) {
     });
     const training = TRAINING_MOD.createTraining({
       config: cfg.training,
+      // PR 3 (REQ-01): the food-magic config is INJECTED from the unified
+      // modules.eat.magic — the machine never reads training.eatWithMagic.
+      foodMagicConfig: function () { return cfg.eat.magic; },
+      // PR 3 (REQ-06): a confirmed training/fallback cast advances the
+      // self-contained eat cadence through bootstrap (no direct ctx coupling).
+      onCastConfirmed: noteCastConfirmed,
       // D3 (REQ-30): the trainer absorbs the strict-CAP settings — the cap
       // fields live in the runes config shape (characters.ts defaults).
       capConfig: cfg.runes,
@@ -7608,6 +7628,13 @@ function createAgent(opts = {}) {
       document: doc,
       now: nowFn,
       log,
+      // PR 3 (REQ-03): magic availability is DERIVED from the live hotbar —
+      // an unresolvable F-slot disables magic safely (never types a stale slot).
+      readHotbarSlotSid: readHotbarSlotSid,
+      // PR 3 (REQ-05): the magicBusy guard reads the confirmation machine's
+      // live cycle state — while it owns a meal, normal food never fires.
+      foodCycle: function () { return training.getState().foodCycle; },
+      foodMagicPending: function () { return training.getState().foodMagicPending; },
     });
 
     /* -------- slice-5 modules (REQ-18..22,24,25): ported automations -------- */
@@ -7834,7 +7861,10 @@ function createAgent(opts = {}) {
             // queue defers that work to a later drain). Throttle + jitter
             // still apply at drain (REQ-12 — no bypass, ever).
             state.queue.enqueue(function () {
-              healMagic.fire(d, { gameClient: state.gameClient, document: doc });
+              const ok = healMagic.fire(d, { gameClient: state.gameClient, document: doc });
+              // REQ-06 (PR 3): a confirmed healMagic cast advances the
+              // self-contained eat cadence (trainer-independent).
+              if (ok) noteCastConfirmed();
               // REQ-24 echo validation: words-path fires only (word configured);
               // direct casts without a word skip validation entirely.
               if (cfg.healMagic && typeof cfg.healMagic.word === 'string' && cfg.healMagic.word.trim()) {
@@ -7899,7 +7929,10 @@ function createAgent(opts = {}) {
         if (!d.fire) return false;
         if (state.queue.hasPending(function (e) { return e.kind === d.kind; })) return false;
         state.queue.enqueue(function () {
-          runes.fire(d, { gameClient: state.gameClient, document: doc });
+          const ok = runes.fire(d, { gameClient: state.gameClient, document: doc });
+          // REQ-06 (PR 3): a confirmed rune cast advances the self-contained
+          // eat cadence (trainer-independent).
+          if (ok) noteCastConfirmed();
           logEvent('runes', d.kind || 'runes', d.reason || null);
         }, { kind: d.kind });
         return true;
@@ -7987,6 +8020,9 @@ function createAgent(opts = {}) {
           predicate: function (ctx) {
             if (!cfg.training.on) return false;
             const d = training.decide(ctx);
+            // PR 3: the machine's final step proves the created food was
+            // consumed — count the meal + anchor the eat clock (Comida card).
+            if (d && d.reason === 'created-food-consumed') eat.noteMeal(ctx);
             if (!d.fire) return false;
             return !state.queue.hasPending(function (e) { return e.kind === trainingKind(d); });
           },
@@ -8022,9 +8058,13 @@ function createAgent(opts = {}) {
       ],
     };
 
-    // REQ-17: eat — proven SATED/timer/everyCasts/fallback-interval decision;
-    // the queue-dispatched closure runs the proven eater attempt.
-    const eatNode = {
+    // PR 3 (REQ-01..06): unified food node. eat.decide is the single decision
+    // (magic-first, normal fallback, safety net, no-double-eat); the magic
+    // path drives the SAME confirmation machine through the training facade
+    // (never rewritten, REQ-02); the normal path runs the proven eater. While
+    // the machine is mid-cycle ('magic-cycle-active') this node STEPS the
+    // machine so the trainer-OFF loop still completes (REQ-06).
+    const foodNode = {
       type: 'sequence',
       id: 'eat',
       children: [
@@ -8034,17 +8074,43 @@ function createAgent(opts = {}) {
           predicate: function (ctx) {
             if (!cfg.eat.on) return false;
             const d = eat.decide(ctx);
-            if (!d.fire) return false;
-            return !state.queue.hasPending(function (e) { return e.kind === 'eat'; });
+            if (d.fire) return true;
+            return d.reason === 'magic-cycle-active'; // step the machine mid-cycle
           },
         },
         {
           type: 'action',
-          id: 'eat-use',
+          id: 'eat-act',
           run: function (ctx) {
             const d = eat.decide(ctx);
-            if (!d.fire) return false;
-            state.queue.enqueue(function () { eat.fire(ctx, d); logEvent('eat', 'eat', d.reason || null); }, { kind: 'eat' });
+            if (d.fire && d.kind === 'eat') {
+              if (state.queue.hasPending(function (e) { return e.kind === 'eat'; })) return false;
+              state.queue.enqueue(function () { eat.fire(ctx, d); logEvent('eat', 'eat', d.reason || null); }, { kind: 'eat' });
+              return true;
+            }
+            // Magic branch — a fresh eat-magic request OR a mid-cycle step:
+            // run the machine facade and enqueue exactly what it decides.
+            if (d.fire && d.kind === 'eat-magic') training.requestFoodMagic();
+            else if (!d.fire && d.reason !== 'magic-cycle-active') return false;
+            const fd = training.foodStep(ctx);
+            if (fd && fd.reason === 'created-food-consumed') eat.noteMeal(ctx);
+            if (!fd || !fd.fire) {
+              // Machine blocked (food-* timeout/failure): reset the cycle and
+              // let the NORMAL path serve until the retry window passes
+              // (REQ-03 timeout => fallback).
+              if (training.getState().blockedReason) {
+                training.resetFoodCycle();
+                eat.noteMagicUnavailable();
+                logEvent('eat', 'magic-unavailable', training.getState().lastReason || 'food-blocked');
+              }
+              return false;
+            }
+            const kind = fd.kind === 'consume-created-food' ? 'consume-created-food' : 'eat-magic';
+            if (state.queue.hasPending(function (e) { return e.kind === kind; })) return false;
+            state.queue.enqueue(function () {
+              const ok = training.fire(fd, { gameClient: state.gameClient, document: doc, mana: ctx.mana });
+              logEvent('eat', kind, ok ? 'invoked-awaiting-confirmation' : (training.getState().lastReason || 'action-failed'));
+            }, { kind: kind });
             return true;
           },
         },
@@ -8160,7 +8226,7 @@ function createAgent(opts = {}) {
         // > eat > loot > trade > antibot (REQ-11: survival/heal always beats
         // combat/loot/training; trade broadcast and anti-bot replies are the
         // lowest-priority chat actions).
-        children: [healItemsNode, healMagicNode, survival, manaItemsNode, runesNode, cavebotNode, attackAssistNode, combat, trainingNode, eatNode, lootNode, tradeNode, antibotNode],
+        children: [healItemsNode, healMagicNode, survival, manaItemsNode, runesNode, cavebotNode, attackAssistNode, combat, trainingNode, foodNode, lootNode, tradeNode, antibotNode],
       },
     });
   }

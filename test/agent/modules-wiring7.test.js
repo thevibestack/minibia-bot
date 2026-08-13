@@ -361,3 +361,30 @@ test('Survival: hotbar catalogue exposes the real spell SID to slot mapping', as
     teardown(dom);
   }
 });
+
+/* ------------------- PR 3 (REQ-06): self-contained everyCasts ------------------- */
+
+test('REQ-06 (PR 3): trainer OFF — confirmed healMagic casts advance castsSinceFood and the forced eat lands on its own cadence', async () => {
+  const { dom, casts, uses, gameClient } = makePage({ backpackSlots: [{ index: 2, cid: 268 }] });
+  try {
+    const handle = dom.window.__mbAgentHandle;
+    assert.equal(await waitFor(() => handle.isReady()), true);
+    dom.window.__mbAgent.applyConfig(Object.assign({}, sliceConfig({
+      healMagic: { on: true, threshold: 150, slot: 3, sid: 12, reserve: 0, word: null },
+      eat: { on: true, everyCasts: 2, warningWindowSec: 60, fallbackIntervalSec: 10, slot: null, cids: [268] },
+      training: { on: false, slot: null, sid: null, reserve: 0, word: null },
+    }), { queue: { minIntervalMs: 30 }, jitter: { min: 5, max: 20 } }));
+    // Two confirmed healMagic casts (fire true) -> castsSinceFood reaches 2
+    // -> the eat module forces its meal WITHOUT the trainer (REQ-06).
+    assert.equal(await waitFor(() => casts.length >= 2, { timeout: 15000 }), true,
+      'healMagic casts land while the trainer is OFF');
+    assert.equal(await waitFor(() => uses.length >= 1, { timeout: 12000 }), true,
+      'the everyCasts eat fires on its own cadence from non-trainer casts');
+    assert.ok(handle.getState().castsSinceFood >= 2, 'the counter advanced from confirmed casts');
+    const st = handle.getState().modules.eat;
+    assert.equal(st.on, true);
+    assert.equal(st.source, 'normal', 'the forced meal was a normal-slot eat');
+  } finally {
+    teardown(dom);
+  }
+});

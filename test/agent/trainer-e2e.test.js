@@ -104,9 +104,9 @@ function trainerConfig(overrides = {}) {
     healMagic: { on: false, threshold: 150, slot: null, sid: null, reserve: 0, word: null },
     runes: { on: false, attackSlot: null, healSlot: null, healThreshold: null, reserve: 0,
       capMode: 'strict', capFullThreshold: 1.0, fallbackSlot: 3, fallbackSid: 7, fallbackManaPct: 0.5 },
-    training: { on: true, slot: 7, sid: 7, reserve: 30, word: null,
-      eatWithMagic: { enabled: false, slot: null, sid: null } },
-    eat: { on: false, everyCasts: 0, warningWindowSec: 60, fallbackIntervalSec: 10, slot: null, cids: [] },
+    training: { on: true, slot: 7, sid: 7, reserve: 30, word: null },
+    eat: { on: false, everyCasts: 0, warningWindowSec: 60, fallbackIntervalSec: 10, slot: null, cids: [],
+      safetyNetMinutes: 20, magic: { enabled: false, slot: null, sid: null } }, // PR 3 unified shape
     armed: true,
   }, overrides);
 }
@@ -183,18 +183,23 @@ test('REQ-31: mana below cost + reserve (200+30=230) -> no cast; at 230 the trai
   }
 });
 
-test('REQ-32: mana low waits even when magic food is configured; food is cadence-driven after runes', async () => {
+test('REQ-32 (PR 3): mana low waits even when unified food magic is configured; the eat module OFF means no food cast interferes', async () => {
   const { dom, casts, gameClient, surface, handle } = makePage();
   try {
     assert.equal(await waitFor(() => handle().isReady()), true);
     const cfg = trainerConfig();
-    cfg.training.eatWithMagic = { enabled: true, slot: 5, sid: 12 };
+    // PR 3 unified shape: food magic rides modules.eat.magic (the legacy
+    // training.eatWithMagic is gone). The eat module is OFF -> the food node
+    // never requests -> no food cast, ever.
+    cfg.eat.magic = { enabled: true, slot: 5, sid: 12 };
+    cfg.eat.on = false;
     surface().applyConfig(cfg);
     gameClient.player.state.mana = 210; // below cost+reserve
 
     await new Promise((r) => setTimeout(r, 700));
     assert.equal(casts.length, 0, 'low mana waits; food magic is never an automatic low-mana fallback');
     assert.equal(handle().getState().modules.training.waitingForMana, true);
+    assert.equal(handle().getState().modules.eat.on, false, 'eat OFF -> no food request at all');
 
     gameClient.player.state.mana = 230;
     assert.equal(await waitFor(() => casts.some((c) => c.slot === 7), { timeout: 4000 }), true,

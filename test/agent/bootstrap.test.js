@@ -382,3 +382,48 @@ test('REQ-10 (T2): snapshot exposes live healMagic state (runtime, not config gu
     handle.destroy();
   }
 });
+
+test('PR 3 (T9): snapshot surfaces the unified eat getState — live magicSid, honest food counters', () => {
+  const slots = Array.from({ length: 12 }, () => null);
+  slots[3] = { spell: { sid: 24 } }; // F4 = exevo pan
+  const gameClient = {
+    player: {
+      name: 'Flamamex',
+      state: { mana: 100, maxMana: 120, health: 100, maxHealth: 100 },
+    },
+    interface: {
+      getSpell: (sid) => (Number(sid) === 24 ? { name: 'Exevo Pan', words: 'exevo pan', cost: 30 } : null),
+      hotbarManager: { slots, __handleClick: () => true },
+    },
+  };
+  const handle = createAgent({
+    gameClient,
+    autoStart: false,
+    config: {
+      armed: true,
+      eat: { on: true, everyCasts: 0, warningWindowSec: 60, fallbackIntervalSec: 10, slot: null, cids: [],
+        safetyNetMinutes: 20, magic: { enabled: true, slot: 4, sid: 24 } },
+    },
+    setInterval: () => 1,
+    clearInterval: () => {},
+    setTimeout: () => 1,
+    clearTimeout: () => {},
+    log: { error: () => {}, warn: () => {}, info: () => {} },
+  });
+  try {
+    handle.poll();
+    const st = handle.getState().modules.eat;
+    assert.ok(st, 'eat state surfaced in the snapshot modules map');
+    assert.equal(st.on, true);
+    assert.equal(st.magicSid, 24, 'live hotbar resolves the pan sid (derived, never typed)');
+    assert.equal(st.safetyNetMinutes, 20);
+    assert.equal(st.foodCreated, 0, 'cumulative session total starts honest-0');
+    assert.equal(st.nextMealAt, null, 'no meal yet -> no next-meal anchor');
+    assert.equal(st.source, null);
+    assert.equal(st.lastEatAt, 0);
+    assert.equal(st.paused, false);
+    assert.equal(st.failures, 0);
+  } finally {
+    handle.destroy();
+  }
+});

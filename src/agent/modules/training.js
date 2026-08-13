@@ -24,6 +24,8 @@ function createTraining(opts = {}) {
     // PR 3 (REQ-01): the food-magic config is INJECTED from the unified
     // modules.eat.magic — the machine never reads config.eatWithMagic.
     foodMagicConfig = null,
+    // PR 3 (REQ-06): confirmed-cast notification (bootstrap noteCastConfirmed).
+    onCastConfirmed = null,
   } = opts;
   const warn = typeof log.warn === 'function' ? log.warn : () => {};
   const warned = new Set();
@@ -95,10 +97,11 @@ function createTraining(opts = {}) {
       if (spent) {
         state.pendingAction = null;
         noteRuneCreated();
-        // The general Eat module keeps its own every-N confirmed-casts rule.
-        // Advance it only after MiniTibia has proved the rune consumed mana;
-        // a handler click by itself must never make normal eating fire.
-        ctx.castsSinceFood = (Number(ctx.castsSinceFood) || 0) + 1;
+    // PR 3 (REQ-06): the general Eat module keeps its own every-N confirmed
+    // casts rule — self-contained now. The trainer only REPORTS the confirmed
+    // cast through the injected hook (bootstrap noteCastConfirmed); it no
+    // longer mutates the shared ctx.castsSinceFood (hidden coupling dropped).
+    if (typeof onCastConfirmed === 'function') onCastConfirmed();
         state.lastReason = 'rune-cast-confirmed';
         return { fire: false, reason: 'rune-cast-confirmed' };
       }
@@ -110,6 +113,7 @@ function createTraining(opts = {}) {
     if (pending.kind === 'fallback') {
       if (spent) {
         state.pendingAction = null;
+        if (typeof onCastConfirmed === 'function') onCastConfirmed(); // REQ-06 (PR 3)
         state.lastReason = 'fallback-cast-confirmed';
         return { fire: false, reason: 'fallback-cast-confirmed' };
       }
