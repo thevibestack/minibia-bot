@@ -146,8 +146,8 @@ test('REQ-08 fix: every nested module toggle + setting reaches the agent (getSta
     assert.equal(st.runes.on, true);
     assert.equal(st.training.on, true);
     assert.equal(st.eat.on, true);
-    assert.equal(st.eat.magic, undefined,
-      'agent tolerates the unified eat shape — runtime state carries no magic until PR 3 (T7)');
+    assert.equal(st.eat.safetyNetMinutes, 20, 'unified safety-net floor reaches the runtime eat state (PR 3)');
+    assert.equal(st.eat.magicSid, null, 'no pan on the mock hotbar -> honest magicSid null (PR 3, derived never typed)');
     assert.equal(st.trade.on, true);
     assert.equal(st.trade.message, 'buying runes', 'trade message from the nested entry');
     assert.equal(st.loot.on, true);

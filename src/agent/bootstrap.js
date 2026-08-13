@@ -91,7 +91,8 @@ const DEFAULT_CONFIG = {
     capMode: 'strict', capFullThreshold: 1.0, fallbackSid: null, fallbackSlot: null, fallbackManaPct: 0.5 },
   training: { on: false, slot: null, sid: null, reserve: 0, word: null,
     eatWithMagic: { enabled: false, slot: null, sid: null, everyRunes: 1 } },
-  eat: { on: false, everyCasts: 0, warningWindowSec: 60, fallbackIntervalSec: 10, slot: null, cids: [] },
+  eat: { on: false, everyCasts: 0, warningWindowSec: 60, fallbackIntervalSec: 10, slot: null, cids: [],
+    safetyNetMinutes: 20, magic: { enabled: false, slot: null, sid: null } },
   // Slice-5 modules — ALL OFF by default (opt-in). Shapes match
   // app/store/characters.ts defaultConfig + additive: healMagic/training word
   // (echo validation REQ-24), learning.knownWords (REQ-25 registration).
@@ -162,7 +163,8 @@ function normalizeConfig(raw) {
       capMode: 'strict', capFullThreshold: 1.0, fallbackSid: null, fallbackSlot: null, fallbackManaPct: 0.5 },
     training: { on: false, slot: null, sid: null, reserve: 0, word: null,
       eatWithMagic: { enabled: false, slot: null, sid: null, everyRunes: 1 } },
-    eat: { on: false, everyCasts: 0, warningWindowSec: 60, fallbackIntervalSec: 10, slot: null, cids: [] },
+    eat: { on: false, everyCasts: 0, warningWindowSec: 60, fallbackIntervalSec: 10, slot: null, cids: [],
+    safetyNetMinutes: 20, magic: { enabled: false, slot: null, sid: null } },
     trade: { on: false, message: '', intervalMs: 180000 },
     loot: { on: false, defaultDest: null, perMonster: {} },
     spawns: { on: false },
@@ -239,6 +241,11 @@ function normalizeConfig(raw) {
   if (Number.isFinite(ea.fallbackIntervalSec) && ea.fallbackIntervalSec > 0) cfg.eat.fallbackIntervalSec = ea.fallbackIntervalSec;
   if (Number.isInteger(ea.slot)) cfg.eat.slot = ea.slot;
   if (Array.isArray(ea.cids)) cfg.eat.cids = ea.cids.map(Number).filter(Number.isInteger).filter((n) => n >= 0);
+  if (Number.isFinite(ea.safetyNetMinutes) && ea.safetyNetMinutes > 0) cfg.eat.safetyNetMinutes = ea.safetyNetMinutes; // PR 3 (REQ-04)
+  const em = ea.magic && typeof ea.magic === 'object' ? ea.magic : {}; // PR 3 (REQ-01): unified eat.magic
+  if (typeof em.enabled === 'boolean') cfg.eat.magic.enabled = em.enabled;
+  if (Number.isInteger(em.slot) && em.slot >= 1 && em.slot <= 12) cfg.eat.magic.slot = em.slot; // magic-first requires a valid F-slot (design)
+  if (Number.isInteger(em.sid)) cfg.eat.magic.sid = em.sid;
   // --- Slice-5 module normalization (REQ-18..22,24,25) ---
   if (typeof hm.word === 'string') cfg.healMagic.word = hm.word; // echo validation (REQ-24)
   if (typeof tr.word === 'string') cfg.training.word = tr.word;   // echo validation (REQ-24)

@@ -87,6 +87,7 @@ test('REQ-08 fix: the NESTED store shape reaches EVERY module — on flags + key
   });
   assert.deepEqual(cfg.eat, {
     on: true, everyCasts: 5, warningWindowSec: 45, fallbackIntervalSec: 8, slot: 2, cids: [9, 10],
+    safetyNetMinutes: 20, magic: { enabled: true, slot: 8, sid: 55 }, // PR 3: the nested fixture's magic lands
   });
   assert.deepEqual(cfg.trade, { on: true, message: 'buying runes', intervalMs: 90000 });
   assert.deepEqual(cfg.loot, { on: true, defaultDest: 'Loot bag', perMonster: { Rotworm: 'Loot bag' } });
@@ -255,10 +256,9 @@ test('REQ-08 fix: armed stays a TOP-LEVEL gate — nested armed never arms (REQ-
   assert.equal(normalizeConfig({ modules: { runes: { on: true } } }).armed, false);
 });
 
-test('REQ-08 (PR 2): the unified eat.magic + safetyNetMinutes shape is tolerated — known eat fields land, new keys never crash', () => {
-  // The store now ships the unified eat shape (PR 2); the agent normalizes
-  // only the fields it understands TODAY and silently drops the new keys
-  // (the unified decision lands in PR 3 / T7). Tolerance is the contract.
+test('REQ-08 (PR 3): the unified eat.magic + safetyNetMinutes shape lands in the normalized config', () => {
+  // The store ships the unified eat shape (PR 2); the agent now normalizes
+  // the unified keys (PR 3 / T7) — same shape, no crash, no invented values.
   const cfg = normalizeConfig({
     modules: {
       eat: { on: true, slot: 2, cids: [9], everyCasts: 0,
@@ -269,6 +269,17 @@ test('REQ-08 (PR 2): the unified eat.magic + safetyNetMinutes shape is tolerated
   assert.equal(cfg.eat.on, true, 'known toggle lands');
   assert.equal(cfg.eat.slot, 2, 'known slot lands');
   assert.deepEqual(cfg.eat.cids, [9], 'known cids land');
-  assert.equal(cfg.eat.magic, undefined, 'magic is not carried by the agent yet (PR 3)');
-  assert.equal(cfg.eat.safetyNetMinutes, undefined, 'safetyNetMinutes not carried by the agent yet (PR 3)');
+  assert.deepEqual(cfg.eat.magic, { enabled: true, slot: 8, sid: 55 }, 'unified magic sub-shape lands (PR 3)');
+  assert.equal(cfg.eat.safetyNetMinutes, 20, 'safety net floor lands (PR 3)');
+});
+
+test('REQ-08 (PR 3): invalid unified eat.magic values fall back to the safe defaults', () => {
+  const cfg = normalizeConfig({
+    modules: { eat: { magic: { enabled: 'yes', slot: 99, sid: null } } },
+    armed: true,
+  });
+  assert.equal(cfg.eat.magic.enabled, false, 'non-boolean enabled -> default off');
+  assert.equal(cfg.eat.magic.slot, null, 'out-of-range slot -> default null');
+  assert.equal(cfg.eat.magic.sid, null, 'null sid -> default null');
+  assert.equal(cfg.eat.safetyNetMinutes, 20, 'absent safetyNetMinutes -> default 20');
 });

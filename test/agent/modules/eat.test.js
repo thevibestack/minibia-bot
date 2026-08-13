@@ -16,6 +16,7 @@ const { createEatModule } = require('../../../src/agent/modules/eat');
 function moduleWith(overrides = {}, opts = {}) {
   const config = Object.assign({
     on: true, everyCasts: 0, warningWindowSec: 60, fallbackIntervalSec: 10, slot: null, cids: [],
+    safetyNetMinutes: 20, magic: { enabled: false, slot: null, sid: null },
   }, overrides);
   let nowMs = 500000;
   return createEatModule(Object.assign({
@@ -80,13 +81,17 @@ test('REQ-17: SATED + timer both unavailable -> fallback interval (default 10s)'
   assert.equal(m.decide({ lastEatAt: 99000 }).reason, 'fallback-interval');
 });
 
-test('REQ-17: everyCasts forced cadence eats when N casts landed (SATED pre-check skipped)', () => {
-  const m = moduleWith({ everyCasts: 5 }, { gameClient: gcWith(() => true) });
-  assert.equal(m.decide({ castsSinceFood: 4 }).fire, false);
-  assert.equal(m.decide({ castsSinceFood: 4 }).reason, 'waiting-casts');
-  const d = m.decide({ castsSinceFood: 5 });
-  assert.equal(d.fire, true, 'sated but everyCasts bypasses the pre-check');
+test('REQ-06 (PR 3): everyCasts is an OR trigger, never a gate — hunger wins below N, force lands at N', () => {
+  const hungry = moduleWith({ everyCasts: 5 }, { gameClient: gcWith(() => false) });
+  assert.equal(hungry.decide({ castsSinceFood: 4 }).fire, true, 'hunger is not gated by the cast cadence');
+  assert.equal(hungry.decide({ castsSinceFood: 4 }).reason, 'flag');
+  const sated = moduleWith({ everyCasts: 5 }, { gameClient: gcWith(() => true) });
+  assert.equal(sated.decide({ castsSinceFood: 4 }).fire, false, 'below N + sated -> no force');
+  assert.equal(sated.decide({ castsSinceFood: 4 }).reason, 'sated');
+  const d = sated.decide({ castsSinceFood: 5 });
+  assert.equal(d.fire, true, 'sated but everyCasts bypasses the pre-check at N');
   assert.equal(d.force, true);
+  assert.equal(d.kind, 'eat');
 });
 
 test('REQ-17: forced fire resets the cast counter after the attempt', () => {
@@ -161,4 +166,199 @@ test('REQ-17: no food source at all -> no throw, no failure accounting', () => {
   assert.equal(m.decide(ctx).reason, 'fallback-wait');
   assert.equal(m.fire(ctx, { force: false }), false);
   assert.equal(m.getState().failures, 0, 'no-food-source is not a failed attempt');
+});
+
+/* ---------------------- PR 3 — unified eat (REQ-01..06) ---------------------- */
+
+test('REQ-01/02: magic-first — configured magic + live F-slot resolves + hungry -> eat-magic', () => {
+  const m = moduleWith({ magic: { enabled: true, slot: 4, sid: 24 } }, {
+    gameClient: gcWith(() => false),
+    readHotbarSlotSid: (slot) => (slot === 4 ? 24 : null),
+  });
+  const d = m.decide({});
+  assert.equal(d.fire, true);
+  assert.equal(d.kind, 'eat-magic');
+  assert.equal(d.reason, 'flag', 'hunger source carries through the magic path');
+  assert.equal(m.getState().magicSid, 24, 'magicSid is derived from the resolved magic config');
+});
+
+test('REQ-01: magic-first — sated and inside the safety window -> wait (no cast)', () => {
+  const m = moduleWith({ magic: { enabled: true, slot: 4, sid: 24 } }, {
+    gameClient: gcWith(() => true),
+    readHotbarSlotSid: (slot) => (slot === 4 ? 24 : null),
+  });
+  const d = m.decide({ lastEatAt: 490000 }); // ate 10s ago (< 20 min)
+  assert.equal(d.fire, false);
+  assert.equal(d.reason, 'sated');
+});
+
+test('REQ-04: safety net overrides SATED on the magic path -> eat-magic', () => {
+  const m = moduleWith({ safetyNetMinutes: 20, magic: { enabled: true, slot: 4, sid: 24 } }, {
+    gameClient: gcWith(() => true), // SATED true
+    readHotbarSlotSid: (slot) => (slot === 4 ? 24 : null),
+    now: () => 500000 + 21 * 60 * 1000, // 21 min since the (zero) last meal anchor
+  });
+  const d = m.decide({ lastEatAt: 0 });
+  assert.equal(d.fire, true);
+  assert.equal(d.kind, 'eat-magic');
+  assert.equal(d.reason, 'safety-net');
+});
+
+test('REQ-04: safety net overrides SATED on the NORMAL path -> eat', () => {
+  const m = moduleWith({ safetyNetMinutes: 20 }, {
+    gameClient: gcWith(() => true),
+    now: () => 500000 + 21 * 60 * 1000,
+  });
+  const d = m.decide({ lastEatAt: 0, castsSinceFood: 0 });
+  assert.equal(d.fire, true);
+  assert.equal(d.kind, 'eat');
+  assert.equal(d.reason, 'safety-net');
+  assert.equal(d.force, false);
+});
+
+test('REQ-04: safety net NOT elapsed -> sated wins (normal path)', () => {
+  const m = moduleWith({ safetyNetMinutes: 20 }, { gameClient: gcWith(() => true) });
+  assert.equal(m.decide({ lastEatAt: 490000 }).fire, false);
+  assert.equal(m.decide({ lastEatAt: 490000 }).reason, 'sated');
+});
+
+test('REQ-03: magic configured but the pan is NOT on the live hotbar -> normal food path (unresolvable F-slot disables magic safely)', () => {
+  const m = moduleWith({ magic: { enabled: true, slot: 4, sid: 24 } }, {
+    gameClient: gcWith(() => false),
+    readHotbarSlotSid: () => null, // sid not mapped anywhere
+  });
+  const d = m.decide({});
+  assert.equal(d.fire, true, 'hungry still eats — via the normal slot path');
+  assert.equal(d.kind, 'eat');
+  assert.equal(m.getState().magicSid, null, 'no magicSid when the live hotbar cannot resolve the slot');
+});
+
+test('REQ-03: magic configured but SID moved to another F-slot -> normal path (never fires a stale slot)', () => {
+  const m = moduleWith({ magic: { enabled: true, slot: 4, sid: 24 } }, {
+    gameClient: gcWith(() => false),
+    readHotbarSlotSid: (slot) => (slot === 4 ? 99 : 24), // F4 now maps sid 99
+  });
+  const d = m.decide({});
+  assert.equal(d.kind, 'eat', 'normal fallback, not magic');
+});
+
+test('REQ-03: magic disabled -> normal path', () => {
+  const m = moduleWith({ magic: { enabled: false, slot: 4, sid: 24 } }, {
+    gameClient: gcWith(() => false),
+    readHotbarSlotSid: (slot) => (slot === 4 ? 24 : null),
+  });
+  assert.equal(m.decide({}).kind, 'eat');
+});
+
+test('REQ-05: magicBusy — machine mid-cycle NEVER falls through to normal food (structural no-double-eat)', () => {
+  // created-food-ready: hungry + safety due, but the magic machine owns the meal.
+  const busy = moduleWith({ magic: { enabled: true, slot: 4, sid: 24 } }, {
+    gameClient: gcWith(() => false),
+    readHotbarSlotSid: (slot) => (slot === 4 ? 24 : null),
+    foodCycle: () => 'created-food-ready',
+  });
+  const d = busy.decide({ lastEatAt: 0 });
+  assert.equal(d.fire, false);
+  assert.equal(d.reason, 'magic-cycle-active');
+  // foodMagicPending: a magic cast is in flight — same guard.
+  const pending = moduleWith({ magic: { enabled: true, slot: 4, sid: 24 } }, {
+    gameClient: gcWith(() => false),
+    readHotbarSlotSid: (slot) => (slot === 4 ? 24 : null),
+    foodMagicPending: () => true,
+  });
+  assert.equal(pending.decide({ lastEatAt: 0 }).reason, 'magic-cycle-active');
+  // Normal-path hunger with magicBusy ALSO blocked (never an eat kind).
+  const noMagic = moduleWith({}, {
+    gameClient: gcWith(() => false),
+    foodCycle: () => 'created-food-ready',
+  });
+  assert.equal(noMagic.decide({ lastEatAt: 0 }).reason, 'magic-cycle-active');
+});
+
+test('REQ-03: magic failure timeout -> noteMagicUnavailable serves the normal path until the retry window passes', () => {
+  const m = moduleWith({ safetyNetMinutes: 20, magic: { enabled: true, slot: 4, sid: 24 } }, {
+    gameClient: gcWith(() => false),
+    readHotbarSlotSid: (slot) => (slot === 4 ? 24 : null),
+  });
+  m.noteMagicUnavailable(); // machine blocked (food-not-created-timeout) -> retry in 20 min
+  let d = m.decide({ lastEatAt: 0 });
+  assert.equal(d.kind, 'eat', 'hungry + magic retry window -> normal food fallback (REQ-03 timeout)');
+  assert.equal(d.reason, 'flag');
+  // Still normal while the retry window is open, even once the safety net elapses.
+  assert.equal(m.decide({ lastEatAt: 0 }).kind, 'eat');
+  // After the retry window passes the magic path re-arms.
+  let clock = 500000;
+  const late = moduleWith({ safetyNetMinutes: 1, magic: { enabled: true, slot: 4, sid: 24 } }, {
+    gameClient: gcWith(() => false),
+    readHotbarSlotSid: (slot) => (slot === 4 ? 24 : null),
+    now: () => clock,
+  });
+  late.noteMagicUnavailable(); // retryAfter = now + 60s
+  assert.equal(late.decide({ lastEatAt: 0 }).kind, 'eat', 'still on the normal path inside the retry window');
+  clock = 500000 + 130 * 1000; // past retryAfter
+  assert.equal(late.decide({ lastEatAt: 0 }).kind, 'eat-magic', 'magic re-arms after the retry window');
+});
+
+test('REQ-04: readFoodState unavailable (null) never crashes — magic path treats unknown hunger as hungry', () => {
+  const m = moduleWith({ magic: { enabled: true, slot: 4, sid: 24 } }, {
+    gameClient: null, // no conditions, no timer -> { eat: null }
+    readHotbarSlotSid: (slot) => (slot === 4 ? 24 : null),
+  });
+  const d = m.decide({});
+  assert.equal(d.fire, true);
+  assert.equal(d.kind, 'eat-magic');
+  assert.equal(d.reason, 'hunger');
+});
+
+test('REQ-04: readFoodState unavailable + NO magic -> fallback cadence only (no crash)', () => {
+  const m = moduleWith({}, { gameClient: null });
+  assert.equal(m.decide({ lastEatAt: 499000 }).fire, false); // ate 1s ago -> inside the 10s window
+  assert.equal(m.decide({ lastEatAt: 499000 }).reason, 'fallback-wait');
+});
+
+test('PR 3: getState surfaces the honest unified fields', () => {
+  const m = moduleWith({ magic: { enabled: true, slot: 4, sid: 24 } }, {
+    gameClient: gcWith(() => false),
+    readHotbarSlotSid: (slot) => (slot === 4 ? 24 : null),
+  });
+  const st = m.getState();
+  assert.equal(st.on, true);
+  assert.equal(st.paused, false);
+  assert.equal(st.failures, 0);
+  assert.equal(st.alert, null);
+  assert.equal(st.lastEatAt, 0);
+  assert.equal(st.foodCreated, 0, 'cumulative session total starts at 0');
+  assert.equal(st.nextMealAt, null, 'no meal yet -> no next-meal anchor');
+  assert.equal(st.safetyNetMinutes, 20);
+  assert.equal(st.magicSid, 24);
+  assert.equal(st.source, null, 'no meal yet -> source null');
+});
+
+test('PR 3: a confirmed normal meal records lastEatAt on the module state + source normal', () => {
+  const useCalls = [];
+  const gc = { mouse: { use: (args) => useCalls.push(args) } };
+  const m = moduleWith({}, { gameClient: gc });
+  const ctx = { castsSinceFood: 0, lastEatAt: 0 };
+  assert.equal(m.fire(ctx, { force: false }), true, 'attempt executed via mouse.use fallback');
+  assert.equal(m.getState().lastEatAt, ctx.lastEatAt, 'module state mirrors the ctx anchor (stale-field fix)');
+  assert.ok(m.getState().lastEatAt > 0);
+  assert.equal(m.getState().source, 'normal');
+  assert.equal(m.getState().nextMealAt, m.getState().lastEatAt + 20 * 60 * 1000,
+    'nextMealAt = lastEatAt + safetyNetMinutes');
+});
+
+test('PR 3: noteMeal on created-food-consumed counts the food and anchors the meal', () => {
+  const m = moduleWith({ magic: { enabled: true, slot: 4, sid: 24 } }, {
+    gameClient: gcWith(() => false),
+    readHotbarSlotSid: (slot) => (slot === 4 ? 24 : null),
+  });
+  const ctx = { castsSinceFood: 0, lastEatAt: 0 };
+  m.noteMeal(ctx);
+  const st = m.getState();
+  assert.equal(st.foodCreated, 1, 'magic-created food consumed -> cumulative session total');
+  assert.equal(st.source, 'magic');
+  assert.ok(st.lastEatAt > 0, 'meal anchored');
+  assert.equal(st.nextMealAt, st.lastEatAt + 20 * 60 * 1000);
+  m.noteMeal(ctx);
+  assert.equal(m.getState().foodCreated, 2, 'cumulative across meals, never resets per meal');
 });
