@@ -23,6 +23,19 @@ function armedState() {
   return state;
 }
 
+/** Armed + live catalog/hotbar (needed for the unified food-magic save). */
+const FOOD_CATALOG = [
+  { sid: 12, name: 'Food', words: 'exevo pan', mana: 0, level: 1, imageDataURL: 'data:image/png;base64,food' },
+  { sid: 2, name: 'Healing', words: 'exura', mana: 25, level: 1, imageDataURL: 'data:image/png;base64,heal' },
+];
+
+function armedLiveState(slots = [{ slot: 8, sid: 12 }]) {
+  let state = armedState();
+  state = P.panelReducer(state, { type: 'SPELL_CATALOG', spells: FOOD_CATALOG }).state;
+  state = P.panelReducer(state, { type: 'HOTBAR_CATALOG', ok: true, available: true, slots }).state;
+  return state;
+}
+
 /** Dispatch a raw form fill + save; returns the reducer result. */
 function saveOthers(state, form) {
   let next = state;
@@ -35,6 +48,9 @@ function saveOthers(state, form) {
 const VALID_FORM = {
   foodSlot: '2',
   everyCasts: '5',
+  foodMagicEnabled: 'false',
+  foodMagicSid: '',
+  safetyNet: '20',
   lootDest: 'Loot bag',
   antibotReplies: 'verify your account => ok then\n/^stop bot/i => sorry',
 };
@@ -133,7 +149,8 @@ test('REQ-33/34 (PR5): othersFormFromConfig derives the form from the saved conf
     },
   }).state;
   assert.deepEqual(P.othersFormFromConfig(state), {
-    foodSlot: '3', everyCasts: '4', lootDest: 'Dust bag', antibotReplies: 'hi => hello',
+    foodSlot: '3', everyCasts: '4', foodMagicEnabled: 'false', foodMagicSid: '', safetyNet: '',
+    lootDest: 'Dust bag', antibotReplies: 'hi => hello',
   });
 });
 
@@ -182,4 +199,94 @@ test('REQ-33/34 (PR5): renderLiveState shows the confirm prompt, alerts and the 
   assert.match(P.renderLiveState(empty), /No anti-bot events yet\./);
   const none = Object.assign({}, armedState(), { snapshot: null });
   assert.ok(!P.renderLiveState(none).includes('antibot-confirm-btn'), 'no prompt without a snapshot');
+});
+
+/* ------------------- PR 4 (REQ-01): unified food form in Others ------------------- */
+
+test('REQ-01 (PR4): UPDATE_OTHERS_INPUT accepts the unified food magic + safety-net keys', () => {
+  let state = armedState();
+  for (const key of ['foodMagicEnabled', 'foodMagicSid', 'safetyNet']) {
+    state = P.panelReducer(state, { type: 'UPDATE_OTHERS_INPUT', key, value: 'x' }).state;
+  }
+  assert.equal(state.othersForm.foodMagicEnabled, 'x');
+  assert.equal(state.othersForm.foodMagicSid, 'x');
+  assert.equal(state.othersForm.safetyNet, 'x');
+  assert.deepEqual(P.panelReducer(state, { type: 'UPDATE_OTHERS_INPUT', key: 'bogus', value: '1' }).state.othersForm, state.othersForm);
+});
+
+test('REQ-01 (PR4): SAVE_OTHERS_SETTINGS writes the unified eat.magic + safetyNetMinutes; only modules.eat', () => {
+  const r = saveOthers(armedLiveState(), {
+    foodSlot: '2', everyCasts: '5',
+    foodMagicEnabled: 'true', foodMagicSid: '12', safetyNet: '30',
+  });
+  assert.deepEqual(r.effects, [{ type: 'push-config' }]);
+  assert.equal(r.state.refusal, null);
+  assert.equal(r.state.config.modules.eat.slot, 2);
+  assert.equal(r.state.config.modules.eat.everyCasts, 5);
+  assert.equal(r.state.config.modules.eat.safetyNetMinutes, 30);
+  assert.deepEqual(r.state.config.modules.eat.magic, { enabled: true, slot: 8, sid: 12 },
+    'magic slot resolved from the live hotbar F-mapping');
+  assert.equal(r.state.config.modules.training, undefined,
+    'no training module touched — the unified food save writes only modules.eat (REQ-01)');
+});
+
+test('REQ-01 (PR4): a disabled/untouched magic toggle writes the honest disabled shape', () => {
+  const r = saveOthers(armedLiveState(), { foodSlot: '2', everyCasts: '0' });
+  assert.deepEqual(r.state.config.modules.eat.magic, { enabled: false, slot: null, sid: null });
+  assert.equal(r.state.config.modules.eat.safetyNetMinutes, 20, 'empty safety net falls back to the 20-min default');
+});
+
+test('REQ-01 (PR4): SAVE_OTHERS_SETTINGS refuses a food magic sid that is not on the live hotbar', () => {
+  const r = saveOthers(armedLiveState([{ slot: 4, sid: 35 }]), {
+    foodMagicEnabled: 'true', foodMagicSid: '12', safetyNet: '20',
+  });
+  assert.deepEqual(r.effects, []);
+  assert.equal(r.state.config, null, 'no config write on refusal');
+  assert.match(r.state.refusal.reason, /F1–F12/);
+});
+
+test('REQ-01 (PR4): SAVE_OTHERS_SETTINGS refuses a non-food spell sid', () => {
+  const r = saveOthers(armedLiveState(), { foodMagicEnabled: 'true', foodMagicSid: '2' });
+  assert.deepEqual(r.effects, []);
+  assert.match(r.state.refusal.reason, /food spell.*live catalog/i);
+});
+
+test('REQ-01 (PR4): safety-net minutes are validated (>= 1, numeric)', () => {
+  for (const bad of ['0', '-1', 'abc']) {
+    const r = saveOthers(armedLiveState(), { foodMagicEnabled: 'true', foodMagicSid: '12', safetyNet: bad });
+    assert.deepEqual(r.effects, [], 'no push for safety net ' + bad);
+    assert.match(r.state.refusal.reason, /safety net minutes/i, 'visible reason for ' + bad);
+  }
+});
+
+test('REQ-01 (PR4): othersFormFromConfig derives the unified magic + safety-net fields', () => {
+  const state = P.panelReducer(armedState(), {
+    type: 'PREFILL_CONFIG',
+    config: {
+      character: 'Flamamex',
+      modules: {
+        eat: { on: false, slot: 3, everyCasts: 4, safetyNetMinutes: 30, magic: { enabled: true, slot: 8, sid: 12 } },
+        loot: { on: false, defaultDest: 'Dust bag', perMonster: {} },
+        antibot: { on: false, replies: [] },
+      },
+    },
+  }).state;
+  const derived = P.othersFormFromConfig(state);
+  assert.equal(derived.foodMagicEnabled, 'true');
+  assert.equal(derived.foodMagicSid, '12');
+  assert.equal(derived.safetyNet, '30');
+  assert.equal(derived.foodSlot, '3');
+});
+
+test('REQ-01 (PR4): renderConfigForm shows the unified food form ids and keeps the fixed-slot fallback fields', () => {
+  let state = armedLiveState();
+  state = P.panelReducer(state, { type: 'UPDATE_OTHERS_INPUT', key: 'foodMagicEnabled', value: 'true' }).state;
+  const armed = P.renderConfigForm(state);
+  assert.match(armed, /id="others-food-slot"/);
+  assert.match(armed, /id="others-every-casts"/);
+  assert.match(armed, /id="others-food-magic-enabled"/);
+  assert.match(armed, /id="others-food-magic-select"/);
+  assert.match(armed, /id="others-food-safety-net"/);
+  assert.match(armed, /id="others-save-btn"/);
+  assert.doesNotMatch(armed, /others-loot-dest/, 'loot destination hidden');
 });

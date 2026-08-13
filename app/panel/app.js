@@ -586,6 +586,12 @@
     } else if (target && target.matches && target.matches('#sound-toggle')) {
       // Audit: alert sound toggle — change (not input): checkboxes fire change.
       dispatch({ type: 'SET_SOUND', enabled: target.checked });
+    } else if (target && target.matches && target.matches('#others-food-magic-enabled')) {
+      // REQ-01 (PR4): unified food magic toggle — pure UI value (the save
+      // validates the sid is a live food spell, PICK_SPELL pattern).
+      dispatch({ type: 'UPDATE_OTHERS_INPUT', key: 'foodMagicEnabled', value: target.checked ? 'true' : 'false' });
+    } else if (target && target.matches && target.matches('#others-food-magic-select')) {
+      dispatch({ type: 'UPDATE_OTHERS_INPUT', key: 'foodMagicSid', value: target.value });
     }
   });
 
@@ -618,12 +624,13 @@
           : target.matches('#trainer-food-every-runes') ? 'foodEveryRunes' : 'reserve';
       dispatch({ type: 'UPDATE_TRAINER_INPUT', key: trainerKey, value: target.value });
     } else if (target && target.matches && target.matches(
-      '#others-food-slot, #others-every-casts, #others-loot-dest, #others-replies')) {
-      // REQ-33/34 (PR5): OTHERS settings form — pure UI values that survive
-      // re-renders; the Save button commits them into the config.
+      '#others-food-slot, #others-every-casts, #others-food-safety-net, #others-loot-dest, #others-replies')) {
+      // REQ-33/34 (PR5) + REQ-01 (PR4): OTHERS settings form — pure UI values
+      // that survive re-renders; the Save button commits them into the config.
       var othersKey = target.matches('#others-food-slot') ? 'foodSlot'
         : target.matches('#others-every-casts') ? 'everyCasts'
-          : target.matches('#others-loot-dest') ? 'lootDest' : 'antibotReplies';
+          : target.matches('#others-food-safety-net') ? 'safetyNet'
+            : target.matches('#others-loot-dest') ? 'lootDest' : 'antibotReplies';
       dispatch({ type: 'UPDATE_OTHERS_INPUT', key: othersKey, value: target.value });
     } else if (target && target.matches && target.matches('#attack-rune-slot')) {
       // REQ-35 (PR6): ATTACK settings form — pure UI value (the targeting

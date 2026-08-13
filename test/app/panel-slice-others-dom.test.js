@@ -148,6 +148,56 @@ test('Hidden-module scope (PR5, jsdom): the OTHERS form is food-only and preserv
   }
 });
 
+test('REQ-01 (PR4, jsdom): the unified food form saves eat.magic + safetyNetMinutes — no training.eatWithMagic anywhere', async () => {
+  const LIVE_SPELLS = [
+    { sid: 12, name: 'Food', words: 'exevo pan', mana: 0, level: 1, vocations: [] },
+    { sid: 2, name: 'Healing', words: 'exura', mana: 25, level: 1, vocations: [] },
+  ];
+  const routes = Object.assign({}, ROUTES, {
+    '/api/spell-catalog': () => ({ ok: true, catalog: LIVE_SPELLS, total: 2, playerLevel: 20, vocationLabel: 'druid' }),
+    '/api/hotbar': () => ({ ok: true, available: true, slots: [{ slot: 8, sid: 12 }] }),
+  });
+  const { dom, requests } = makePanel(routes);
+  try {
+    await connect(dom);
+
+    type(dom, 'others-food-slot', '2');
+    type(dom, 'others-every-casts', '5');
+    const magicToggle = dom.window.document.getElementById('others-food-magic-enabled');
+    assert.ok(magicToggle, 'magic toggle rendered');
+    magicToggle.checked = true;
+    magicToggle.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+    const magicSelect = dom.window.document.getElementById('others-food-magic-select');
+    assert.ok(magicSelect, 'food spell select rendered once enabled');
+    assert.deepEqual(Array.from(magicSelect.options).map((o) => o.value), ['', '12'], 'select lists only live food spells');
+    magicSelect.value = '12';
+    magicSelect.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+    type(dom, 'others-food-safety-net', '30');
+
+    // A snapshot re-render must not wipe the typed values.
+    await new Promise((r) => setTimeout(r, 600));
+    assert.equal(dom.window.document.getElementById('others-food-slot').value, '2');
+    assert.equal(dom.window.document.getElementById('others-every-casts').value, '5');
+    assert.equal(dom.window.document.getElementById('others-food-safety-net').value, '30');
+
+    click(dom, '#others-save-btn');
+    await new Promise((r) => setTimeout(r, 40));
+
+    const cfgReqs = requests.filter((r) => r.url === '/api/config');
+    assert.ok(cfgReqs.length >= 1, 'config push posted');
+    const cfg = cfgReqs[cfgReqs.length - 1].body.config;
+    assert.equal(cfg.modules.eat.slot, 2);
+    assert.equal(cfg.modules.eat.everyCasts, 5);
+    assert.equal(cfg.modules.eat.safetyNetMinutes, 30);
+    assert.deepEqual(cfg.modules.eat.magic, { enabled: true, slot: 8, sid: 12 },
+      'unified eat.magic written with the live F-slot');
+    assert.equal(cfg.modules.training.eatWithMagic, undefined, 'no legacy eatWithMagic in the posted config (REQ-01)');
+    assert.equal(dom.window.__mbPanel.getState().refusal, null);
+  } finally {
+    await teardown(dom);
+  }
+});
+
 test('REQ-33 (PR5, jsdom): NEW anti-bot alerts raise the panel ALERT + beep exactly once per id', async () => {
   let alertList = [];
   const snapshotRoute = () => ({

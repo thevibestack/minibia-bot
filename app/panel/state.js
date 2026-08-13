@@ -300,6 +300,14 @@
       'others.foodTitle': 'Food',
       'others.foodSlot': 'Food slot (backpack index)',
       'others.everyCasts': 'Eat every N casts (0 = hunger only)',
+      // PR 4 (REQ-01): unified food magic + safety net live in modules.eat.
+      'others.foodMagic': 'Food with magic',
+      'others.foodMagicToggle': 'Create food with magic',
+      'others.foodMagicSelect': 'Food spell (e.g. exevo pan)',
+      'others.foodMagicSelectEmpty': 'Select spell',
+      'others.foodMagicMapping': 'Food spell → live F%slot% from the game',
+      'others.foodMagicHotbar': 'Put the food spell on F1–F12, refresh game data, then save.',
+      'others.safetyNet': 'Safety-net meal every N minutes (default 20)',
       'others.lootTitle': 'Auto-loot',
       'others.lootDest': 'Default destination (empty = loot only listed monsters)',
       'others.antibotTitle': 'Anti-bot chat replies',
@@ -560,6 +568,14 @@
       'others.foodTitle': 'Comida',
       'others.foodSlot': 'Slot de comida (índice de mochila)',
       'others.everyCasts': 'Comer cada N hechizos (0 = solo con hambre)',
+      // PR 4 (REQ-01): comida con magia unificada + red de seguridad en modules.eat.
+      'others.foodMagic': 'Comida con magia',
+      'others.foodMagicToggle': 'Crear comida con magia',
+      'others.foodMagicSelect': 'Magia de comida (ej. exevo pan)',
+      'others.foodMagicSelectEmpty': 'Elegí una magia',
+      'others.foodMagicMapping': 'Magia de comida → F%slot% viva del juego',
+      'others.foodMagicHotbar': 'Poné la magia de comida en F1–F12, actualizá datos del juego y guardá.',
+      'others.safetyNet': 'Comida de red de seguridad cada N minutos (por defecto 20)',
       'others.lootTitle': 'Auto-loot',
       'others.lootDest': 'Destino por defecto (vacío = loot solo a monstruos listados)',
       'others.antibotTitle': 'Respuestas anti-bot',
@@ -784,7 +800,7 @@
       // strings (food slot, every-N-casts, loot default destination, anti-bot
       // replies as `pattern => reply` lines) that survive re-renders;
       // SAVE_OTHERS_SETTINGS parses + commits them into the config.
-      othersForm: { foodSlot: '', everyCasts: '', lootDest: '', antibotReplies: '' },
+      othersForm: { foodSlot: '', everyCasts: '', foodMagicEnabled: '', foodMagicSid: '', safetyNet: '', lootDest: '', antibotReplies: '' },
       // Slice 7 (PR6, REQ-35/36): ATTACK settings form raw values (pure UI
       // strings that survive re-renders — targeting select + rune slot; the
       // spell sid comes from the picker) + the cavebot recorded-route result
@@ -1151,12 +1167,18 @@
   function othersFormFromConfig(state) {
     const cfg = state.config && state.config.modules || {};
     const eat = cfg.eat || {};
+    const magic = eat.magic && typeof eat.magic === 'object' ? eat.magic : {};
     const loot = cfg.loot || {};
     const antibot = cfg.antibot || {};
     const replies = Array.isArray(antibot.replies) ? antibot.replies : [];
     return {
       foodSlot: eat.slot !== null && eat.slot !== undefined ? String(eat.slot) : '',
       everyCasts: Number.isFinite(Number(eat.everyCasts)) ? String(eat.everyCasts) : '',
+      // PR 4 (REQ-01): the unified magic toggle + spell + safety net derive
+      // from modules.eat (the only food config surface left).
+      foodMagicEnabled: magic.enabled === true ? 'true' : 'false',
+      foodMagicSid: hasSpellSid(magic.sid) ? String(Number(magic.sid)) : '',
+      safetyNet: Number.isFinite(Number(eat.safetyNetMinutes)) ? String(eat.safetyNetMinutes) : '',
       lootDest: typeof loot.defaultDest === 'string' && loot.defaultDest ? loot.defaultDest : '',
       antibotReplies: replies
         .filter((r) => r && typeof r === 'object')
@@ -2065,10 +2087,11 @@
         // (healForm/trainerForm precedent). No gate: typing pre-Connect is
         // harmless.
         const key = String(action.key || '');
-        const OTHERS_KEYS = ['foodSlot', 'everyCasts', 'lootDest', 'antibotReplies'];
+        const OTHERS_KEYS = ['foodSlot', 'everyCasts', 'foodMagicEnabled', 'foodMagicSid', 'safetyNet', 'lootDest', 'antibotReplies'];
         if (OTHERS_KEYS.indexOf(key) === -1) return { state, effects: [] };
         const othersForm = Object.assign({}, state.othersForm || {
-          foodSlot: '', everyCasts: '', lootDest: '', antibotReplies: '',
+          foodSlot: '', everyCasts: '', foodMagicEnabled: '', foodMagicSid: '', safetyNet: '',
+          lootDest: '', antibotReplies: '',
         });
         othersForm[key] = String(action.value === null || action.value === undefined ? '' : action.value);
         return { state: Object.assign({}, state, { othersForm }), effects: [] };
@@ -2101,6 +2124,38 @@
         if (!Number.isFinite(everyCasts) || everyCasts < 0) {
           return invalid('invalid other settings — eat every N casts must be >= 0');
         }
+        // PR 4 (REQ-01): the unified food magic + safety net commit into
+        // modules.eat — the ONLY food config surface left (no
+        // training.eatWithMagic anywhere). An untouched toggle/field
+        // PRESERVES the saved config; enabling magic requires a live food
+        // spell mapped to F1–F12 (same trust boundary as the trainer forms —
+        // the server re-checks on save).
+        const cfgEat = state.config && state.config.modules && state.config.modules.eat;
+        const savedMagic = cfgEat && cfgEat.magic && typeof cfgEat.magic === 'object' ? cfgEat.magic : {};
+        const rawMagicEnabled = String(form.foodMagicEnabled || '');
+        const rawMagicSid = String(form.foodMagicSid || '').trim();
+        const rawSafetyNet = String(form.safetyNet || '').trim();
+        const foodMagicEnabled = rawMagicEnabled === '' ? savedMagic.enabled === true : rawMagicEnabled === 'true';
+        const savedSafety = Number(cfgEat && cfgEat.safetyNetMinutes);
+        const safetyNet = rawSafetyNet === ''
+          ? (Number.isFinite(savedSafety) && savedSafety >= 1 ? savedSafety : 20)
+          : Number(rawSafetyNet);
+        if (!Number.isFinite(safetyNet) || safetyNet < 1) {
+          return invalid('invalid other settings — safety net minutes must be >= 1');
+        }
+        let foodMagic = { enabled: false, slot: null, sid: null };
+        if (foodMagicEnabled) {
+          const spells = (state.catalog && state.catalog.spells) || [];
+          const foodSpell = spells.filter((s) => Number(s && s.sid) === Number(rawMagicSid))[0] || null;
+          if (!foodSpell || !isFoodCreationSpell(foodSpell)) {
+            return invalid('invalid other settings — food spell must be from the live catalog (for example, exevo pan)');
+          }
+          const magicSlot = hotbarSlotForSpell(state, rawMagicSid);
+          if (magicSlot === null) {
+            return invalid('invalid other settings — add the food spell to F1–F12 in the game, refresh Live hotbar, then save');
+          }
+          foodMagic = { enabled: true, slot: magicSlot, sid: Number(rawMagicSid) };
+        }
         const parsed = parseRepliesText(rawReplies);
         if (parsed.error) {
           return invalid('invalid anti-bot replies — ' + parsed.error);
@@ -2112,6 +2167,8 @@
         if (!config.modules.antibot || typeof config.modules.antibot !== 'object') config.modules.antibot = {};
         config.modules.eat.slot = foodSlot;
         config.modules.eat.everyCasts = everyCasts;
+        config.modules.eat.safetyNetMinutes = safetyNet;
+        config.modules.eat.magic = foodMagic;
         // The loot destination + anti-bot replies surfaces are removed from
         // this UI generation, so an empty form PRESERVES the server-returned
         // hidden config instead of wiping it on a food-only save.
@@ -2129,6 +2186,9 @@
             othersForm: {
               foodSlot: foodSlot === null ? '' : String(foodSlot),
               everyCasts: String(everyCasts),
+              foodMagicEnabled: foodMagicEnabled ? 'true' : 'false',
+              foodMagicSid: foodMagic.sid !== null ? String(foodMagic.sid) : '',
+              safetyNet: String(safetyNet),
               lootDest: rawDest,
               antibotReplies: rawReplies,
             },
@@ -2932,6 +2992,23 @@
     const form = state.othersForm || {};
     const derived = othersFormFromConfig(state);
     const val = (key) => (form[key] !== '' && form[key] !== undefined ? form[key] : derived[key]);
+    // PR 4 (REQ-01): the unified food-magic surface — toggle, live-catalog
+    // spell select and the live F-slot mapping note (trainer rune select
+    // pattern). The fixed-slot fallback fields stay right above.
+    const foodSpells = filterFoodCatalog(state);
+    const foodMagicEnabled = val('foodMagicEnabled') === 'true';
+    const foodSid = val('foodMagicSid');
+    const foodSlot = hotbarSlotForSpell(state, foodSid);
+    const foodMapping = foodSid
+      ? (foodSlot !== null
+          ? tVar(state, 'others.foodMagicMapping', { slot: foodSlot })
+          : t(state, 'others.foodMagicHotbar'))
+      : '';
+    const foodOptions = foodSpells.map((spell) => {
+      const sid = String(Number(spell.sid));
+      return '<option value="' + sid + '"' + (foodSid === sid ? ' selected' : '') + '>'
+        + escapeHtml(String(spell.name || '')) + (spell.words ? ' — ' + escapeHtml(String(spell.words)) : '') + '</option>';
+    }).join('');
     return '<div class="others-form">'
       + '<h3>' + escapeHtml(t(state, 'others.formTitle')) + '</h3>'
       + '<h4>' + escapeHtml(t(state, 'others.foodTitle')) + '</h4>'
@@ -2939,6 +3016,19 @@
       + ' <input type="number" id="others-food-slot" min="1" step="1" value="' + escapeHtml(val('foodSlot')) + '"></label>'
       + '<label class="others-field">' + escapeHtml(t(state, 'others.everyCasts'))
       + ' <input type="number" id="others-every-casts" min="0" step="1" value="' + escapeHtml(val('everyCasts')) + '"></label>'
+      + '<h4>' + escapeHtml(t(state, 'others.foodMagic')) + '</h4>'
+      + '<label class="others-field">' + escapeHtml(t(state, 'others.foodMagicToggle'))
+      + ' <input type="checkbox" id="others-food-magic-enabled"' + (foodMagicEnabled ? ' checked' : '') + '></label>'
+      + (foodMagicEnabled
+          ? '<label class="others-field">' + escapeHtml(t(state, 'others.foodMagicSelect'))
+            + ' <select id="others-food-magic-select"><option value="">' + escapeHtml(t(state, 'others.foodMagicSelectEmpty')) + '</option>'
+            + foodOptions + '</select></label>'
+            + (foodMapping ? '<p class="trainer-note'
+              + (foodSlot !== null ? ' trainer-hotbar-ok' : ' trainer-hotbar-missing') + '">'
+              + escapeHtml(foodMapping) + '</p>' : '')
+          : '')
+      + '<label class="others-field">' + escapeHtml(t(state, 'others.safetyNet'))
+      + ' <input type="number" id="others-food-safety-net" min="1" step="1" value="' + escapeHtml(val('safetyNet')) + '"></label>'
       + '<button type="button" id="others-save-btn">' + escapeHtml(t(state, 'others.save')) + '</button>'
       + '</div>';
   }
