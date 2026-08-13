@@ -5,7 +5,12 @@
   "description": "Auto-rotation Tampermonkey userscript for minibia.com/play (core pure modules)",
   "type": "commonjs",
   "scripts": {
+    "start": "bun app/entry-compiled.js",
+    "tibiabot": "bun bin/tibiabot.js",
     "test": "node --test"
+  },
+  "bin": {
+    "tibiabot": "./bin/tibiabot.js"
   },
   "keywords": [
     "minibia",
