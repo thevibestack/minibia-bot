@@ -23,6 +23,10 @@
     <section id="module-list" aria-label="Modules"></section>
     <section id="config-form" aria-label="Configuration"></section>
     <section id="live-state" aria-label="Live state"></section>
+    <!-- REQ-11 (slice C): the alerts audit trail mounts into its own
+         production section (renderAlerts) after the live state, so
+         module/agent alerts are visible without a game-side console. -->
+    <section id="panel-alerts" aria-label="Alerts"></section>
     <section id="activity-log" aria-label="Activity log"></section>
   </main>
   <!-- REQ-26 (slice 1a): first-run tutorial overlay (fixed-position card). -->

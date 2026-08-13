@@ -209,3 +209,20 @@ test('REQ-08: snapshot polling renders the live state view', async () => {
     teardown(dom);
   }
 });
+
+test('REQ-11 (T4): alerts section is MOUNTED — ALERT entries appear in #panel-alerts', () => {
+  const dom = makePanel();
+  try {
+    const alertsSection = dom.window.document.getElementById('panel-alerts');
+    assert.ok(alertsSection, 'the #panel-alerts container exists in the production shell');
+    assert.match(alertsSection.textContent, /Alerts/, 'section renders its localized title');
+    assert.match(alertsSection.textContent, /No alerts yet/, 'empty state shows until an alert fires');
+
+    dom.window.__mbPanel.dispatch({ type: 'ALERT', kind: 'info', message: 'hotbar drift detected' });
+    const mounted = dom.window.document.getElementById('panel-alerts');
+    assert.match(mounted.textContent, /hotbar drift detected/, 'alert message mounts into #panel-alerts');
+    assert.equal(dom.window.__mbPanel.getState().alerts.length, 1);
+  } finally {
+    teardown(dom);
+  }
+});

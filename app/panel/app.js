@@ -67,12 +67,14 @@
     var moduleList = el('module-list');
     var configForm = el('config-form');
     var liveState = el('live-state');
+    var alerts = el('panel-alerts');
     var activityLog = el('activity-log');
     var tutorialRoot = el('tutorial-root');
     if (statusBar) statusBar.innerHTML = P.renderStatusBar(state);
     if (moduleList) moduleList.innerHTML = P.renderModuleList(state);
     if (configForm && !opts.preserveConfig) configForm.innerHTML = P.renderConfigForm(state);
     if (liveState) liveState.innerHTML = P.renderLiveState(state);
+    if (alerts) alerts.innerHTML = P.renderAlerts(state);
     if (activityLog) activityLog.innerHTML = P.renderLog(state);
     if (tutorialRoot) tutorialRoot.innerHTML = P.renderTutorial(state);
     syncTutorialTarget();
