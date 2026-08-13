@@ -44,6 +44,19 @@ test('2.4: every agent module is embedded in the registry in dependency order', 
   );
 });
 
+test('live contract: manifest includes canonical contracts and mana-items before their consumers', () => {
+  const names = AGENT_MODULES.map(([name]) => name);
+  for (const required of ['core/live-contract', 'core/runtime-status', 'agent/modules/mana-items']) {
+    assert.notEqual(names.indexOf(required), -1, required + ' must be declared in AGENT_MODULES');
+    assert.match(BUILT, new RegExp("__mbModules\\['" + required.replace('/', '\\/') + "'\\]"),
+      required + ' must be present in the read-only generated output');
+  }
+  assert.ok(names.indexOf('core/live-contract') < names.indexOf('adapters/gameClient'),
+    'live-contract must load before the game client adapter');
+  assert.ok(names.indexOf('agent/modules/mana-items') < names.indexOf('agent/bootstrap'),
+    'mana-items must load before bootstrap requires it');
+});
+
 test('2.4: hud/ui/persist are NOT bundled (design D2 — clean page, no overlay)', () => {
   assert.doesNotMatch(BUILT, /__mbModules\['adapters\/hud'\]/);
   assert.doesNotMatch(BUILT, /__mbModules\['adapters\/ui'\]/);

@@ -1,90 +1,64 @@
 'use strict';
 
-/**
- * PR 6 — attack skeleton module tests (REQ-35, D10, task 6.1): the ATTACK
- * module is STATE-ONLY — targeting choice (lowest HP / nearest) + offensive
- * spell/rune pickers config with `skeleton: true` disclosure and NO combat
- * loop (combatLoop: false, no tree/queue/game surface). Unit state only.
- */
-
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-
 const {
-  createAttackModule,
-  normalizeTargeting,
-  normalizeSid,
-  normalizeSlot,
-  TARGETING_OPTIONS,
-  DEFAULT_TARGETING,
+  createAttackModule, normalizeTargeting, normalizeSid, normalizeSlot, TARGETING_OPTIONS, DEFAULT_TARGETING,
 } = require('../../../src/agent/modules/attack');
 
-function makeModule(config) {
-  return createAttackModule({ config: config || {} });
+function makeModule(overrides = {}) {
+  const fired = [];
+  const target = overrides.target === undefined ? { id: 42, name: 'Rat' } : overrides.target;
+  const mod = createAttackModule({
+    config: Object.assign({ on: true, targeting: 'lowest-hp', sid: 61, runeSlot: null, reserve: 10 }, overrides.config || {}),
+    readTarget: () => target,
+    resolveSpellSlot: (sid) => (sid === 61 ? 3 : null),
+    getSpellCost: () => 20,
+    canCastSpell: () => true,
+    readCooldown: () => ({ cooldown: { active: false }, globalCooldown: { active: false } }),
+  });
+  return { mod, fired };
 }
 
-test('REQ-35: skeleton state — disclosure, no combat loop', () => {
-  const mod = makeModule({ on: true, targeting: 'lowest-hp' });
-  const st = mod.getState();
-  assert.equal(st.skeleton, true, 'module discloses the skeleton');
-  assert.equal(st.disclosure, 'skeleton — limited', 'REQ-35: UI discloses limited functionality');
-  assert.equal(st.combatLoop, false, 'no full combat loop in the skeleton');
+test('normalizers accept only supported targeting, sid and hotbar slots', () => {
+  assert.equal(TARGETING_OPTIONS.includes('nearest'), true);
+  assert.equal(normalizeTargeting('nearest'), 'nearest');
+  assert.equal(normalizeTargeting('junk'), DEFAULT_TARGETING);
+  assert.equal(normalizeSid('61'), 61);
+  assert.equal(normalizeSid(''), null);
+  assert.equal(normalizeSlot('3'), 3);
+  assert.equal(normalizeSlot(13), null);
 });
 
-test('REQ-35: targeting choice — lowest HP (default) and nearest pass through', () => {
-  assert.equal(TARGETING_OPTIONS.indexOf('lowest-hp') !== -1, true);
-  assert.equal(TARGETING_OPTIONS.indexOf('nearest') !== -1, true);
-  const low = makeModule({ on: true, targeting: 'lowest-hp' }).getState();
-  assert.equal(low.targeting, 'lowest-hp');
-  const near = makeModule({ on: true, targeting: 'nearest' }).getState();
-  assert.equal(near.targeting, 'nearest');
+test('assist mode never acquires a target: no user target means no action', () => {
+  const { mod } = makeModule({ target: null });
+  assert.deepEqual(mod.decide({ mana: 100, maxMana: 100 }), { fire: false, reason: 'no-manual-target' });
+  assert.equal(mod.getState().mode, 'assist');
 });
 
-test('REQ-35: invalid/absent targeting falls back to the default (never crashes)', () => {
-  for (const bad of [undefined, null, '', 'random', 42, {}, []]) {
-    const st = makeModule({ on: true, targeting: bad }).getState();
-    assert.equal(st.targeting, DEFAULT_TARGETING, 'bad targeting -> ' + String(bad));
-  }
+test('assist casts the selected spell only when it is on the hotbar and affordable with reserve', () => {
+  const { mod } = makeModule();
+  const d = mod.decide({ mana: 30, maxMana: 100 });
+  assert.equal(d.fire, true);
+  assert.equal(d.kind, 'spell');
+  assert.equal(d.slot, 3);
+  assert.equal(d.target, 'Rat');
+  assert.equal(mod.decide({ mana: 29, maxMana: 100 }).reason, 'reserve');
 });
 
-test('REQ-35: offensive spell sid normalizes — integer >= 0 only', () => {
-  assert.equal(normalizeSid(61), 61);
-  assert.equal(normalizeSid('61'), 61, 'numeric strings normalize');
-  assert.equal(normalizeSid(null), null);
-  assert.equal(normalizeSid(undefined), null);
-  assert.equal(normalizeSid(-1), null, 'negative sid is invalid');
-  assert.equal(normalizeSid(1.5), null, 'non-integer sid is invalid');
-  assert.equal(normalizeSid(''), null, 'empty string is invalid');
+test('assist refuses unknown spell slots, vocation rejection and cooldowns', () => {
+  let mod = createAttackModule({ config: { on: true, sid: 61 }, readTarget: () => ({ name: 'Rat' }), resolveSpellSlot: () => null, getSpellCost: () => 20 });
+  assert.equal(mod.decide({ mana: 100, maxMana: 100 }).reason, 'spell-not-on-hotbar');
+  mod = createAttackModule({ config: { on: true, sid: 61 }, readTarget: () => ({ name: 'Rat' }), resolveSpellSlot: () => 3, getSpellCost: () => 20, canCastSpell: () => false });
+  assert.equal(mod.decide({ mana: 100, maxMana: 100 }).reason, 'vocation-gate');
+  mod = createAttackModule({ config: { on: true, sid: 61 }, readTarget: () => ({ name: 'Rat' }), resolveSpellSlot: () => 3, getSpellCost: () => 20, readCooldown: () => ({ cooldown: { active: true }, globalCooldown: { active: false } }) });
+  assert.equal(mod.decide({ mana: 100, maxMana: 100 }).reason, 'cooldown');
 });
 
-test('REQ-35: offensive rune slot normalizes — integer 1-12 only', () => {
-  assert.equal(normalizeSlot(3), 3);
-  assert.equal(normalizeSlot('3'), 3, 'numeric strings normalize');
-  assert.equal(normalizeSlot(null), null);
-  assert.equal(normalizeSlot(0), null, 'slot 0 is invalid');
-  assert.equal(normalizeSlot(13), null, 'slot 13 is invalid');
-  assert.equal(normalizeSlot(1.5), null, 'non-integer slot is invalid');
-});
-
-test('REQ-35: getState carries the configured pickers + on flag', () => {
-  const st = makeModule({ on: true, targeting: 'nearest', sid: 12, runeSlot: 5 }).getState();
-  assert.equal(st.on, true);
-  assert.deepEqual(st.spell, { sid: 12 });
-  assert.deepEqual(st.rune, { slot: 5 });
-});
-
-test('REQ-35: off module — state reports on:false, isEnabled false', () => {
-  const mod = makeModule({ on: false, targeting: 'nearest' });
-  assert.equal(mod.isEnabled(), false);
-  assert.equal(mod.getState().on, false);
-  // The skeleton disclosure stays honest even when off.
-  assert.equal(mod.getState().skeleton, true);
-});
-
-test('REQ-35: no module object -> defaults (empty config never crashes)', () => {
-  const mod = createAttackModule();
-  const st = mod.getState();
-  assert.equal(st.on, false);
-  assert.equal(st.targeting, DEFAULT_TARGETING);
-  assert.equal(st.combatLoop, false);
+test('a configured rune is used when no spell is selected', () => {
+  const { mod } = makeModule({ config: { sid: null, runeSlot: 5, reserve: 0 } });
+  const d = mod.decide({ mana: 0, maxMana: 100 });
+  assert.equal(d.fire, true);
+  assert.equal(d.kind, 'rune');
+  assert.equal(d.slot, 5);
 });

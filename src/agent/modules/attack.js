@@ -1,111 +1,114 @@
 'use strict';
 
 /**
- * Attack skeleton (REQ-35, design D10, task 6.1).
+ * Assisted combat module.
  *
- * ATTACK is a STATE-ONLY SKELETON in this slice:
- *  - Targeting choice (lowest HP / nearest; native ACTIONS) and offensive
- *    spell/rune pickers are CONFIG — the panel renders them, the config
- *    shape carries them (forward-compat with the full combat slice).
- *  - `skeleton: true` + disclosure "skeleton — limited": the module performs
- *    NO full combat loop (no tree node, no queue dispatch, no game calls —
- *    D10: "no tree loop"). The combat behavior slice lands later and wires
- *    the targeting decision into the tree.
- *
- * Pure node-testable: all normalization is local and exported for reuse by
- * the future combat slice.
+ * This module deliberately NEVER acquires a target: it fires only when the
+ * player has selected one in MiniBia. Cavebot owns automatic target selection
+ * and can reuse this module once it has selected a configured monster.
  */
 
-/** Targeting choices (REQ-35: "lowest HP / nearest"; native ACTIONS). */
-const TARGETING_OPTIONS = ['lowest-hp', 'nearest'];
+const FIRING_MOD = require('../../adapters/firing');
+const FEAS_MOD = require('../../core/feasibility');
+const CD_MOD = require('../../core/cooldown');
 
-/** Default targeting when the config value is absent/invalid. */
+const TARGETING_OPTIONS = ['lowest-hp', 'nearest'];
 const DEFAULT_TARGETING = 'lowest-hp';
 
-/**
- * Normalize the targeting choice: only the known options pass through,
- * anything else (including undefined/null) falls back to the default —
- * a bad config never crashes the module.
- * @param {unknown} value
- * @returns {string} 'lowest-hp' | 'nearest'
- */
 function normalizeTargeting(value) {
   return TARGETING_OPTIONS.indexOf(value) !== -1 ? value : DEFAULT_TARGETING;
 }
 
-/**
- * Normalize an offensive spell sid: non-negative integer only; anything
- * else (absent, string junk, negative) becomes null (no spell configured).
- * @param {unknown} value
- * @returns {number|null}
- */
 function normalizeSid(value) {
-  // Empty strings would Number() to 0 — a missing input must NOT become
-  // "spell 0" (routes.js normalizeCoords guards the same trap).
-  if (value === null || value === undefined) return null;
-  if (typeof value === 'string' && value.trim() === '') return null;
+  if (value === null || value === undefined || (typeof value === 'string' && value.trim() === '')) return null;
   const n = Number(value);
   return Number.isInteger(n) && n >= 0 ? n : null;
 }
 
-/**
- * Normalize an offensive rune hotbar slot: integer 1-12 only; anything else
- * becomes null (no rune slot configured).
- * @param {unknown} value
- * @returns {number|null}
- */
 function normalizeSlot(value) {
-  if (value === null || value === undefined) return null;
-  if (typeof value === 'string' && value.trim() === '') return null;
+  if (value === null || value === undefined || (typeof value === 'string' && value.trim() === '')) return null;
   const n = Number(value);
   return Number.isInteger(n) && n >= 1 && n <= 12 ? n : null;
 }
 
 /**
- * Create the attack skeleton module.
- *
  * @param {object} opts
- * @param {object} [opts.config] - normalized attack config
- *   { on: boolean, targeting: string, sid: number|null, runeSlot: number|null }
- * @returns {{
- *   getState: () => object,
- *   isEnabled: () => boolean,
- * }}
+ * @param {object} opts.config {on,sid,runeSlot,reserve}
+ * @param {() => object|null} [opts.readTarget]
+ * @param {(sid:number) => number|null} [opts.resolveSpellSlot]
+ * @param {(sid:number) => number|null} [opts.getSpellCost]
+ * @param {(sid:number|null) => boolean|null} [opts.canCastSpell]
+ * @param {(sid:number|null) => object|null} [opts.readCooldown]
+ * @returns {{decide:Function,fire:Function,getState:Function,isEnabled:Function}}
  */
 function createAttackModule(opts = {}) {
   const config = opts.config && typeof opts.config === 'object' ? opts.config : {};
+  const readTarget = typeof opts.readTarget === 'function' ? opts.readTarget : () => null;
+  const resolveSpellSlot = typeof opts.resolveSpellSlot === 'function' ? opts.resolveSpellSlot : () => null;
+  const getSpellCost = typeof opts.getSpellCost === 'function' ? opts.getSpellCost : () => null;
+  const canCastSpell = typeof opts.canCastSpell === 'function' ? opts.canCastSpell : () => null;
+  const readCooldown = typeof opts.readCooldown === 'function' ? opts.readCooldown : () => null;
+  const warned = new Set();
+  const state = { lastReason: 'off', lastTarget: null, lastFiredAt: 0 };
 
-  /**
-   * Honest module state (snapshot -> panel live state, REQ-35).
-   * `skeleton: true` + disclosure disclose the limited functionality;
-   * `combatLoop: false` states plainly that no full combat loop runs.
-   * @returns {object}
-   */
+  function cooldownVerdict(sid) {
+    const cd = readCooldown(sid) || {};
+    return CD_MOD.canFire({ cooldown: cd.cooldown, globalCooldown: cd.globalCooldown, cooldownMs: 0, lastFiredAt: null, now: Date.now() });
+  }
+
+  function decide(ctx = {}) {
+    if (config.on !== true) return { fire: false, reason: 'off' };
+    const target = readTarget();
+    if (!target || typeof target !== 'object') return { fire: false, reason: 'no-manual-target' };
+    const sid = normalizeSid(config.sid);
+    const runeSlot = normalizeSlot(config.runeSlot);
+    let slot = null;
+    let kind = null;
+    if (sid !== null) {
+      if (canCastSpell(sid) === false) return { fire: false, reason: 'vocation-gate' };
+      slot = normalizeSlot(resolveSpellSlot(sid));
+      if (slot === null) return { fire: false, reason: 'spell-not-on-hotbar' };
+      const cost = getSpellCost(sid);
+      if (!Number.isFinite(Number(cost))) return { fire: false, reason: 'no-cost' };
+      const feasibility = FEAS_MOD.canCast({ mana: ctx.mana, maxMana: ctx.maxMana, cost: Number(cost), reserve: Number(config.reserve) || 0, key: 'attack-' + sid, warned });
+      if (!feasibility.fire) return { fire: false, reason: feasibility.reason === 'reserve' ? 'reserve' : 'insufficient-mana' };
+      kind = 'spell';
+    } else if (runeSlot !== null) {
+      slot = runeSlot;
+      kind = 'rune';
+    } else {
+      return { fire: false, reason: 'no-action-configured' };
+    }
+    const cd = cooldownVerdict(sid);
+    if (!cd.fire) return { fire: false, reason: cd.reason === 'global-cooldown' ? 'global-cooldown' : 'cooldown' };
+    state.lastTarget = String(target.name || target.id || 'target');
+    state.lastReason = 'attack-' + kind;
+    return { fire: true, reason: state.lastReason, kind, slot, target: state.lastTarget };
+  }
+
+  function fire(decision, deps = {}) {
+    const slot = normalizeSlot(decision && decision.slot);
+    if (slot === null) return false;
+    const fired = FIRING_MOD.fireSlot(slot, { mode: 'handleClick', gameClient: deps.gameClient, document: deps.document, log: deps.log || {} });
+    if (fired) state.lastFiredAt = Date.now();
+    return fired;
+  }
+
   function getState() {
     return {
-      skeleton: true,
-      disclosure: 'skeleton — limited',
       on: config.on === true,
+      mode: 'assist',
       targeting: normalizeTargeting(config.targeting),
-      spell: { sid: normalizeSid(config.sid) },
+      spell: { sid: normalizeSid(config.sid), slot: normalizeSid(config.sid) === null ? null : normalizeSlot(resolveSpellSlot(normalizeSid(config.sid))) },
       rune: { slot: normalizeSlot(config.runeSlot) },
-      combatLoop: false, // REQ-35: no full combat loop in the skeleton
+      reserve: Number.isFinite(Number(config.reserve)) ? Number(config.reserve) : 0,
+      lastReason: state.lastReason,
+      lastTarget: state.lastTarget,
+      lastFiredAt: state.lastFiredAt,
     };
   }
 
-  /** @returns {boolean} whether the module is configured ON */
-  function isEnabled() {
-    return config.on === true;
-  }
-
-  return { getState, isEnabled };
+  return { decide, fire, getState, isEnabled: () => config.on === true };
 }
 
-module.exports = {
-  createAttackModule,
-  normalizeTargeting,
-  normalizeSid,
-  normalizeSlot,
-  TARGETING_OPTIONS,
-  DEFAULT_TARGETING,
-};
+module.exports = { createAttackModule, normalizeTargeting, normalizeSid, normalizeSlot, TARGETING_OPTIONS, DEFAULT_TARGETING };

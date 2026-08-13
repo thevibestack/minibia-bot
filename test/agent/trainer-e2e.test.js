@@ -48,13 +48,20 @@ function makePage(overrides = {}) {
       vocation: 4,
       state: { mana: 400, maxMana: 500, health: 100, maxHealth: 100, __state: { capacity: cap.capacity }, maxCapacity: cap.maxCapacity },
       spellbook: {
-        cooldowns: { GLOBAL_COOLDOWN: { active: false, seconds: 0 }, 7: { active: false, seconds: 0 } },
-        spells: { 7: { cost: 200 } },
+        cooldowns: { GLOBAL_COOLDOWN: { active: false, seconds: 0 }, 7: { active: false, seconds: 0 }, 12: { active: false, seconds: 0 } },
+        spells: { 7: { cost: 200 }, 12: { cost: 30 } },
       },
     },
     interface: {
       hotbarManager: {
-        __handleClick: (slot) => { casts.push({ slot, at: Date.now() }); },
+        // The Trainer verifies the current live SID mapping and confirms a
+        // cast from observable mana loss. Model the same live contract here.
+        slots: [{}, {}, { spell: { sid: 7 } }, {}, { spell: { sid: 12 } }, {}, { spell: { sid: 7 } }],
+        __handleClick: (slot) => {
+          casts.push({ slot, at: Date.now() });
+          const sid = slot === 5 ? 12 : (slot === 3 || slot === 7 ? 7 : null);
+          if (sid !== null) gameClient.player.state.mana -= gameClient.player.spellbook.spells[sid].cost;
+        },
         __canPlayerCastSpell: () => true,
       },
     },
@@ -95,7 +102,7 @@ function trainerConfig(overrides = {}) {
     healItems: { on: false, threshold: 50, slotCids: [] },
     healMagic: { on: false, threshold: 150, slot: null, sid: null, reserve: 0, word: null },
     runes: { on: false, attackSlot: null, healSlot: null, healThreshold: null, reserve: 0,
-      capMode: 'strict', capFullThreshold: 1.0, fallbackSlot: 3, fallbackManaPct: 0.5 },
+      capMode: 'strict', capFullThreshold: 1.0, fallbackSlot: 3, fallbackSid: 7, fallbackManaPct: 0.5 },
     training: { on: true, slot: 7, sid: 7, reserve: 30, word: null,
       eatWithMagic: { enabled: false, slot: null, sid: null } },
     eat: { on: false, everyCasts: 0, warningWindowSec: 60, fallbackIntervalSec: 10, slot: null, cids: [] },
@@ -175,7 +182,7 @@ test('REQ-31: mana below cost + reserve (200+30=230) -> no cast; at 230 the trai
   }
 });
 
-test('REQ-32: mana low + eat-with-magic -> magic-food slot fires; disabled -> waits', async () => {
+test('REQ-32: mana low waits even when magic food is configured; food is cadence-driven after runes', async () => {
   const { dom, casts, gameClient, surface, handle } = makePage();
   try {
     assert.equal(await waitFor(() => handle().isReady()), true);
@@ -184,16 +191,13 @@ test('REQ-32: mana low + eat-with-magic -> magic-food slot fires; disabled -> wa
     surface().applyConfig(cfg);
     gameClient.player.state.mana = 210; // below cost+reserve
 
-    assert.equal(await waitFor(() => casts.length >= 1, { timeout: 4000 }), true);
-    assert.equal(casts[0].slot, 5, 'the magic-food slot fires INSTEAD of the training cast');
-    assert.ok(!casts.some((c) => c.slot === 7), 'no rune-making cast while eating with magic');
-
-    // Disabled -> the trainer waits for mana.
-    const cfg2 = trainerConfig();
-    surface().applyConfig(cfg2);
-    casts.length = 0;
     await new Promise((r) => setTimeout(r, 700));
-    assert.equal(casts.length, 0, 'eat-with-magic OFF -> mana low means the trainer waits (REQ-32)');
+    assert.equal(casts.length, 0, 'low mana waits; food magic is never an automatic low-mana fallback');
+    assert.equal(handle().getState().modules.training.waitingForMana, true);
+
+    gameClient.player.state.mana = 230;
+    assert.equal(await waitFor(() => casts.some((c) => c.slot === 7), { timeout: 4000 }), true,
+      'the persisted trainer fires automatically once mana reaches cost + reserve');
   } finally {
     teardown(dom);
   }

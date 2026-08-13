@@ -46,8 +46,10 @@ const CHAT_MOD = require('../adapters/chat');
 const PREMIUM_MOD = require('../core/premium');
 const KILLS_MOD = require('../core/kills');
 const LOG_MOD = require('../core/log'); // D8 (slice 1a): readable activity log ring
+const ITEMS_MOD = require('../core/items'); // live container catalog for survival/item selectors
 // Slice-4 modules (REQ-13..17) — pure decision modules, tree-wired below.
 const HEAL_ITEMS_MOD = require('./modules/heal-items');
+const MANA_ITEMS_MOD = require('./modules/mana-items');
 const HEAL_MAGIC_MOD = require('./modules/heal-magic');
 const RUNES_MOD = require('./modules/runes');
 const TRAINING_MOD = require('./modules/training');
@@ -83,11 +85,12 @@ const DEFAULT_CONFIG = {
   // Shapes match app/store/characters.ts defaultConfig (slice 3) + additive
   // settings: runes.healThreshold, eat.slot, eat.cids (design extensions).
   healItems: { on: false, threshold: 50, slotCids: [] },
+  manaItems: { on: false, threshold: 50, slotCids: [] },
   healMagic: { on: false, threshold: 150, slot: null, sid: null, word: null, reserve: 0 },
   runes: { on: false, attackSlot: null, healSlot: null, healThreshold: null, reserve: 0,
-    capMode: 'strict', capFullThreshold: 1.0, fallbackSlot: null, fallbackManaPct: 0.5 },
+    capMode: 'strict', capFullThreshold: 1.0, fallbackSid: null, fallbackSlot: null, fallbackManaPct: 0.5 },
   training: { on: false, slot: null, sid: null, reserve: 0, word: null,
-    eatWithMagic: { enabled: false, slot: null, sid: null } },
+    eatWithMagic: { enabled: false, slot: null, sid: null, everyRunes: 1 } },
   eat: { on: false, everyCasts: 0, warningWindowSec: 60, fallbackIntervalSec: 10, slot: null, cids: [] },
   // Slice-5 modules — ALL OFF by default (opt-in). Shapes match
   // app/store/characters.ts defaultConfig + additive: healMagic/training word
@@ -153,11 +156,12 @@ function normalizeConfig(raw) {
     survival: { on: true, threshold: 50, slot: null },
     rotation: { spells: [] },
     healItems: { on: false, threshold: 50, slotCids: [] },
+    manaItems: { on: false, threshold: 50, slotCids: [] },
     healMagic: { on: false, threshold: 150, slot: null, sid: null, word: null, reserve: 0 },
     runes: { on: false, attackSlot: null, healSlot: null, healThreshold: null, reserve: 0,
-      capMode: 'strict', capFullThreshold: 1.0, fallbackSlot: null, fallbackManaPct: 0.5 },
+      capMode: 'strict', capFullThreshold: 1.0, fallbackSid: null, fallbackSlot: null, fallbackManaPct: 0.5 },
     training: { on: false, slot: null, sid: null, reserve: 0, word: null,
-      eatWithMagic: { enabled: false, slot: null, sid: null } },
+      eatWithMagic: { enabled: false, slot: null, sid: null, everyRunes: 1 } },
     eat: { on: false, everyCasts: 0, warningWindowSec: 60, fallbackIntervalSec: 10, slot: null, cids: [] },
     trade: { on: false, message: '', intervalMs: 180000 },
     loot: { on: false, defaultDest: null, perMonster: {} },
@@ -166,8 +170,8 @@ function normalizeConfig(raw) {
     learning: { knownWords: [] },
     antibot: { on: false, replies: [], domRuneCheck: false },
     routes: { on: false },
-    attack: { on: false, targeting: 'lowest-hp', sid: null, runeSlot: null },
-    cavebot: { on: false, paused: false, route: [] },
+    attack: { on: false, targeting: 'lowest-hp', sid: null, runeSlot: null, reserve: 0 },
+    cavebot: { on: false, paused: false, route: [], monsters: [], targeting: 'nearest' },
     armed: false,
   };
   if (Number.isFinite(src.queue && src.queue.minIntervalMs) && src.queue.minIntervalMs >= 0) {
@@ -191,6 +195,10 @@ function normalizeConfig(raw) {
   if (typeof hi.on === 'boolean') cfg.healItems.on = hi.on;
   if (Number.isFinite(hi.threshold)) cfg.healItems.threshold = hi.threshold;
   if (Array.isArray(hi.slotCids)) cfg.healItems.slotCids = hi.slotCids.map(Number).filter(Number.isInteger).filter((n) => n >= 0);
+  const mi = moduleSource(src, 'manaItems');
+  if (typeof mi.on === 'boolean') cfg.manaItems.on = mi.on;
+  if (Number.isFinite(mi.threshold)) cfg.manaItems.threshold = mi.threshold;
+  if (Array.isArray(mi.slotCids)) cfg.manaItems.slotCids = mi.slotCids.map(Number).filter(Number.isInteger).filter((n) => n >= 0);
   const hm = moduleSource(src, 'healMagic');
   if (typeof hm.on === 'boolean') cfg.healMagic.on = hm.on;
   if (Number.isFinite(hm.threshold)) cfg.healMagic.threshold = hm.threshold;
@@ -209,11 +217,8 @@ function normalizeConfig(raw) {
   if (Number.isFinite(rn.capFullThreshold) && rn.capFullThreshold > 0 && rn.capFullThreshold <= 1) {
     cfg.runes.capFullThreshold = rn.capFullThreshold;
   }
-  if (Number.isInteger(rn.fallbackSlot)) cfg.runes.fallbackSlot = rn.fallbackSlot;
-  // NOTE: fallbackSid was DROPPED (post-chain maintenance, obs 10502): the
-  // fallback fires SLOT-driven (fallbackSlot) like every other module; an
-  // sid never resolved a slot, so carrying one implied behavior that did not
-  // exist. Unknown keys are dropped by normalization anyway.
+  if (Number.isInteger(rn.fallbackSid)) cfg.runes.fallbackSid = rn.fallbackSid;
+  if (Number.isInteger(rn.fallbackSlot) && rn.fallbackSlot >= 1 && rn.fallbackSlot <= 12) cfg.runes.fallbackSlot = rn.fallbackSlot;
   if (Number.isFinite(rn.fallbackManaPct) && rn.fallbackManaPct >= 0 && rn.fallbackManaPct <= 1) {
     cfg.runes.fallbackManaPct = rn.fallbackManaPct;
   }
@@ -226,6 +231,7 @@ function normalizeConfig(raw) {
   if (typeof ew.enabled === 'boolean') cfg.training.eatWithMagic.enabled = ew.enabled; // D4 (REQ-32)
   if (Number.isInteger(ew.slot)) cfg.training.eatWithMagic.slot = ew.slot;
   if (Number.isInteger(ew.sid)) cfg.training.eatWithMagic.sid = ew.sid;
+  if (Number.isFinite(ew.everyRunes) && ew.everyRunes >= 1) cfg.training.eatWithMagic.everyRunes = Math.floor(ew.everyRunes);
   const ea = moduleSource(src, 'eat');
   if (typeof ea.on === 'boolean') cfg.eat.on = ea.on;
   if (Number.isFinite(ea.everyCasts) && ea.everyCasts >= 0) cfg.eat.everyCasts = Math.floor(ea.everyCasts);
@@ -284,9 +290,12 @@ function normalizeConfig(raw) {
   cfg.attack.targeting = ATTACK_MOD.normalizeTargeting(at.targeting);
   cfg.attack.sid = ATTACK_MOD.normalizeSid(at.sid);
   cfg.attack.runeSlot = ATTACK_MOD.normalizeSlot(at.runeSlot);
+  if (Number.isFinite(at.reserve) && at.reserve >= 0) cfg.attack.reserve = at.reserve;
   const cv = moduleSource(src, 'cavebot');
   if (typeof cv.on === 'boolean') cfg.cavebot.on = cv.on;
   if (typeof cv.paused === 'boolean') cfg.cavebot.paused = cv.paused;
+  if (Array.isArray(cv.monsters)) cfg.cavebot.monsters = CAVEBOT_MOD.normalizeMonsterNames(cv.monsters);
+  if (cv.targeting === 'lowest-hp' || cv.targeting === 'nearest') cfg.cavebot.targeting = cv.targeting;
   if (Array.isArray(cv.route)) cfg.cavebot.route = CAVEBOT_MOD.sanitizeRouteList(cv.route);
   if (Array.isArray(src.routes)) cfg.cavebot.route = CAVEBOT_MOD.sanitizeRouteList(src.routes);
   cfg.armed = src.armed === true; // REQ-02: only an explicit true arms
@@ -364,6 +373,10 @@ function createAgent(opts = {}) {
     pollCount: 0,
     lastPath: [],
     lastDispatch: [],
+    // The panel must tell the user whether mana is coming from the live
+    // client state or the DOM fallback; otherwise a missing read looks like a
+    // silent Trainer failure.
+    statsSource: 'none',
     warnings: [],
     errors: [],
     // Session-scoped state (survives config rebuilds within a session,
@@ -394,35 +407,146 @@ function createAgent(opts = {}) {
    *  Action Queue — the rotation engine executes them inline, so enqueueing
    *  inside the action is the ONLY way to keep REQ-12's no-bypass promise. */
   function readSpellCost(spell) {
-    let cost = null;
+    let rawSpell = null;
     try {
       const sb = state.gameClient && state.gameClient.player && state.gameClient.player.spellbook;
       if (sb && spell.sid !== null && spell.sid !== undefined) {
-        const entry = (typeof sb.getSpell === 'function' ? sb.getSpell(spell.sid) : null)
+        rawSpell = (typeof sb.getSpell === 'function' ? sb.getSpell(spell.sid) : null)
           || (sb.spells && sb.spells[spell.sid]) || null;
-        if (entry && entry.cost !== undefined) cost = Number(entry.cost);
       }
       // Slice-4 (probed, obs 10320): spellbook is EMPTY — spells resolve via
       // interface.getSpell(sid). Adds the probed location as a fallback.
-      if ((cost === null || !Number.isFinite(cost)) && state.gameClient && state.gameClient.interface) {
+      if (!rawSpell && state.gameClient && state.gameClient.interface) {
         const intf = state.gameClient.interface;
         if (typeof intf.getSpell === 'function') {
-          const entry = intf.getSpell(spell.sid);
-          if (entry && entry.cost !== undefined) cost = Number(entry.cost);
+          rawSpell = intf.getSpell(spell.sid);
         }
       }
     } catch (e) {
       warn('readSpellCost: spell cost lookup failed: ' + (e && e.message ? e.message : e));
-      cost = null;
+      rawSpell = null;
     }
-    if ((cost === null || !Number.isFinite(cost)) && Number.isFinite(Number(spell.cost))) cost = Number(spell.cost);
-    return cost !== null && Number.isFinite(cost) ? cost : null;
+    const normalized = GC_MOD.normalizeLiveSpell(
+      Object.assign({}, spell || {}, rawSpell || {}, { sid: spell && spell.sid }),
+      { source: rawSpell ? 'client' : 'config' },
+    );
+    return normalized.manaCost;
   }
 
   /** Live-probed hotbar manager accessor (obs 10320 location). */
   function readHotbar() {
     const gc = state.gameClient;
     return gc && ((gc.interface && gc.interface.hotbarManager) || gc.hotbarManager) || null;
+  }
+
+  /** Extract a real SID without the JavaScript `Number(null) === 0` trap. */
+  function hotbarEntrySid(entry) {
+    const raw = entry && entry.spell;
+    const value = raw && typeof raw === 'object' ? raw.sid : raw;
+    if (value === null || value === undefined || value === '') return null;
+    const sid = Number(value);
+    return Number.isInteger(sid) && sid >= 0 ? sid : null;
+  }
+
+  /** Resolve a spell SID to its real MiniBia hotbar slot. Current clients put
+   * the SID at `slot.spell.sid`; older builds used `slot.spell` directly. */
+  function resolveHotbarSpellSlot(sid) {
+    const wanted = Number(sid);
+    if (!Number.isInteger(wanted)) return null;
+    try {
+      const hb = readHotbar();
+      if (!hb || !Array.isArray(hb.slots)) return null;
+      for (let i = 0; i < hb.slots.length; i += 1) {
+        const entrySid = hotbarEntrySid(hb.slots[i]);
+        if (Number(entrySid) === wanted) return i + 1;
+      }
+    } catch (e) { /* feature absent -> selector degrades */ }
+    return null;
+  }
+
+  /** Read the SID currently assigned to one live F1–F12 slot. Trainer uses
+   * this immediately before every spell action so a saved config can never
+   * fire a slot that the player has since reassigned. */
+  function readHotbarSlotSid(slot) {
+    const index = Number(slot) - 1;
+    if (!Number.isInteger(index) || index < 0 || index > 11) return null;
+    try {
+      const hb = readHotbar();
+      const entry = hb && Array.isArray(hb.slots) ? hb.slots[index] : null;
+      return hotbarEntrySid(entry);
+    } catch (e) {
+      warn('readHotbarSlotSid: hotbar read failed: ' + (e && e.message ? e.message : e));
+      return null;
+    }
+  }
+
+  /** Build a fresh serializable hotbar snapshot; SID is identity and F-slot
+   * is only the currently observed location. This function never caches. */
+  function readLiveHotbarCatalog() {
+    const hb = readHotbar();
+    if (!hb || !Array.isArray(hb.slots)) return { available: false, slots: [] };
+    const slots = hb.slots.map(function (entry, index) {
+      const sid = hotbarEntrySid(entry);
+      if (sid === null) return null;
+      let spell = null;
+      try {
+        spell = state.gameClient && state.gameClient.interface && typeof state.gameClient.interface.getSpell === 'function'
+          ? state.gameClient.interface.getSpell(sid) : null;
+      } catch (e) { spell = null; }
+      const normalized = GC_MOD.normalizeLiveSpell(
+        Object.assign({}, spell || {}, { sid: sid }),
+        { source: spell ? 'client' : 'hotbar' },
+      );
+      return Object.assign({ slot: index + 1 }, normalized);
+    }).filter(Boolean);
+    return { available: true, slots: slots };
+  }
+
+  /** Canonical, read-through live snapshot for app/server/panel transport. */
+  function readLiveSnapshot() {
+    return {
+      stats: GC_MOD.readLiveState({ gameClient: state.gameClient, document: doc }),
+      hotbar: readLiveHotbarCatalog(),
+    };
+  }
+
+  /** Read the target selected by the PLAYER. This is deliberately separate
+   * from cavebot selection: the assisted attack module must never retarget. */
+  function readManualTarget() {
+    try {
+      const player = state.gameClient && state.gameClient.player;
+      if (!player) return null;
+      const raw = player.__target || player.target || (player.state && player.state.__target) || null;
+      if (raw && typeof raw === 'object') return raw;
+      if (raw === null || raw === undefined) return null;
+      const id = Number(raw);
+      const creatures = readActiveCreatures() || [];
+      for (const creature of creatures) {
+        if (Number(creature && (creature.id !== undefined ? creature.id : creature.cid)) === id) return creature;
+      }
+    } catch (e) { /* target data is optional */ }
+    return null;
+  }
+
+  /** Native MiniBia target acquisition for Cavebot only. The world method is
+   * preferred because it sends the game's target packet; player.setTarget is
+   * retained as a feature-detected fallback for older client builds. */
+  function selectCreatureTarget(creature) {
+    if (!creature || typeof creature !== 'object') return false;
+    try {
+      const gc = state.gameClient;
+      const world = gc && gc.world;
+      if (world && typeof world.targetMonster === 'function') {
+        world.targetMonster(new Set([creature]));
+        return true;
+      }
+      const player = gc && gc.player;
+      if (player && typeof player.setTarget === 'function') {
+        player.setTarget(creature);
+        return true;
+      }
+    } catch (e) { log.warn('cavebot: target selection failed: ' + (e && e.message ? e.message : e)); }
+    return false;
   }
 
   /** Live-probed keyboard surface (firing keyboard mode, obs 10320):
@@ -462,8 +586,8 @@ function createAgent(opts = {}) {
       const hb = readHotbar();
       if (!hb || !Array.isArray(hb.slots)) return null;
       const entry = hb.slots[Number(slot) - 1];
-      const sid = entry && entry.spell;
-      if (sid === null || sid === undefined) return null;
+      const sid = hotbarEntrySid(entry);
+      if (sid === null) return null;
       return readSpellCost({ sid: sid });
     } catch (e) {
       warn('readRuneCost: slot cost resolution failed: ' + (e && e.message ? e.message : e));
@@ -522,14 +646,18 @@ function createAgent(opts = {}) {
     return PREMIUM_MOD.readPremiumState(state.gameClient, nowFn);
   }
 
-  /** Live active-creature list (kill feed, REQ-21/19): world.activeCreatures
-   *  probed (obs 10320); null when the array is absent (kill source degrade). */
+  /** Live active-creature list (kill feed, combat and cavebot): MiniBia exposes
+   *  `world.activeCreatures` as a CID-keyed object in the live client, while
+   *  older builds exposed an array. Normalize both shapes at this boundary so
+   *  consumers never silently lose every creature on current clients. */
   function readActiveCreatures() {
     try {
       const gc = state.gameClient;
       const world = gc && gc.world;
       const list = (world && world.activeCreatures) || (gc && gc.activeCreatures) || (world && world.creatures);
-      return Array.isArray(list) ? list : null;
+      if (Array.isArray(list)) return list;
+      if (list && typeof list === 'object') return Object.keys(list).map(function (key) { return list[key]; }).filter(Boolean);
+      return null;
     } catch (e) { return null; }
   }
 
@@ -823,11 +951,18 @@ function createAgent(opts = {}) {
       gameClient: function () { return state.gameClient; },
       log,
     });
+    const manaItems = MANA_ITEMS_MOD.createManaItems({
+      config: cfg.manaItems,
+      findSlot: function () { return MANA_ITEMS_MOD.defaultFindSlot(state.gameClient, cfg.manaItems.slotCids); },
+      gameClient: function () { return state.gameClient; },
+      log,
+    });
     const healMagic = HEAL_MAGIC_MOD.createHealMagic({
       config: cfg.healMagic,
       getSpellCost: function (sid) { return readSpellCost({ sid: sid }); },
       canCastSpell: canCastSpell,
       readCooldown: function (sid) { return GC_MOD.readCooldown(sid, { gameClient: state.gameClient }); },
+      readHotbarSlotSid: readHotbarSlotSid,
       now: nowFn,
       log,
     });
@@ -858,6 +993,32 @@ function createAgent(opts = {}) {
       },
       canCastSpell: canCastSpell,
       readCooldown: function (sid) { return GC_MOD.readCooldown(sid, { gameClient: state.gameClient }); },
+      // Trainer re-checks this mapping immediately before a native F-key
+      // action. Without passing the live reader, its stale-hotbar safeguard
+      // would block every cast even when the configured slot is correct.
+      readHotbarSlotSid: readHotbarSlotSid,
+      // MiniTibia food is not identified by an official Tibia CID. Snapshot
+      // exactly the playable twenty inventory/backpack slots so Trainer can
+      // use only the item that appears after its configured food spell.
+      readVisibleSlots: function () {
+        return ITEMS_MOD.snapshotVisibleSlots(ITEMS_MOD.readContainers(state.gameClient), 20);
+      },
+      // Same proven item-use convention as heal-items: native use-on-self
+      // first, mouse.use fallback. The item comes solely from the delta above.
+      consumeItem: function (item) {
+        const gc = state.gameClient;
+        const hotbar = gc && ((gc.interface && gc.interface.hotbarManager) || gc.hotbarManager);
+        if (hotbar && typeof hotbar.__useItemOnSelf === 'function') {
+          try {
+            if (hotbar.__useItemOnSelf({ which: item.which, index: item.index }) !== false) return true;
+          } catch (e) { /* fall through to mouse.use */ }
+        }
+        if (gc && gc.mouse && typeof gc.mouse.use === 'function') {
+          gc.mouse.use({ which: item.which, index: item.index });
+          return true;
+        }
+        return false;
+      },
       now: nowFn,
       log,
     });
@@ -957,28 +1118,46 @@ function createAgent(opts = {}) {
     // input). Not a tree node: the read is passive (eager getState) and
     // walk-to is an app-driven RPC (queue-dispatched).
     const routes = ROUTES_MOD.createRoutesModule({
-      config: cfg.routes,
+      // Cavebot route movement uses the same native pathfinder primitive.
+      // Treat it as enabled internally while cavebot is active; the separate
+      // Routes panel toggle remains relevant only for manual walk-to RPCs.
+      config: Object.assign({}, cfg.routes, { on: cfg.routes.on === true || cfg.cavebot.on === true }),
       readPathfinder: readPathfinder,
       now: nowFn,
       log,
     });
-    // REQ-35/36 (PR6, D10): state-only skeleton modules — attack targeting
-    // + pickers config and the cavebot route recorder. NOT tree nodes: no
-    // combat loop, no continuous auto-walking (getState discloses the
-    // skeleton; the app-driven RPCs below drive record/start). The cavebot
-    // recording buffer lives in state.timers (survives rebuilds).
-    const attack = ATTACK_MOD.createAttackModule({ config: cfg.attack });
+    // Cavebot owns auto-targeting and native route movement. It has no
+    // synthetic movement path and shares the user's chosen combat action.
     const cavebot = CAVEBOT_MOD.createCavebotModule({
       config: cfg.cavebot,
       readPosition: readPosition,
       readObjects: readObjects,
+      readCreatures: readActiveCreatures,
+      readTarget: readManualTarget,
+      readAutoWalk: function () { return routes.getState(); },
+      selectTarget: selectCreatureTarget,
+      walkTo: function (x, y) {
+        const decision = routes.decideWalkTo(x, y);
+        return decision.fire ? routes.fireWalk(decision) : false;
+      },
       timers: state.timers,
       now: nowFn,
       recordIntervalMs: 100, // snapshot-loop cadence; the module throttles + dedupes
       log,
     });
+    // Attack Assist stays manual. When ATTACK is off but Cavebot is on, the
+    // very same configured spell/rune is allowed ONLY for cavebot's configured
+    // target — never for an arbitrary creature selected by the player.
+    const attack = ATTACK_MOD.createAttackModule({
+      config: Object.assign({}, cfg.attack, { on: cfg.attack.on === true || cfg.cavebot.on === true }),
+      readTarget: readManualTarget,
+      resolveSpellSlot: resolveHotbarSpellSlot,
+      getSpellCost: function (sid) { return readSpellCost({ sid: sid }); },
+      canCastSpell: canCastSpell,
+      readCooldown: function (sid) { return GC_MOD.readCooldown(sid, { gameClient: state.gameClient }); },
+    });
     state.modules = {
-      healItems: healItems, healMagic: healMagic, runes: runes, training: training, eat: eat,
+      healItems: healItems, manaItems: manaItems, healMagic: healMagic, runes: runes, training: training, eat: eat,
       trade: trade, loot: loot, spawns: spawns, huntStats: huntStats, echo: echo, learning: learning,
       antibot: antibot, routes: routes, attack: attack, cavebot: cavebot,
     };
@@ -1012,6 +1191,35 @@ function createAgent(opts = {}) {
             // 'urgent' (D1, REQ-29): the heal jumps in-flight work.
             state.queue.enqueue(function () { healItems.fire(d.item); }, { kind: 'heal-item', priority: 'urgent' });
             logEvent('healItems', 'use-item', d.item && d.item.cid !== undefined ? d.item.cid : d.reason || 'heal');
+            return true;
+          },
+        },
+      ],
+    };
+
+    // Mana potions are below the two HP safety actions, yet before rune
+    // making and combat. They only use explicitly selected live inventory CIDs.
+    const manaItemsNode = {
+      type: 'sequence',
+      id: 'mana-items',
+      children: [
+        {
+          type: 'condition',
+          id: 'mana-items-feasible',
+          predicate: function (ctx) {
+            if (!cfg.manaItems.on) return false;
+            const d = manaItems.decide(ctx);
+            return d.fire && !state.queue.hasPending(function (e) { return e.kind === 'mana-item'; });
+          },
+        },
+        {
+          type: 'action',
+          id: 'mana-items-use',
+          run: function (ctx) {
+            const d = manaItems.decide(ctx);
+            if (!d.fire) return false;
+            state.queue.enqueue(function () { manaItems.fire(d.item); }, { kind: 'mana-item' });
+            logEvent('manaItems', 'use-item', d.reason || 'mana');
             return true;
           },
         },
@@ -1118,6 +1326,60 @@ function createAgent(opts = {}) {
       },
     };
 
+    // Attack Assist only casts at a target already selected by the player.
+    // It never calls any target-selection surface; Cavebot will own that
+    // policy and can feed the same normal hotbar action once it selects a
+    // configured creature. The action is still queue-dispatched.
+    const attackAssistNode = {
+      type: 'sequence',
+      id: 'attack-assist',
+      children: [
+        {
+          type: 'condition',
+          id: 'attack-assist-feasible',
+          predicate: function (ctx) {
+            if (!cfg.attack.on && !cfg.cavebot.on) return false;
+            const d = attack.decide(ctx);
+            if (d.fire && !cfg.attack.on) {
+              const target = readManualTarget();
+              if (!cavebot.isConfiguredTarget(target)) return false;
+            }
+            return d.fire && !state.queue.hasPending(function (e) { return e.kind === 'attack-assist'; });
+          },
+        },
+        {
+          type: 'action',
+          id: 'attack-assist-cast',
+          run: function (ctx) {
+            const d = attack.decide(ctx);
+            if (!d.fire) return false;
+            state.queue.enqueue(function () {
+              const ok = attack.fire(d, { gameClient: state.gameClient, document: doc, log: log });
+              logEvent('attack', d.kind || 'assist', ok ? (d.target || 'target') : 'fire-failed');
+            }, { kind: 'attack-assist' });
+            return true;
+          },
+        },
+      ],
+    };
+
+    const cavebotNode = {
+      type: 'action',
+      id: 'cavebot',
+      run: function () {
+        if (!cfg.cavebot.on) return false;
+        const d = cavebot.decide();
+        if (!d.fire) return false;
+        const kind = d.kind === 'target' ? 'cavebot-target' : 'cavebot-walk';
+        if (state.queue.hasPending(function (e) { return e.kind === kind; })) return false;
+        state.queue.enqueue(function () {
+          const ok = cavebot.fire(d);
+          logEvent('cavebot', d.kind, ok ? (d.target || ('waypoint ' + d.waypoint)) : 'action-failed');
+        }, { kind: kind });
+        return true;
+      },
+    };
+
     const combat = {
       type: 'action',
       id: 'combat',
@@ -1132,7 +1394,8 @@ function createAgent(opts = {}) {
     // The TRAINER decision may carry kind 'fallback' (REQ-30 cap-full) or
     // 'eat-magic' (REQ-32, D4) — each gets its own queue kind so re-arm
     // guards and the activity log stay distinct (normal eat is untouched).
-    const trainingKind = (d) => (d.kind === 'eat-magic' ? 'eat-magic'
+    const trainingKind = (d) => (d.kind === 'consume-created-food' ? 'consume-created-food'
+      : d.kind === 'eat-magic' ? 'eat-magic'
       : d.kind === 'fallback' ? 'training-fallback' : 'training-cast');
     const trainingNode = {
       type: 'sequence',
@@ -1156,18 +1419,23 @@ function createAgent(opts = {}) {
             if (!d.fire) return false;
             const kind = trainingKind(d);
             state.queue.enqueue(function () {
-              training.fire(d, { gameClient: state.gameClient, document: doc });
+              // A native handler invocation is merely an attempt. Training
+              // records its live mana/inventory baseline and advances only on
+              // a later observable confirmation (never on this boolean).
+              const ok = training.fire(d, {
+                gameClient: state.gameClient,
+                document: doc,
+                mana: ctx.mana,
+              });
               // REQ-24 echo validation: only when a training word is configured
               // AND the action is a real training cast (fallback/eat-magic are
               // direct slot fires — no echo path).
-              if (d.kind === 'training'
+              if (ok && d.kind === 'training'
                 && cfg.training && typeof cfg.training.word === 'string' && cfg.training.word.trim()) {
                 echo.startForFire('training', cfg.training.word);
               }
-              logEvent('training', kind, d.reason || null);
+              logEvent('training', kind, ok ? 'invoked-awaiting-confirmation' : (training.getState().lastReason || 'action-failed'));
             }, { kind: kind });
-            // The every-N-casts food cadence counts REAL training casts only.
-            if (d.kind === 'training') ctx.castsSinceFood = (ctx.castsSinceFood || 0) + 1;
             return true;
           },
         },
@@ -1312,7 +1580,7 @@ function createAgent(opts = {}) {
         // > eat > loot > trade > antibot (REQ-11: survival/heal always beats
         // combat/loot/training; trade broadcast and anti-bot replies are the
         // lowest-priority chat actions).
-        children: [healItemsNode, healMagicNode, survival, runesNode, combat, trainingNode, eatNode, lootNode, tradeNode, antibotNode],
+        children: [healItemsNode, healMagicNode, survival, manaItemsNode, runesNode, cavebotNode, attackAssistNode, combat, trainingNode, eatNode, lootNode, tradeNode, antibotNode],
       },
     });
   }
@@ -1409,6 +1677,7 @@ function createAgent(opts = {}) {
     try {
       const stats = GC_MOD.readStats({ gameClient: state.gameClient, document: doc });
       const ctx = state.ctx;
+      state.statsSource = stats.source || 'none';
       if (stats.mana !== null) ctx.mana = stats.mana;
       if (stats.maxMana !== null) ctx.maxMana = stats.maxMana;
       ctx.health = stats.health;
@@ -1649,6 +1918,61 @@ function createAgent(opts = {}) {
           queued: true,
         };
       },
+      getHotbarCatalog: function () {
+        // Read-only, serializable mapping of live spell SIDs to their actual
+        // MiniBia hotbar slots. The panel must never invent an F-slot.
+        return readLiveHotbarCatalog();
+      },
+      getContainerItems: function () {
+        // Serializable, read-only inventory catalog for panel selectors. Do not
+        // expose DOM nodes to CDP; only CID/name/count/container and a small
+        // canvas data URL when the page gives us one.
+        if (!state.gameClient) return { containers: [] };
+        const imageFor = function (slot) {
+          try {
+            const raw = slot && (slot.canvas && (slot.canvas.canvas || slot.canvas) || slot.element);
+            const canvas = raw && (typeof raw.toDataURL === 'function'
+              ? raw : (typeof raw.querySelector === 'function' ? raw.querySelector('canvas') : null));
+            return canvas && typeof canvas.toDataURL === 'function' ? canvas.toDataURL('image/png') : null;
+          } catch (e) { return null; }
+        };
+        const containers = ITEMS_MOD.readContainers(state.gameClient).map(function (container, which) {
+          const slots = Array.isArray(container && container.slots) ? container.slots : [];
+          return {
+            which: which,
+            name: String(container && (container.name || container.title || container.id) || ('Container ' + (which + 1))),
+            items: slots.map(function (slot, i) {
+              if (!slot || !Number.isFinite(Number(slot.cid))) return null;
+              return {
+                cid: Number(slot.cid),
+                index: Number.isFinite(Number(slot.index)) ? Number(slot.index) : i + 1,
+                name: String(slot.name || slot.itemName || slot.title || ''),
+                count: Number.isFinite(Number(slot.count || slot.amount)) ? Number(slot.count || slot.amount) : 1,
+                imageDataURL: imageFor(slot),
+              };
+            }).filter(Boolean),
+          };
+        }).filter(function (container) { return container.items.length > 0; });
+        return { containers: containers };
+      },
+      getCreatureCatalog: function () {
+        // Serializable live monster data for Cavebot selectors. The catalog is
+        // intentionally a current-world snapshot: only creatures MiniBia is
+        // actually exposing may be configured, never invented names.
+        const seen = new Set();
+        return { creatures: (readActiveCreatures() || []).map(function (creature) {
+          const name = String(creature && (creature.name || creature.creatureName || creature.title) || '').trim();
+          if (!name || seen.has(name.toLowerCase())) return null;
+          seen.add(name.toLowerCase());
+          let health = null;
+          try {
+            if (typeof creature.getHealthPercentage === 'function') health = Number(creature.getHealthPercentage());
+          } catch (e) { health = null; }
+          return { id: Number.isFinite(Number(creature && creature.id)) ? Number(creature.id) : null,
+            name: name, type: Number.isFinite(Number(creature && creature.type)) ? Number(creature.type) : null,
+            healthPct: Number.isFinite(health) ? health : null };
+        }).filter(Boolean) };
+      },
       getSpellCatalog: function () {
         // REQ-28 (slice 1b, design D5): client spell catalog RPC — enumerates
         // interface.getSpell(sid) until 30 consecutive unknown sids and
@@ -1657,7 +1981,7 @@ function createAgent(opts = {}) {
         // the page never filters here so one RPC serves every vocation.
         // Returns null while the game client is not ready (degrade).
         if (!state.gameClient) return null;
-        return GC_MOD.enumerateSpellCatalog(state.gameClient, { maxUnknown: 30, limit: 400 });
+        return GC_MOD.enumerateSpellCatalog(state.gameClient, { maxUnknown: 30, limit: 400, document: doc });
       },
       getHotbarKeybinds: function () {
         // REQ-46 (D-B3): read keyboard.__hotbarKeybinds — feature-detected;
@@ -1730,11 +2054,15 @@ function createAgent(opts = {}) {
       playerName: (state.gameClient && state.gameClient.player && state.gameClient.player.name) || null,
       health: state.ctx.health,
       mana: state.ctx.mana,
+      maxMana: state.ctx.maxMana,
+      statsSource: state.statsSource,
+      live: readLiveSnapshot(),
       queue: state.queue ? state.queue.stats() : null,
       runeCheck: state.runeCheck ? Object.assign({}, state.runeCheck) : null, // REQ-40/41 (D-A3): pause state -> panel banner
       lastPath: state.lastPath,
       castsSinceFood: state.ctx.castsSinceFood || 0,
       modules: {
+        manaItems: modules.manaItems ? { on: modules.manaItems.isEnabled() } : null,
         runes: modules.runes ? modules.runes.getState() : null,
         // REQ-30 (D3): the trainer's cap state (capFull) rides the snapshot
         // so the panel raises the ALERT + beep on the rising edge.

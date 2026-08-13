@@ -1,5 +1,10 @@
 'use strict';
 
+const {
+  normalizeLiveSpell,
+  normalizeLiveStats,
+} = require('../core/live-contract');
+
 /**
  * Game client read adapter (REQ-01/02/14, design D3).
  *
@@ -120,6 +125,15 @@ function readCap(ctx = {}) {
 }
 
 /**
+ * Read and normalize the full live stat contract in one boundary call.
+ * Primitive readers remain available for legacy modules, while new snapshots
+ * consume this canonical shape with explicit availability.
+ */
+function readLiveState(ctx = {}) {
+  return normalizeLiveStats(readStats(ctx), readCap(ctx));
+}
+
+/**
  * Normalize a single cooldown bucket entry into {active, seconds}.
  * Supports {active, seconds}, a bare seconds number, and a seconds string.
  * @param {*} entry
@@ -177,6 +191,66 @@ function readCooldown(spellSid, ctx = {}) {
   };
 }
 
+/** Normalize text for fuzzy matching against the client's spellbook rows. */
+function textKey(value) {
+  return String(value === null || value === undefined ? '' : value)
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/** Best-effort primitive object copy for small client metadata objects. */
+function plainObject(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const out = {};
+  for (const key of Object.keys(value)) {
+    const v = value[key];
+    if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') out[key] = v;
+  }
+  return Object.keys(out).length > 0 ? out : null;
+}
+
+/**
+ * Build an index of spellbook canvases already rendered by the Minibia client.
+ * The hotbar "Add spell" modal exists in the DOM even when hidden; its rows
+ * contain the real 32x32 spell canvas. We read that instead of inventing icons.
+ *
+ * @param {Document|null} doc
+ * @returns {Array<{haystack: string, imageDataURL: string}>}
+ */
+function buildSpellCanvasIndex(doc) {
+  const qsa = doc && typeof doc.querySelectorAll === 'function' ? doc.querySelectorAll.bind(doc) : null;
+  if (!qsa) return [];
+  let rows = [];
+  try { rows = Array.from(qsa('#hotbar-spell-list .spellbook-wrapper, .spellbook-wrapper')); } catch (e) { rows = []; }
+  const index = [];
+  for (const row of rows) {
+    let canvas = null;
+    try { canvas = row && typeof row.querySelector === 'function' ? row.querySelector('canvas') : null; } catch (e) { canvas = null; }
+    if (!canvas || typeof canvas.toDataURL !== 'function') continue;
+    let imageDataURL = null;
+    try { imageDataURL = canvas.toDataURL('image/png'); } catch (e) { imageDataURL = null; }
+    if (typeof imageDataURL !== 'string' || imageDataURL.indexOf('data:image/') !== 0) continue;
+    const haystack = textKey(
+      (typeof row.getAttribute === 'function' ? (row.getAttribute('data-search') || row.getAttribute('title') || '') : '')
+      + ' ' + (row.textContent || ''),
+    );
+    if (haystack) index.push({ haystack, imageDataURL });
+  }
+  return index;
+}
+
+/** Match a catalog spell to its real client canvas image, when available. */
+function findSpellImage(index, spell) {
+  if (!Array.isArray(index) || index.length === 0 || !spell) return null;
+  const needles = [spell.name, spell.words]
+    .map(textKey)
+    .filter(Boolean);
+  if (needles.length === 0) return null;
+  const found = index.find((row) => needles.every((needle) => row.haystack.indexOf(needle) !== -1));
+  return found ? found.imageDataURL : null;
+}
+
 /**
  * Enumerate the client spell catalog (design D5, REQ-28): calls
  * `interface.getSpell(sid)` from sid 0 upward until `maxUnknown` consecutive
@@ -201,6 +275,8 @@ function enumerateSpellCatalog(gameClient, opts = {}) {
   const limit = Number.isInteger(opts.limit) ? opts.limit : 400;
   const intf = gameClient && gameClient.interface;
   if (!intf || typeof intf.getSpell !== 'function') return null;
+  const doc = opts.document || (typeof document !== 'undefined' ? document : null);
+  const imageIndex = buildSpellCanvasIndex(doc);
 
   const spells = [];
   let unknownStreak = 0;
@@ -212,16 +288,34 @@ function enumerateSpellCatalog(gameClient, opts = {}) {
       unknownStreak += 1;
       continue;
     }
+    const name = typeof entry.name === 'string' && entry.name ? entry.name : 'spell ' + sid;
+    const words = typeof entry.words === 'string' ? entry.words : '';
+    const manaCost = num(entry.manaCost ?? entry.cost ?? entry.mana);
+    const level = num(entry.level);
+    const vocations = Array.isArray(entry.vocations)
+      ? entry.vocations.filter((v) => typeof v === 'string') : [];
+    // Minibia returns sparse placeholder entries like {name:"Unknown"}.
+    // Those are not selectable magic; count them as unknown and do not show them.
+    if (textKey(name) === 'unknown' && !words && manaCost === null && level === null && vocations.length === 0) {
+      unknownStreak += 1;
+      continue;
+    }
     unknownStreak = 0;
-    spells.push({
-      sid: sid,
-      name: typeof entry.name === 'string' && entry.name ? entry.name : 'spell ' + sid,
-      words: typeof entry.words === 'string' ? entry.words : '',
-      mana: num(entry.mana),
-      level: num(entry.level),
-      vocations: Array.isArray(entry.vocations)
-        ? entry.vocations.filter((v) => typeof v === 'string') : [],
-    });
+    const icon = plainObject(entry.icon);
+    const imageDataURL = findSpellImage(imageIndex, { name, words });
+    const spell = normalizeLiveSpell({
+      sid,
+      name,
+      words,
+      manaCost,
+      level,
+      vocations,
+      category: entry.category,
+      icon,
+      imageDataURL,
+    }, { source: 'client' });
+    if (typeof entry.description === 'string' && entry.description) spell.description = entry.description;
+    spells.push(spell);
   }
 
   const player = (gameClient && gameClient.player) || {};
@@ -245,7 +339,7 @@ function enumerateSpellCatalog(gameClient, opts = {}) {
  * Pure filter (design D5, REQ-28): keep only spells the given vocation label
  * + player level can cast — `vocations[]` includes the label (an EMPTY
  * vocations array means "no restriction") AND `level <= playerLevel`.
- * @param {Array<object>} spells - raw catalog rows ({sid, name, words, mana, level, vocations})
+ * @param {Array<object>} spells - canonical catalog rows ({sid, name, words, manaCost, level, vocations})
  * @param {object} [opts]
  * @param {string} [opts.vocationLabel] - current player's vocation label
  * @param {number|null} [opts.playerLevel] - current player level
@@ -289,16 +383,18 @@ function spellValidationError(spell, ctx = {}) {
     return { reason: 'level too high — requires level ' + spell.level };
   }
   if (ctx.mana !== null && ctx.mana !== undefined
-    && Number.isFinite(Number(spell.mana)) && Number(spell.mana) > ctx.mana) {
-    return { reason: 'not enough mana — costs ' + spell.mana + ', you have ' + Math.floor(ctx.mana) };
+    && Number.isFinite(Number(spell.manaCost)) && Number(spell.manaCost) > ctx.mana) {
+    return { reason: 'not enough mana — costs ' + spell.manaCost + ', you have ' + Math.floor(ctx.mana) };
   }
   return null;
 }
 
 module.exports = {
+  normalizeLiveSpell,
   readStats,
   readCooldown,
   readCap,
+  readLiveState,
   enumerateSpellCatalog,
   filterCatalogByVocation,
   spellValidationError,

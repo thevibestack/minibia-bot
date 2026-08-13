@@ -178,6 +178,26 @@ test('REQ-19: a killed creature with loot routes to its destination via the game
   }
 });
 
+test('live MiniBia CID-keyed activeCreatures objects feed kill observation', async () => {
+  const creatures = {};
+  const { dom, lootCalls } = makePage({ creatures });
+  try {
+    const handle = dom.window.__mbAgentHandle;
+    assert.equal(await waitFor(() => handle.isReady()), true);
+    dom.window.__mbAgent.applyConfig(sliceConfig({
+      loot: { on: true, defaultDest: 'Loot bag', perMonster: {} },
+    }));
+    creatures[101] = { id: 101, name: 'Rat', loot: true };
+    await new Promise((r) => setTimeout(r, 700));
+    delete creatures[101];
+    assert.equal(await waitFor(() => lootCalls.length >= 1, { timeout: 6000 }), true,
+      'the live CID-keyed creature map is normalized before the kill observer reads it');
+    assert.deepEqual(lootCalls[0], { monster: 'Rat', dest: 'Loot bag' });
+  } finally {
+    teardown(dom);
+  }
+});
+
 test('REQ-19: loot without a configured destination never fires; no loot info never routes', async () => {
   const { dom, creatures, lootCalls } = makePage();
   try {

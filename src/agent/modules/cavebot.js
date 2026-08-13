@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * Cavebot skeleton (REQ-36, design D10, task 6.2).
+ * Continuous native cavebot.
  *
  * CAVEBOT is a STATE-ONLY SKELETON in this slice:
  *  - RECORD: throttled position snapshots into a SESSION-scoped buffer
@@ -18,9 +18,13 @@
  *  - OBJECT DETECT: feature-detected reader (injected); when the game
  *    surface is absent the module reports honest "no object surface"
  *    state — the walk-to-object action stays a no-op state (open probe).
- *  - EDITING: explicitly FUTURE (REQ-36: full route editing is not v1).
- *  - `skeleton: true` + disclosure "skeleton — limited": no tree loop, no
- *    continuous auto-walking (D10: state only).
+ *  - COMBAT: while a configured monster is visible, native targeting is used
+ *    and route movement is paused. The shared attack module then fires only
+ *    against that configured target. When it disappears, the next tick
+ *    resumes the route.
+ *  - ROUTE: while no configured target exists, walks one native waypoint at
+ *    a time, waits for MiniBia autowalk, then advances when the player reaches
+ *    the waypoint. It never synthesizes movement input.
  *
  * Pure node-testable: the position/object readers are injected; all
  * normalization + the nearest-waypoint math are local.
@@ -31,6 +35,7 @@ const MAX_ROUTE_POINTS = 500;
 
 /** Default minimum gap between recorded snapshots (ms). */
 const DEFAULT_RECORD_INTERVAL_MS = 1000;
+const WAYPOINT_REACHED_DISTANCE = 1;
 
 /**
  * Normalize a position/waypoint: finite numbers only. null/undefined and
@@ -99,12 +104,56 @@ function nearestWaypoint(position, waypoints) {
   return best;
 }
 
+function normalizeMonsterNames(value) {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set();
+  return value.map((name) => String(name || '').trim()).filter((name) => {
+    const key = name.toLowerCase();
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function creatureName(creature) {
+  return String(creature && (creature.name || creature.creatureName || creature.title) || '').trim();
+}
+
+function creatureHealthPct(creature) {
+  try {
+    if (creature && typeof creature.getHealthPercentage === 'function') {
+      const value = Number(creature.getHealthPercentage());
+      if (Number.isFinite(value)) return value;
+    }
+  } catch (e) { /* use state fallback */ }
+  const state = creature && creature.state && typeof creature.state === 'object'
+    ? (creature.state.__state || creature.state) : {};
+  const health = Number(state.health !== undefined ? state.health : creature && creature.health);
+  const maxHealth = Number(state.maxHealth !== undefined ? state.maxHealth : creature && creature.maxHealth);
+  if (Number.isFinite(health) && Number.isFinite(maxHealth) && maxHealth > 0) return (health / maxHealth) * 100;
+  return null;
+}
+
+function chooseMonster(creatures, names, targeting) {
+  const wanted = new Set(normalizeMonsterNames(names).map((name) => name.toLowerCase()));
+  const candidates = (Array.isArray(creatures) ? creatures : []).filter((creature) => wanted.has(creatureName(creature).toLowerCase()));
+  if (candidates.length === 0) return null;
+  if (targeting !== 'lowest-hp') return candidates[0];
+  return candidates.reduce((best, creature) => {
+    const value = creatureHealthPct(creature);
+    const bestValue = creatureHealthPct(best);
+    if (value === null) return best;
+    if (bestValue === null || value < bestValue) return creature;
+    return best;
+  }, candidates[0]);
+}
+
 /**
- * Create the cavebot skeleton module.
+ * Create the cavebot module.
  *
  * @param {object} opts
  * @param {object} [opts.config] - normalized cavebot config
- *   { on: boolean, paused: boolean, route: Array<{x,y}> }
+ *   { on: boolean, paused: boolean, route: Array<{x,y}>, monsters: string[], targeting: string }
  *   (route = the saved route list; panel-saved into config.routes)
  * @param {() => {x: number, y: number}|null} [opts.readPosition] - live
  *   player position reader (feature-detected; null when absent)
@@ -129,6 +178,11 @@ function createCavebotModule(opts = {}) {
   const config = opts.config && typeof opts.config === 'object' ? opts.config : {};
   const readPosition = typeof opts.readPosition === 'function' ? opts.readPosition : null;
   const readObjects = typeof opts.readObjects === 'function' ? opts.readObjects : null;
+  const readCreatures = typeof opts.readCreatures === 'function' ? opts.readCreatures : () => [];
+  const readTarget = typeof opts.readTarget === 'function' ? opts.readTarget : () => null;
+  const readAutoWalk = typeof opts.readAutoWalk === 'function' ? opts.readAutoWalk : () => ({ isAutoWalking: false });
+  const selectTarget = typeof opts.selectTarget === 'function' ? opts.selectTarget : () => false;
+  const walkTo = typeof opts.walkTo === 'function' ? opts.walkTo : () => false;
   const timers = opts.timers && typeof opts.timers === 'object' ? opts.timers : {};
   const now = typeof opts.now === 'function' ? opts.now : Date.now;
   const recordIntervalMs = Number.isFinite(Number(opts.recordIntervalMs))
@@ -140,13 +194,66 @@ function createCavebotModule(opts = {}) {
   // Session-scoped recording state (survives config rebuilds within the
   // session; agent restart = new session = fresh route buffer).
   if (!timers.cavebotRoute || typeof timers.cavebotRoute !== 'object') {
-    timers.cavebotRoute = { recording: false, startedAt: null, points: [] };
+    timers.cavebotRoute = { recording: false, startedAt: null, points: [], cursor: 0, lastReason: 'idle', lastTarget: null };
   }
   const session = timers.cavebotRoute;
 
   /** Saved route (normalized waypoint list from the config). */
   function savedRoute() {
     return sanitizeRouteList(config.route);
+  }
+
+  function isConfiguredTarget(creature) {
+    const name = creatureName(creature).toLowerCase();
+    return name !== '' && normalizeMonsterNames(config.monsters).some((item) => item.toLowerCase() === name);
+  }
+
+  function currentWaypoint(route) {
+    if (route.length === 0) return null;
+    if (!Number.isInteger(session.cursor) || session.cursor < 0 || session.cursor >= route.length) session.cursor = 0;
+    return route[session.cursor];
+  }
+
+  /** Decide one action: acquire configured target OR continue native route. */
+  function decide() {
+    if (config.on !== true) return { fire: false, reason: 'off' };
+    if (config.paused === true) return { fire: false, reason: 'paused' };
+    const configured = normalizeMonsterNames(config.monsters);
+    if (configured.length === 0) return { fire: false, reason: 'no-monsters' };
+    const target = readTarget();
+    if (isConfiguredTarget(target)) {
+      session.lastTarget = creatureName(target);
+      session.lastReason = 'combat';
+      return { fire: false, reason: 'combat', target: session.lastTarget };
+    }
+    const monster = chooseMonster(readCreatures(), configured, config.targeting);
+    if (monster) {
+      session.lastTarget = creatureName(monster);
+      session.lastReason = 'acquire-target';
+      return { fire: true, kind: 'target', creature: monster, reason: 'acquire-target', target: session.lastTarget };
+    }
+    const route = savedRoute();
+    if (route.length === 0) return { fire: false, reason: 'no-route' };
+    const autowalk = readAutoWalk() || {};
+    if (autowalk.isAutoWalking === true) return { fire: false, reason: 'walking' };
+    const position = readPosition();
+    if (!position) return { fire: false, reason: 'no-position' };
+    let waypoint = currentWaypoint(route);
+    if (waypoint && euclideanDistance(position, waypoint) <= WAYPOINT_REACHED_DISTANCE) {
+      session.cursor = (session.cursor + 1) % route.length;
+      waypoint = currentWaypoint(route);
+    }
+    session.lastTarget = null;
+    session.lastReason = 'walk-route';
+    return { fire: true, kind: 'walk', reason: 'walk-route', x: waypoint.x, y: waypoint.y, waypoint: session.cursor };
+  }
+
+  /** Execute a decision only from bootstrap's queue closure. */
+  function fire(decision) {
+    if (!decision || decision.fire !== true) return false;
+    if (decision.kind === 'target') return selectTarget(decision.creature) === true;
+    if (decision.kind === 'walk') return walkTo(decision.x, decision.y) === true;
+    return false;
   }
 
   /**
@@ -249,8 +356,6 @@ function createCavebotModule(opts = {}) {
     }
     const objectList = Array.isArray(objects) ? objects : null;
     return {
-      skeleton: true,
-      disclosure: 'skeleton — limited',
       on: config.on === true,
       recording: {
         active: session.recording === true,
@@ -263,6 +368,13 @@ function createCavebotModule(opts = {}) {
         last: route.length > 0 ? route[route.length - 1] : null,
       },
       paused: config.paused === true,
+      mode: session.lastReason === 'combat' || session.lastReason === 'acquire-target' ? 'combat' : 'route',
+      monsters: normalizeMonsterNames(config.monsters),
+      targeting: config.targeting === 'lowest-hp' ? 'lowest-hp' : 'nearest',
+      currentWaypoint: route.length > 0 ? currentWaypoint(route) : null,
+      currentWaypointIndex: route.length > 0 ? session.cursor : null,
+      lastReason: session.lastReason,
+      lastTarget: session.lastTarget,
       start: {
         available: config.on === true && config.paused !== true && route.length > 0,
         reason: config.on !== true ? 'off'
@@ -274,12 +386,11 @@ function createCavebotModule(opts = {}) {
         reason: objectList === null ? 'no object surface' : 'ok',
         count: objectList === null ? null : objectList.length,
       },
-      // REQ-36: full route editing is explicitly FUTURE (not v1).
-      editing: 'future',
+      editing: 'record-and-save',
     };
   }
 
-  return { startRecording, stopRecording, isRecording, record, decideStart, getState, isEnabled };
+  return { startRecording, stopRecording, isRecording, record, decideStart, decide, fire, isConfiguredTarget, getState, isEnabled };
 }
 
 module.exports = {
@@ -288,6 +399,9 @@ module.exports = {
   sanitizeRouteList,
   euclideanDistance,
   nearestWaypoint,
+  normalizeMonsterNames,
+  chooseMonster,
+  creatureHealthPct,
   MAX_ROUTE_POINTS,
   DEFAULT_RECORD_INTERVAL_MS,
 };

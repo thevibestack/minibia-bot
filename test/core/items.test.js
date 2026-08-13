@@ -7,7 +7,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
-const { readContainers, findSlotByCid } = require('../../src/core/items');
+const { readContainers, findSlotByCid, snapshotVisibleSlots, findCreatedSlotDelta } = require('../../src/core/items');
 
 test('findSlotByCid: returns the first slot whose cid matches the wanted list', () => {
   const containers = [
@@ -74,4 +74,20 @@ test('readContainers: tolerates a missing player/interface', () => {
   assert.deepEqual(readContainers({ backpack: { slots: [] } }).length, 1);
   assert.deepEqual(readContainers(null), []);
   assert.deepEqual(readContainers(undefined), []);
+});
+
+test('snapshotVisibleSlots: reads only the first twenty visible slots across containers', () => {
+  const containers = [{ slots: Array.from({ length: 15 }, (_, i) => ({ index: i + 1, cid: i + 100 })) },
+    { slots: Array.from({ length: 15 }, (_, i) => ({ index: i + 1, cid: i + 200 })) }];
+  const snapshot = snapshotVisibleSlots(containers, 20);
+  assert.equal(snapshot.length, 20);
+  assert.deepEqual(snapshot[0].which, 0);
+  assert.deepEqual(snapshot[19], { which: 1, index: 5, cid: 204, count: null, element: null });
+});
+
+test('findCreatedSlotDelta: returns only an item added or changed after the spell', () => {
+  const before = [{ which: 0, index: 1, cid: 10, count: 1 }, { which: 0, index: 2, cid: null, count: null }];
+  const after = [{ which: 0, index: 1, cid: 10, count: 1 }, { which: 0, index: 2, cid: 999, count: 1, element: { id: 'food' } }];
+  assert.deepEqual(findCreatedSlotDelta(before, after), after[1]);
+  assert.equal(findCreatedSlotDelta(before, before), null, 'unchanged pre-existing items are never candidates');
 });

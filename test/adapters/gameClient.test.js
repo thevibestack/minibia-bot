@@ -4,7 +4,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { JSDOM } = require('jsdom');
 
-const { readStats, readCooldown, readCap, enumerateSpellCatalog, filterCatalogByVocation, spellValidationError } = require('../../src/adapters/gameClient');
+const { readStats, readCooldown, readCap, readLiveState, enumerateSpellCatalog, filterCatalogByVocation, spellValidationError } = require('../../src/adapters/gameClient');
 
 function makeDoc(bodyHtml) {
   const dom = new JSDOM(`<!DOCTYPE html><html><body>${bodyHtml}</body></html>`);
@@ -125,7 +125,18 @@ test('REQ-28: enumerateSpellCatalog scans interface.getSpell until 30 unknown si
   const out = enumerateSpellCatalog(gc, { maxUnknown: 30, limit: 400 });
   assert.ok(out, 'catalog enumerated');
   assert.equal(out.spells.length, 5, 'stops after the unknown streak, no invented entries');
-  assert.deepEqual(out.spells[0], { sid: 0, name: 'Light', words: 'utevo lux', mana: 20, level: 0, vocations: ['sorcerer', 'druid'] });
+  assert.deepEqual(out.spells[0], {
+    sid: 0,
+    name: 'Light',
+    words: 'utevo lux',
+    manaCost: 20,
+    level: 0,
+    vocations: ['sorcerer', 'druid'],
+    category: null,
+    icon: null,
+    imageDataURL: null,
+    source: 'client',
+  });
   assert.deepEqual(out.spells[3].vocations, ['druid'], 'vocations stay string arrays (probe obs 10457)');
   assert.equal(out.playerLevel, 20, 'player level read for the level filter');
   assert.equal(out.vocationLabel, 'druid', 'vocation label via hotbarManager.__VOCATION_NAMES');
@@ -141,10 +152,40 @@ test('REQ-28: enumerateSpellCatalog normalizes malformed rows and tolerates thro
   };
   const out = enumerateSpellCatalog({ interface: intf, player: {} });
   assert.equal(out.spells.length, 1);
-  assert.equal(out.spells[0].mana, 20, 'string mana coerced');
+  assert.equal(out.spells[0].manaCost, 20, 'string mana coerced into the canonical field');
   assert.deepEqual(out.spells[0].vocations, [], 'non-array vocations dropped');
   assert.equal(out.playerLevel, null);
   assert.equal(out.vocationLabel, null);
+});
+
+test('REQ-28: enumerateSpellCatalog skips Unknown placeholders and carries live canvas icons', () => {
+  const intf = {
+    getSpell: (sid) => {
+      if (sid === 0) return { name: 'Unknown' };
+      if (sid === 1) return {
+        name: 'Healing',
+        description: 'Heal Damage',
+        icon: { x: 2, y: 0 },
+        words: 'exura',
+        mana: 25,
+        level: 1,
+        vocations: ['druid'],
+      };
+      return null;
+    },
+  };
+  const doc = {
+    querySelectorAll: () => [{
+      textContent: 'Healing (25 mana) Heal Damage',
+      getAttribute: (name) => (name === 'data-search' ? 'healing exura heal damage' : null),
+      querySelector: () => ({ toDataURL: () => 'data:image/png;base64,HEAL' }),
+    }],
+  };
+  const out = enumerateSpellCatalog({ interface: intf, player: {} }, { document: doc, maxUnknown: 3, limit: 8 });
+  assert.deepEqual(out.spells.map((s) => s.sid), [1], 'placeholder Unknown rows are not selectable');
+  assert.equal(out.spells[0].description, 'Heal Damage');
+  assert.deepEqual(out.spells[0].icon, { x: 2, y: 0 });
+  assert.equal(out.spells[0].imageDataURL, 'data:image/png;base64,HEAL');
 });
 
 test('REQ-28: enumerateSpellCatalog returns null when the interface is not ready', () => {
@@ -155,11 +196,11 @@ test('REQ-28: enumerateSpellCatalog returns null when the interface is not ready
 
 test('REQ-28: filterCatalogByVocation keeps only spells the vocation label + level can cast', () => {
   const spells = [
-    { sid: 0, name: 'Light', mana: 20, level: 0, vocations: ['sorcerer', 'druid'] },
-    { sid: 3, name: 'Intense Healing', mana: 170, level: 8, vocations: ['druid'] },
-    { sid: 4, name: 'Flame Strike', mana: 20, level: 5, vocations: ['sorcerer'] },
-    { sid: 9, name: 'Open-ended', mana: 30, level: 1, vocations: [] }, // empty = unrestricted
-    { sid: 12, name: 'No vocations key', mana: 10, level: 1 },          // absent = unrestricted
+    { sid: 0, name: 'Light', manaCost: 20, level: 0, vocations: ['sorcerer', 'druid'] },
+    { sid: 3, name: 'Intense Healing', manaCost: 170, level: 8, vocations: ['druid'] },
+    { sid: 4, name: 'Flame Strike', manaCost: 20, level: 5, vocations: ['sorcerer'] },
+    { sid: 9, name: 'Open-ended', manaCost: 30, level: 1, vocations: [] }, // empty = unrestricted
+    { sid: 12, name: 'No vocations key', manaCost: 10, level: 1 },          // absent = unrestricted
   ];
   const filtered = filterCatalogByVocation(spells, { vocationLabel: 'druid', playerLevel: 8 });
   assert.deepEqual(filtered.map((s) => s.sid), [0, 3, 9, 12],
@@ -171,7 +212,7 @@ test('REQ-28: filterCatalogByVocation keeps only spells the vocation label + lev
 });
 
 test('REQ-28: spellValidationError explains why a sid cannot apply (vocation/level/mana)', () => {
-  const spell = { sid: 3, name: 'Intense Healing', mana: 170, level: 8, vocations: ['druid'] };
+  const spell = { sid: 3, name: 'Intense Healing', manaCost: 170, level: 8, vocations: ['druid'] };
   assert.equal(spellValidationError(spell, { vocationLabel: 'druid', playerLevel: 8, mana: 200 }), null,
     'fully compatible -> null');
   assert.match(spellValidationError(spell, { vocationLabel: 'sorcerer' }).reason, /vocation mismatch/);
@@ -181,6 +222,31 @@ test('REQ-28: spellValidationError explains why a sid cannot apply (vocation/lev
   assert.deepEqual(spellValidationError(null, {}), { reason: 'unknown spell' });
   assert.equal(spellValidationError(spell, { vocationLabel: 'druid', playerLevel: 8, mana: null }), null,
     'mana null = not checked (cross-load path)');
+});
+
+test('live contract: readLiveState combines raw readers without inventing CAP', () => {
+  const available = readLiveState({
+    gameClient: {
+      player: {
+        state: {
+          health: 215,
+          maxHealth: 215,
+          mana: 96,
+          maxMana: 270,
+          __state: { capacity: 209 },
+          maxCapacity: 400,
+        },
+      },
+    },
+  });
+  assert.equal(available.mana, 96);
+  assert.equal(available.capacity.availability, 'available');
+  assert.equal(available.capacity.value, 209);
+
+  const absent = readLiveState({});
+  assert.equal(absent.availability.mana, 'unavailable');
+  assert.equal(absent.capacity.availability, 'unavailable');
+  assert.equal(absent.capacity.value, null);
 });
 
 test('REQ-30 (D3): readCap reads the probed __state.capacity + maxCapacity locations', () => {

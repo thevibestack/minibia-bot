@@ -107,7 +107,7 @@ test('REQ-08 fix: BEFORE/AFTER — a NESTED store push flips routes.on (flat-onl
     const attack = handle().getState().modules.attack;
     assert.equal(attack.on, true);
     assert.equal(attack.targeting, 'nearest');
-    assert.deepEqual(JSON.parse(JSON.stringify(attack.spell)), { sid: 12 });
+    assert.deepEqual(JSON.parse(JSON.stringify(attack.spell)), { sid: 12, slot: null });
     assert.deepEqual(JSON.parse(JSON.stringify(attack.rune)), { slot: 5 });
     assert.equal(handle().getState().modules.cavebot.on, true);
     assert.equal(handle().getState().modules.cavebot.savedRoute.count, 1,

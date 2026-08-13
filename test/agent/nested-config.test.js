@@ -37,9 +37,10 @@ function nestedStoreConfig(overrides = {}) {
     jitter: { min: 60, max: 350 },
     modules: {
       healItems: { on: true, threshold: 40, slotCids: [1, 2] },
+      manaItems: { on: true, threshold: 60, slotCids: [3, 4] },
       healMagic: { on: true, threshold: 120, slot: 2, word: 'exura', sid: 61, reserve: 10 },
       runes: { on: true, attackSlot: 3, healSlot: 4, healThreshold: 80, reserve: 30,
-        capMode: 'strict', capFullThreshold: 0.9, fallbackSlot: 5, fallbackManaPct: 0.6 },
+        capMode: 'strict', capFullThreshold: 0.9, fallbackSid: null, fallbackSlot: 5, fallbackManaPct: 0.6 },
       training: { on: true, slot: 6, sid: 42, reserve: 20, word: 'utevo vis',
         eatWithMagic: { enabled: true, slot: 8, sid: 55 } },
       eat: { on: true, everyCasts: 5, warningWindowSec: 45, fallbackIntervalSec: 8, slot: 2, cids: [9, 10] },
@@ -68,15 +69,16 @@ test('REQ-08 fix: the NESTED store shape reaches EVERY module — on flags + key
   assert.deepEqual(cfg.rotation, { spells: [] });
   // Every module normalizeConfig handles — nested shape lands in full.
   assert.deepEqual(cfg.healItems, { on: true, threshold: 40, slotCids: [1, 2] });
+  assert.deepEqual(cfg.manaItems, { on: true, threshold: 60, slotCids: [3, 4] });
   assert.deepEqual(cfg.healMagic,
     { on: true, threshold: 120, slot: 2, sid: 61, word: 'exura', reserve: 10 });
   assert.deepEqual(cfg.runes, {
     on: true, attackSlot: 3, healSlot: 4, healThreshold: 80, reserve: 30,
-    capMode: 'strict', capFullThreshold: 0.9, fallbackSlot: 5, fallbackManaPct: 0.6,
+    capMode: 'strict', capFullThreshold: 0.9, fallbackSid: null, fallbackSlot: 5, fallbackManaPct: 0.6,
   });
   assert.deepEqual(cfg.training, {
     on: true, slot: 6, sid: 42, reserve: 20, word: 'utevo vis',
-    eatWithMagic: { enabled: true, slot: 8, sid: 55 },
+    eatWithMagic: { enabled: true, slot: 8, sid: 55, everyRunes: 1 },
   });
   assert.deepEqual(cfg.eat, {
     on: true, everyCasts: 5, warningWindowSec: 45, fallbackIntervalSec: 8, slot: 2, cids: [9, 10],
@@ -88,8 +90,8 @@ test('REQ-08 fix: the NESTED store shape reaches EVERY module — on flags + key
   assert.deepEqual(cfg.learning.knownWords, ['exura', 'utevo vis']);
   assert.deepEqual(cfg.antibot, { on: true, replies: [{ pattern: 'are you bot?', reply: 'no' }], domRuneCheck: false });
   assert.equal(cfg.routes.on, true);
-  assert.deepEqual(cfg.attack, { on: true, targeting: 'nearest', sid: 12, runeSlot: 5 });
-  assert.deepEqual(cfg.cavebot, { on: true, paused: false, route: [{ x: 1, y: 2 }, { x: 3, y: 4 }] });
+  assert.deepEqual(cfg.attack, { on: true, targeting: 'nearest', sid: 12, runeSlot: 5, reserve: 0 });
+  assert.deepEqual(cfg.cavebot, { on: true, paused: false, route: [{ x: 1, y: 2 }, { x: 3, y: 4 }], monsters: [], targeting: 'nearest' });
   assert.equal(cfg.armed, true);
 });
 
@@ -103,9 +105,10 @@ test('REQ-08 fix: the FLAT shape still normalizes identically (v1/v2 agent test 
     survival: { on: true, threshold: 40, slot: 3 },
     rotation: { spells: [{ slot: 1, word: 'exori' }] },
     healItems: { on: true, threshold: 40, slotCids: [1, 2] },
+    manaItems: { on: true, threshold: 60, slotCids: [3, 4] },
     healMagic: { on: true, threshold: 120, slot: 2, word: 'exura', sid: 61, reserve: 10 },
     runes: { on: true, attackSlot: 3, healSlot: 4, healThreshold: 80, reserve: 30,
-      capMode: 'strict', capFullThreshold: 0.9, fallbackSlot: 5, fallbackManaPct: 0.6 },
+      capMode: 'strict', capFullThreshold: 0.9, fallbackSid: null, fallbackSlot: 5, fallbackManaPct: 0.6 },
     training: { on: true, slot: 6, sid: 42, reserve: 20, word: 'utevo vis',
       eatWithMagic: { enabled: true, slot: 8, sid: 55 } },
     eat: { on: true, everyCasts: 5, warningWindowSec: 45, fallbackIntervalSec: 8, slot: 2, cids: [9, 10] },
@@ -124,18 +127,19 @@ test('REQ-08 fix: the FLAT shape still normalizes identically (v1/v2 agent test 
   assert.deepEqual(cfg.survival, { on: true, threshold: 40, slot: 3 }, 'survival flat intact');
   assert.deepEqual(cfg.rotation, { spells: [{ slot: 1, word: 'exori' }] }, 'rotation flat intact');
   assert.deepEqual(cfg.healItems, { on: true, threshold: 40, slotCids: [1, 2] });
+  assert.deepEqual(cfg.manaItems, { on: true, threshold: 60, slotCids: [3, 4] });
   assert.deepEqual(cfg.healMagic,
     { on: true, threshold: 120, slot: 2, sid: 61, word: 'exura', reserve: 10 });
   assert.equal(cfg.runes.capMode, 'strict');
   assert.equal(cfg.runes.fallbackSlot, 5);
-  assert.deepEqual(cfg.training.eatWithMagic, { enabled: true, slot: 8, sid: 55 });
+  assert.deepEqual(cfg.training.eatWithMagic, { enabled: true, slot: 8, sid: 55, everyRunes: 1 });
   assert.deepEqual(cfg.eat.cids, [9, 10]);
   assert.equal(cfg.trade.intervalMs, 90000);
   assert.deepEqual(cfg.loot.perMonster, { Rotworm: 'Loot bag' });
   assert.deepEqual(cfg.learning.knownWords, ['exura', 'utevo vis']);
   assert.equal(cfg.routes.on, true);
-  assert.deepEqual(cfg.attack, { on: true, targeting: 'nearest', sid: 12, runeSlot: 5 });
-  assert.deepEqual(cfg.cavebot, { on: true, paused: false, route: [{ x: 1, y: 2 }] });
+  assert.deepEqual(cfg.attack, { on: true, targeting: 'nearest', sid: 12, runeSlot: 5, reserve: 0 });
+  assert.deepEqual(cfg.cavebot, { on: true, paused: false, route: [{ x: 1, y: 2 }], monsters: [], targeting: 'nearest' });
   assert.equal(cfg.armed, true);
 });
 
@@ -172,7 +176,7 @@ test('REQ-08 fix: modules ABSENT -> flat only; module WITHOUT a nested entry -> 
     armed: true,
   });
   assert.deepEqual(flatOnly.runes, { on: true, attackSlot: 2, healSlot: null, healThreshold: null,
-    reserve: 0, capMode: 'strict', capFullThreshold: 1.0, fallbackSlot: null,
+    reserve: 0, capMode: 'strict', capFullThreshold: 1.0, fallbackSid: null, fallbackSlot: null,
     fallbackManaPct: 0.5 });
   assert.equal(flatOnly.routes.on, true);
 

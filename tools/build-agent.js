@@ -52,6 +52,8 @@ const AGENT_MODULES = [
   ['core/tree', 'src/core/tree.js'],
   ['core/queue', 'src/core/queue.js'],
   ['core/items', 'src/core/items.js'],
+  ['core/live-contract', 'src/core/live-contract.js'],
+  ['core/runtime-status', 'src/core/runtime-status.js'],
   ['core/premium', 'src/core/premium.js'],
   ['core/kills', 'src/core/kills.js'],
   ['core/log', 'src/core/log.js'], // D8 (slice 1a): readable activity log ring
@@ -61,6 +63,7 @@ const AGENT_MODULES = [
   ['adapters/chat', 'src/adapters/chat.js'],
   ['adapters/catalog', 'src/adapters/catalog.js'],
   ['agent/modules/heal-items', 'src/agent/modules/heal-items.js'],
+  ['agent/modules/mana-items', 'src/agent/modules/mana-items.js'],
   ['agent/modules/heal-magic', 'src/agent/modules/heal-magic.js'],
   ['agent/modules/runes', 'src/agent/modules/runes.js'],
   ['agent/modules/training', 'src/agent/modules/training.js'],
@@ -106,6 +109,13 @@ function wrapAgentModule(regName, source) {
     .replace(/require\('\.\/modules\//g, "require('agent/modules/");
 }
 
+/** Adapter modules may depend on core contracts one directory above. */
+function wrapAdapterModule(regName, source) {
+  return wrapModule(regName, source)
+    .replace(/require\('\.\.\/core\//g, "require('core/")
+    .replace(/require\('\.\.\/adapters\//g, "require('adapters/");
+}
+
 /** Bundle every agent module into the registry + the boot epilogue. @returns {string} */
 function bundleAgent() {
   const parts = [
@@ -125,6 +135,8 @@ function bundleAgent() {
       // agent/* files (bootstrap + modules) use ../core, ../adapters and
       // ../../core / ../../adapters relative requires — rewrite them all.
       parts.push(wrapAgentModule(regName, source));
+    } else if (regName.startsWith('adapters/')) {
+      parts.push(wrapAdapterModule(regName, source));
     } else {
       parts.push(wrapModule(regName, source));
     }
@@ -181,4 +193,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { buildAgent, run, AGENT_MODULES, wrapAgentModule };
+module.exports = { buildAgent, run, AGENT_MODULES, wrapAgentModule, wrapAdapterModule };

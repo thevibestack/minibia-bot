@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { JSDOM } = require('jsdom');
+const { createAgent } = require('../../src/agent/bootstrap');
 
 const BUNDLE = fs.readFileSync(path.join(__dirname, '..', '..', 'minibia-desktop-agent.js'), 'utf8');
 
@@ -268,5 +269,76 @@ test('2.5: applyConfig toggles the survival leaf off — no heals fire', async (
     assert.equal(res.config.survival.threshold, 50);
   } finally {
     teardown(dom);
+  }
+});
+
+test('live contract: snapshot resolves SID to the current F-key and never trusts a stale slot', () => {
+  const slots = Array.from({ length: 12 }, () => null);
+  slots[2] = { spell: { sid: 35 } }; // F3 initially
+  const gameClient = {
+    player: {
+      name: 'Flamamex',
+      state: { mana: 270, maxMana: 270, health: 215, maxHealth: 215 },
+    },
+    interface: {
+      getSpell: (sid) => (Number(sid) === 35
+        ? { name: 'Heavy Magic Missile', words: 'adori gran', mana: 210, level: 3, vocations: ['druid'] }
+        : null),
+      hotbarManager: {
+        slots,
+        __handleClick: () => true,
+      },
+    },
+  };
+  const handle = createAgent({
+    gameClient,
+    autoStart: false,
+    setInterval: () => 1,
+    clearInterval: () => {},
+    setTimeout: () => 1,
+    clearTimeout: () => {},
+    log: { error: () => {}, warn: () => {}, info: () => {} },
+  });
+
+  try {
+    assert.equal(handle.poll(), true);
+    const first = handle.getState().live;
+    assert.equal(first.stats.mana, 270);
+    assert.equal(first.stats.availability.mana, 'available');
+    assert.deepEqual(first.hotbar.slots.map((entry) => [entry.slot, entry.sid, entry.manaCost]), [[3, 35, 210]]);
+
+    slots[2] = null;
+    slots[4] = { spell: { sid: 35 } }; // player moved it to F5
+    const refreshed = handle.getState().live;
+    assert.deepEqual(refreshed.hotbar.slots.map((entry) => [entry.slot, entry.sid]), [[5, 35]],
+      'each snapshot re-reads the hotbar instead of retaining F3');
+    assert.equal(handle.surface.getHotbarCatalog().slots[0].slot, 5);
+  } finally {
+    handle.destroy();
+  }
+});
+
+test('live contract: an unmapped SID is absent instead of receiving an invented F-key', () => {
+  const gameClient = {
+    player: { state: { mana: 100, maxMana: 100, health: 100, maxHealth: 100 } },
+    interface: {
+      getSpell: () => ({ name: 'Light', words: 'utevo lux', cost: 20 }),
+      hotbarManager: { slots: Array.from({ length: 12 }, () => null), __handleClick: () => true },
+    },
+  };
+  const handle = createAgent({
+    gameClient,
+    autoStart: false,
+    setInterval: () => 1,
+    clearInterval: () => {},
+    setTimeout: () => 1,
+    clearTimeout: () => {},
+    log: { error: () => {}, warn: () => {}, info: () => {} },
+  });
+  try {
+    handle.poll();
+    assert.deepEqual(handle.getState().live.hotbar, { available: true, slots: [] });
+  } finally {
+    handle.destroy();
   }
 });

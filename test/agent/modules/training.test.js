@@ -1,323 +1,138 @@
 'use strict';
 
-/**
- * Training module unit tests (task 4.4, REQ-16): repeat-cast while the
- * vocation gate passes, pause below cost+reserve, feature-absent gate
- * degrade, and the queue-cadence contract (one cast per queue slot — proven
- * in the jsdom wiring tests).
- */
-
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-
 const { createTraining } = require('../../../src/agent/modules/training');
 
-function moduleWith(overrides = {}, opts = {}) {
-  const config = Object.assign({ on: true, slot: 7, sid: 50, reserve: 0, eatWithMagic: { enabled: false, slot: null, sid: null } }, overrides);
-  return createTraining(Object.assign({
+function harness(overrides = {}) {
+  let clock = 1000;
+  let slots = [{ which: 0, index: 1, cid: 42, count: 1 }];
+  const hotbar = Object.assign({ 3: 35, 4: 24, 5: 88 }, overrides.hotbar || {});
+  const clicks = [];
+  const consumes = [];
+  const config = Object.assign({
+    on: true, slot: 3, sid: 35, reserve: 30,
+    eatWithMagic: { enabled: true, slot: 4, sid: 24, everyRunes: 1 },
+  }, overrides.config || {});
+  const m = createTraining({
     config,
-    capConfig: { capMode: 'off', capFullThreshold: 1.0, fallbackSlot: null, fallbackManaPct: 0.5 },
-    readCap: () => null,
-    getSpellCost: () => 25,
+    capConfig: Object.assign({ capMode: 'off', capFullThreshold: 1, fallbackSlot: null, fallbackSid: null, fallbackManaPct: .5 }, overrides.capConfig || {}),
+    readCap: overrides.readCap || (() => null),
+    getSpellCost: overrides.getSpellCost || ((sidOrSlot) => ({ 35: 210, 24: 30, 5: 20 }[sidOrSlot] ?? null)),
     canCastSpell: () => true,
     readCooldown: () => ({ cooldown: { active: false }, globalCooldown: { active: false } }),
-    now: () => 1000,
-  }, opts));
+    readHotbarSlotSid: (slot) => hotbar[slot] ?? null,
+    readVisibleSlots: () => slots,
+    consumeItem: (item) => { consumes.push(item); return true; },
+    now: () => clock,
+    actionConfirmationTimeoutMs: 1000,
+    foodArrivalTimeoutMs: 1000,
+  });
+  const deps = { mana: null, gameClient: { interface: { hotbarManager: { __handleClick: (slot) => clicks.push(slot) } } } };
+  return {
+    m, clicks, consumes, hotbar,
+    slots: () => slots,
+    setSlots: (next) => { slots = next; },
+    advance: (ms) => { clock += ms; },
+    fire: (decision, mana) => m.fire(decision, Object.assign({}, deps, { mana })),
+  };
 }
 
-const ctx = { mana: 200, maxMana: 220 };
-
-test('REQ-16: gate passes + mana feasible -> training cast fires', () => {
-  const m = moduleWith();
-  const d = m.decide(ctx);
-  assert.equal(d.fire, true);
-  assert.equal(d.reason, 'train');
-  assert.equal(d.slot, 7);
-});
-
-test('REQ-16: repeat-cast — same state keeps the decision fire on every tick', () => {
-  const m = moduleWith();
-  assert.equal(m.decide(ctx).fire, true);
-  assert.equal(m.decide(ctx).fire, true, 'cadence is enforced by the queue, not by the module');
-});
-
-test('REQ-16: below cost -> pause (insufficient)', () => {
-  const m = moduleWith({}, { getSpellCost: () => 250 });
-  assert.equal(m.decide(ctx).fire, false);
-  assert.equal(m.decide(ctx).reason, 'insufficient');
-});
-
-test('REQ-16: below cost+reserve -> pause until mana recovers', () => {
-  const m = moduleWith({ reserve: 100 }, { getSpellCost: () => 50 });
-  assert.equal(m.decide({ ...ctx, mana: 140 }).fire, false, '200 - 50 < reserve 100... ' +
-    'mana 140 - 50 = 90 < 100 -> reserve pause');
-  assert.equal(m.decide({ ...ctx, mana: 140 }).reason, 'reserve');
-  assert.equal(m.decide({ ...ctx, mana: 150 }).fire, true, '150 - 50 = 100 >= 100 -> fires');
-});
-
-test('REQ-16: unknown spell cost -> pause (no-cost, cannot prove feasibility)', () => {
-  const m = moduleWith({}, { getSpellCost: () => null });
-  assert.equal(m.decide(ctx).fire, false);
-  assert.equal(m.decide(ctx).reason, 'no-cost');
-});
-
-test('REQ-16: __canPlayerCastSpell is the vocation gate — false pauses', () => {
-  const m = moduleWith({}, { canCastSpell: () => false });
-  assert.equal(m.decide(ctx).fire, false);
-  assert.equal(m.decide(ctx).reason, 'vocation-gate');
-});
-
-test('REQ-16: vocation gate feature-absent (null) -> mana gate alone, cast proceeds', () => {
-  const m = moduleWith({}, { canCastSpell: () => null });
-  assert.equal(m.decide(ctx).fire, true, 'absent gate never blocks (mana feasibility still gates)');
-});
-
-test('REQ-16: GLOBAL_COOLDOWN active -> defer', () => {
-  const m = moduleWith({}, {
-    readCooldown: () => ({ cooldown: { active: false }, globalCooldown: { active: true } }),
-  });
-  assert.equal(m.decide(ctx).reason, 'global-cooldown');
-});
-
-test('REQ-16: module OFF -> no cast', () => {
-  const m = moduleWith({ on: false });
-  assert.equal(m.decide(ctx).fire, false);
-  assert.equal(m.decide(ctx).reason, 'off');
-  assert.equal(m.isEnabled(), false);
-});
-
-test('REQ-16: no hotbar slot -> no cast', () => {
-  const m = moduleWith({ slot: null });
-  assert.equal(m.decide(ctx).reason, 'no-slot');
-});
-
-test('REQ-16: fire calls __handleClick via the proven firing path', () => {
-  const clicks = [];
-  const m = moduleWith({});
-  const ok = m.fire({ slot: 7 }, {
-    gameClient: { interface: { hotbarManager: { __handleClick: (slot) => clicks.push(slot) } } },
-    document: null,
-  });
-  assert.equal(ok, true);
-  assert.deepEqual(clicks, [7]);
-});
-
-/* ------------------------- PR 4 (REQ-30/31/32, D2/D3/D4) ------------------------- */
-
-/** Strict-cap module: capMode strict, threshold 1.0, fallback slot 3 at 50% mana.
- *  The FALLBACK slot cost defaults to UNKNOWN (null) so cap-full scenarios keep
- *  the v1 %-based fallback gate; the training-spell sid still resolves (cost 25)
- *  so a recovered cap resumes normal training. Cost-aware tests inject a slot
- *  resolver via opts. */
-function capModule(overrides = {}, opts = {}) {
-  return moduleWith(Object.assign({}, overrides.training || {}), Object.assign({
-    capConfig: Object.assign({
-      capMode: 'strict',
-      capFullThreshold: 1.0,
-      fallbackSlot: 3,
-      fallbackManaPct: 0.5,
-    }, overrides.capConfig || {}),
-    readCap: overrides.readCap || (() => ({ capacity: 400, maxCapacity: 400, ratio: 1, source: 'state' })),
-    getSpellCost: overrides.getSpellCost || ((arg) => (arg === 3 ? null : 25)),
-  }, opts));
+function confirmRune(h) {
+  const rune = h.m.decide({ mana: 240, maxMana: 270 });
+  assert.deepEqual({ fire: rune.fire, kind: rune.kind, slot: rune.slot, sid: rune.sid, cost: rune.cost },
+    { fire: true, kind: 'training', slot: 3, sid: 35, cost: 210 });
+  assert.equal(h.fire(rune, 240), true, 'handler invocation is dispatched once');
+  assert.equal(h.m.decide({ mana: 30, maxMana: 270 }).reason, 'rune-cast-confirmed');
 }
 
-test('REQ-30 (D3): strict cap FULL (ratio >= threshold) stops rune-making — idle + state.capFull', () => {
-  const m = capModule();
-  const d = m.decide({ mana: 200, maxMana: 500 }); // 40% < fallback 50% -> idle
-  assert.equal(d.fire, false);
-  assert.equal(d.reason, 'cap-full-idle');
-  assert.equal(m.getState().capFull, true, 'capFull flows to the snapshot (panel alert path)');
-  assert.equal(m.getState().cap.ratio, 1);
+function invokeFood(h) {
+  const food = h.m.decide({ mana: 30, maxMana: 270 });
+  assert.deepEqual({ fire: food.fire, kind: food.kind, slot: food.slot, sid: food.sid, cost: food.cost },
+    { fire: true, kind: 'eat-magic', slot: 4, sid: 24, cost: 30 });
+  assert.equal(h.fire(food, 30), true);
+}
+
+test('HMM 210 + reserve 30 waits at 96 and arms at 240 without save-time blocking', () => {
+  const h = harness({ config: { eatWithMagic: { enabled: false } } });
+  assert.equal(h.m.decide({ mana: 96, maxMana: 270 }).reason, 'insufficient');
+  assert.equal(h.m.getState().requiredMana, 240);
+  assert.equal(h.m.decide({ mana: 240, maxMana: 270 }).kind, 'training');
 });
 
-test('REQ-30 (D3): cap NOT full -> the training cast proceeds normally', () => {
-  const m = capModule({ readCap: () => ({ capacity: 209, maxCapacity: 400, ratio: 209 / 400, source: 'state' }) });
-  const d = m.decide(ctx);
-  assert.equal(d.fire, true);
-  assert.equal(d.reason, 'train');
-  assert.equal(d.kind, 'training');
-  assert.equal(m.getState().capFull, false);
+test('handler invocation without mana effect does not count a rune or schedule/cast food', () => {
+  const h = harness();
+  const rune = h.m.decide({ mana: 240, maxMana: 270 });
+  assert.equal(h.fire(rune, 240), true);
+  assert.deepEqual(h.clicks, [3]);
+  assert.equal(h.m.decide({ mana: 240, maxMana: 270 }).reason, 'waiting-rune-confirmation');
+  assert.equal(h.m.getState().successfulRuneCreations, 0);
+  h.advance(1000);
+  assert.equal(h.m.decide({ mana: 240, maxMana: 270 }).reason, 'rune-cast-no-mana-effect');
+  assert.equal(h.m.decide({ mana: 240, maxMana: 270 }).reason, 'rune-cast-no-mana-effect', 'failure blocks retry spin');
+  assert.deepEqual(h.clicks, [3]);
 });
 
-test('REQ-30 (D3): cap data ABSENT (ratio null) -> degrade, no cap enforcement', () => {
-  const m = capModule({ readCap: () => ({ capacity: null, maxCapacity: null, ratio: null, source: 'none' }) });
-  const d = m.decide(ctx);
-  assert.equal(d.fire, true, 'unknown cap never blocks rune-making (feature-detect degrade)');
-  assert.equal(m.getState().capFull, false);
-  assert.equal(m.getState().cap.source, 'none');
+test('stale or rerouted hotbar SID blocks before the handler is invoked', () => {
+  const h = harness();
+  h.hotbar[3] = 999;
+  const rune = h.m.decide({ mana: 240, maxMana: 270 });
+  assert.equal(h.fire(rune, 240), false);
+  assert.deepEqual(h.clicks, []);
+  assert.equal(h.m.getState().blockedReason, 'stale-hotbar-slot-3-expected-sid-35');
 });
 
-test('REQ-30 (D3): capMode OFF -> no cap enforcement even at ratio 1.0', () => {
-  const m = capModule({ capConfig: { capMode: 'off' } });
-  const d = m.decide(ctx);
-  assert.equal(d.fire, true);
-  assert.equal(m.getState().capFull, false);
-});
-
-test('REQ-30 (D3): cap full + mana >= fallback% -> the fallback spell casts (slot)', () => {
-  const m = capModule();
-  const d = m.decide({ mana: 300, maxMana: 500 });
-  assert.equal(d.fire, true);
-  assert.equal(d.kind, 'fallback');
-  assert.equal(d.slot, 3);
-  assert.equal(d.reason, 'cap-full-fallback');
-  assert.equal(m.getState().capFull, true);
-});
-
-test('REQ-30 (D3): the fallback verifies its REAL spell cost — fires only when mana covers cost+reserve', () => {
-  // Fallback slot 3 resolves cost 80; %-gate at 50% maxMana (250) also passes.
-  // mana 300 covers 80 + reserve 0 -> the fallback fires (slot-driven cost).
-  const m = capModule({}, { getSpellCost: (slot) => (slot === 3 ? 80 : null) });
-  const d = m.decide({ mana: 300, maxMana: 500 });
-  assert.equal(d.fire, true);
-  assert.equal(d.kind, 'fallback');
-  assert.equal(d.slot, 3, 'the slot is passed to the cost resolver');
-  assert.equal(d.reason, 'cap-full-fallback');
-});
-
-test('REQ-30 (D3): the fallback idles when mana covers the %-gate but NOT cost+reserve', () => {
-  // Fallback cost 80 + training reserve 250 -> needs mana >= 330. mana 300
-  // passes the 50% %-gate (250) yet must NOT fire an unaffordable fallback.
-  const m = capModule({ training: { reserve: 250 } },
-    { getSpellCost: (slot) => (slot === 3 ? 80 : null) });
-  const d = m.decide({ mana: 300, maxMana: 500 });
-  assert.equal(d.fire, false, 'an unaffordable fallback never fires');
-  assert.equal(d.reason, 'cap-full-idle');
-  assert.equal(m.getState().capFull, true);
-
-  // Mana recovers to cost + reserve -> the fallback fires.
-  const d2 = m.decide({ mana: 330, maxMana: 500 });
-  assert.equal(d2.fire, true);
-  assert.equal(d2.kind, 'fallback');
-  assert.equal(d2.slot, 3);
-});
-
-test('REQ-30 (D3): unknown fallback cost degrades to the %-based behavior (safe)', () => {
-  // No cost resolvable for the fallback slot -> the v1 %-of-maxMana gate stands.
-  const m = capModule({}, { getSpellCost: () => null });
-  const fire = m.decide({ mana: 300, maxMana: 500 }); // 60% >= 50% -> fires
-  assert.equal(fire.fire, true);
-  assert.equal(fire.kind, 'fallback');
-  const idle = m.decide({ mana: 200, maxMana: 500 }); // 40% < 50% -> idles
-  assert.equal(idle.fire, false);
-  assert.equal(idle.reason, 'cap-full-idle');
-});
-
-test('REQ-30 (D3): cap full + mana < fallback% -> trainer idles until mana recovers', () => {
-  const m = capModule();
-  const d = m.decide({ mana: 200, maxMana: 500 }); // 40% < 50%
-  assert.equal(d.fire, false);
-  assert.equal(d.reason, 'cap-full-idle');
-  // mana recovers above the 50% mark -> fallback fires
-  const d2 = m.decide({ mana: 260, maxMana: 500 }); // 52% >= 50%
-  assert.equal(d2.fire, true);
-  assert.equal(d2.kind, 'fallback');
-});
-
-test('REQ-30 (D3): cap full with NO fallback slot -> idle regardless of mana', () => {
-  const m = capModule({ capConfig: { fallbackSlot: null } });
-  const d = m.decide({ mana: 400, maxMana: 500 });
-  assert.equal(d.fire, false);
-  assert.equal(d.reason, 'cap-full-idle');
-});
-
-test('REQ-30 (D3): cap-full fallback respects the global cooldown (no bypass)', () => {
-  const m = capModule({}, {
-    readCooldown: () => ({ cooldown: { active: false }, globalCooldown: { active: true } }),
+test('fallback also requires the current F-key to still map to its configured SID', () => {
+  const h = harness({
+    capConfig: { capMode: 'strict', capFullThreshold: 1, fallbackSlot: 5, fallbackSid: 88, fallbackManaPct: .5 },
+    readCap: () => ({ capacity: 1, maxCapacity: 1, ratio: 1 }),
   });
-  const d = m.decide({ mana: 400, maxMana: 500 });
-  assert.equal(d.fire, false);
-  assert.equal(d.reason, 'global-cooldown');
+  const fallback = h.m.decide({ mana: 270, maxMana: 270 });
+  assert.equal(fallback.kind, 'fallback');
+  h.hotbar[5] = 12;
+  assert.equal(h.fire(fallback, 270), false);
+  assert.deepEqual(h.clicks, []);
+  assert.equal(h.m.getState().blockedReason, 'stale-hotbar-slot-5-expected-sid-88');
 });
 
-test('REQ-30 (D3): the fallback checks NO per-spell cooldown — slot-driven, global only (fallbackSid dropped)', () => {
-  // Post-chain maintenance (obs 10502): fallbackSid never resolved a slot and
-  // was dropped. The fallback passes a NULL sid to the cooldown reader — the
-  // adapter's null-sid contract returns NO per-spell cooldown (v1 precedent:
-  // null sid -> cd null), so an ACTIVE per-spell cooldown for any REAL sid
-  // must not block it; GLOBAL_COOLDOWN still gates. The queue's min-interval
-  // throttle + jitter keep the pacing (proven in queue.test.js +
-  // bootstrap.test.js e2e).
-  const m = capModule({}, {
-    // Models the real adapter: per-spell cooldown data exists ONLY for a
-    // concrete sid; a null sid yields none (never invented for the fallback).
-    readCooldown: (sid) => ({
-      cooldown: sid === null || sid === undefined ? null : { active: true },
-      globalCooldown: { active: false },
-    }),
-  });
-  const d = m.decide({ mana: 400, maxMana: 500 });
-  assert.equal(d.fire, true, 'the null-sid fallback verdict never consults a per-spell cooldown');
-  assert.equal(d.kind, 'fallback');
-  assert.equal(d.slot, 3);
-  assert.equal(d.reason, 'cap-full-fallback');
-
-  // Same adapter, GLOBAL_COOLDOWN active: the fallback defers (no bypass).
-  const m2 = capModule({}, {
-    readCooldown: (sid) => ({
-      cooldown: sid === null || sid === undefined ? null : { active: true },
-      globalCooldown: { active: true },
-    }),
-  });
-  assert.equal(m2.decide({ mana: 400, maxMana: 500 }).fire, false, 'global cooldown still gates the fallback');
+test('food with mana effect but no first-20-slot delta times out and never consumes an old item', () => {
+  const h = harness();
+  confirmRune(h);
+  invokeFood(h);
+  assert.equal(h.m.decide({ mana: 0, maxMana: 270 }).reason, 'waiting-created-food');
+  h.advance(1000);
+  assert.equal(h.m.decide({ mana: 0, maxMana: 270 }).reason, 'food-not-created-timeout');
+  assert.deepEqual(h.consumes, []);
+  assert.deepEqual(h.clicks, [3, 4]);
 });
 
-test('REQ-31 (D2): per-module reserve — cost 200 + reserve 30 -> waits for mana >= 230', () => {
-  // The spec acceptance scenario verbatim: mana=210 must NOT cast; 230 must.
-  const m = moduleWith({ reserve: 30 }, { getSpellCost: () => 200 });
-  assert.equal(m.decide({ mana: 210, maxMana: 300 }).fire, false, '210 < 230 -> reserve pause');
-  assert.equal(m.decide({ mana: 210, maxMana: 300 }).reason, 'reserve');
-  assert.equal(m.decide({ mana: 230, maxMana: 300 }).fire, true, '230 >= 200 + 30 -> fires');
+test('created food consumption is not confirmed by handler invocation alone', () => {
+  const h = harness();
+  confirmRune(h);
+  invokeFood(h);
+  h.setSlots([h.slots()[0], { which: 0, index: 2, cid: 777, count: 1 }]);
+  assert.equal(h.m.decide({ mana: 0, maxMana: 270 }).reason, 'food-created-confirmed');
+  const consume = h.m.decide({ mana: 0, maxMana: 270 });
+  assert.equal(consume.kind, 'consume-created-food');
+  assert.equal(h.fire(consume, 0), true);
+  assert.equal(h.m.decide({ mana: 0, maxMana: 270 }).reason, 'waiting-created-food-consumption');
+  h.advance(1000);
+  assert.equal(h.m.decide({ mana: 0, maxMana: 270 }).reason, 'created-food-consume-not-confirmed');
+  assert.equal(h.consumes.length, 1);
 });
 
-test('REQ-32 (D4): mana low + eat-with-magic -> an eat-magic decision (magic-food slot) enqueues instead of casting', () => {
-  const m = moduleWith(
-    { reserve: 30, eatWithMagic: { enabled: true, slot: 5, sid: 12 } },
-    { getSpellCost: () => 200 },
-  );
-  const d = m.decide({ mana: 210, maxMana: 300 });
-  assert.equal(d.fire, true);
-  assert.equal(d.kind, 'eat-magic');
-  assert.equal(d.slot, 5);
-  assert.equal(d.reason, 'eat-magic');
-});
-
-test('REQ-32 (D4): eat-with-magic OFF -> mana low means the trainer waits', () => {
-  const m = moduleWith({ reserve: 30, eatWithMagic: { enabled: false, slot: 5, sid: 12 } }, { getSpellCost: () => 200 });
-  const d = m.decide({ mana: 210, maxMana: 300 });
-  assert.equal(d.fire, false);
-  assert.equal(d.reason, 'reserve');
-});
-
-test('REQ-32 (D4): eat-magic requires a valid slot — configured without one, the trainer waits', () => {
-  const m = moduleWith({ reserve: 30, eatWithMagic: { enabled: true, slot: null, sid: 12 } }, { getSpellCost: () => 200 });
-  const d = m.decide({ mana: 210, maxMana: 300 });
-  assert.equal(d.fire, false);
-  assert.equal(d.reason, 'reserve');
-});
-
-test('REQ-32 (D4): eat-magic fires the magic-food slot via the proven firing path', () => {
-  const clicks = [];
-  const m = moduleWith(
-    { reserve: 30, eatWithMagic: { enabled: true, slot: 5, sid: 12 } },
-    { getSpellCost: () => 200 },
-  );
-  const ok = m.fire({ kind: 'eat-magic', slot: 5 }, {
-    gameClient: { interface: { hotbarManager: { __handleClick: (slot) => clicks.push(slot) } } },
-    document: null,
-  });
-  assert.equal(ok, true);
-  assert.deepEqual(clicks, [5]);
-});
-
-test('REQ-30 (D3): the capFull state resets when the cap no longer reads full', () => {
-  let cap = { capacity: 400, maxCapacity: 400, ratio: 1, source: 'state' };
-  const m = capModule({ readCap: () => cap });
-  assert.equal(m.decide({ mana: 200, maxMana: 500 }).reason, 'cap-full-idle');
-  assert.equal(m.getState().capFull, true);
-  cap = { capacity: 200, maxCapacity: 400, ratio: 0.5, source: 'state' };
-  const d = m.decide({ mana: 300, maxMana: 500 });
-  assert.equal(d.fire, true, 'cap recovered -> training proceeds');
-  assert.equal(m.getState().capFull, false, 'stale capFull never persists');
+test('successful full MiniTibia loop confirms rune, food delta, and consumption before repeating', () => {
+  const h = harness();
+  confirmRune(h);
+  invokeFood(h);
+  h.setSlots([h.slots()[0], { which: 0, index: 2, cid: 777, count: 1 }]);
+  assert.equal(h.m.decide({ mana: 0, maxMana: 270 }).reason, 'food-created-confirmed');
+  const consume = h.m.decide({ mana: 0, maxMana: 270 });
+  assert.equal(h.fire(consume, 0), true);
+  h.setSlots([h.slots()[0], { which: 0, index: 2, cid: null, count: null }]);
+  assert.equal(h.m.decide({ mana: 0, maxMana: 270 }).reason, 'created-food-consumed');
+  assert.equal(h.m.getState().foodCycle, 'idle');
+  assert.equal(h.m.getState().successfulRuneCreations, 1);
+  assert.deepEqual(h.clicks, [3, 4]);
+  assert.equal(h.consumes.length, 1);
 });

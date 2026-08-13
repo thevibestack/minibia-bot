@@ -37,6 +37,7 @@ const MODULES = [
   ['core/sated', 'src/core/sated.js'],
   ['core/validation', 'src/core/validation.js'],
   ['core/dedupe', 'src/core/dedupe.js'],
+  ['core/live-contract', 'src/core/live-contract.js'],
   ['adapters/gameClient', 'src/adapters/gameClient.js'],
   ['adapters/firing', 'src/adapters/firing.js'],
   ['adapters/eat', 'src/adapters/eat.js'],
@@ -101,9 +102,14 @@ const HEADER = `// ==UserScript==
  */
 function wrapModule(regName, source) {
   const dir = regName.split('/')[0];
-  const rewritten = source.replace(/require\(\s*'\.\/([\w-]+)'\s*\)/g, (m, name) => {
+  let rewritten = source.replace(/require\(\s*'\.\/([\w-]+)'\s*\)/g, (m, name) => {
     return "require('" + dir + '/' + name + "')";
   });
+  // Cross-directory relative requires inside src/adapters (e.g.
+  // adapters/gameClient -> ../core/live-contract) resolve to registry keys.
+  rewritten = rewritten
+    .replace(/require\(\s*'\.\.\/core\//g, "require('core/")
+    .replace(/require\(\s*'\.\.\/adapters\//g, "require('adapters/");
   return (
     "__mbModules['" + regName + "'] = (function () {\n"
     + "'use strict';\n"

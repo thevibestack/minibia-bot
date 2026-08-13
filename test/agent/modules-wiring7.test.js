@@ -36,6 +36,9 @@ function makePage(overrides = {}) {
     runScripts: 'dangerously',
   });
   const pathCalls = [];
+  const casts = [];
+  const uses = [];
+  const creatures = overrides.creatures !== undefined ? overrides.creatures : {};
   const pf = overrides.pathfinder !== undefined ? overrides.pathfinder : {
     pathTo: (x, y) => { pathCalls.push({ x, y }); return true; },
   };
@@ -49,15 +52,23 @@ function makePage(overrides = {}) {
       spellbook: { cooldowns: { GLOBAL_COOLDOWN: { active: false } }, spells: {} },
     },
     interface: {
-      getSpell: () => null,
-      hotbarManager: { __handleClick: () => {} },
+      getSpell: (sid) => (sid === 12 ? { cost: 20 } : null),
+      hotbarManager: {
+        slots: [{}, {}, { spell: { sid: 12 } }],
+        __handleClick: (slot) => casts.push(slot),
+        __canPlayerCastSpell: () => true,
+      },
     },
-    world: { pathfinder: pf, objects },
-    mouse: { use: () => {} },
+    world: {
+      pathfinder: pf, objects, activeCreatures: creatures,
+      targetMonster: (set) => { gameClient.player.__target = Array.from(set)[0] || null; },
+    },
+    mouse: { use: (args) => uses.push(args) },
+    backpack: { slots: overrides.backpackSlots || [] },
   };
   dom.window.gameClient = gameClient;
   dom.window.eval(BUNDLE);
-  return { dom, pathCalls, gameClient };
+  return { dom, pathCalls, casts, uses, creatures, gameClient };
 }
 
 function teardown(dom) {
@@ -78,6 +89,7 @@ function sliceConfig(overrides = {}) {
     survival: { on: false, threshold: 50, slot: null },
     rotation: { spells: [] },
     healItems: { on: false, threshold: 50, slotCids: [] },
+    manaItems: { on: false, threshold: 50, slotCids: [] },
     healMagic: { on: false, threshold: 150, slot: 2, sid: 61, word: null },
     runes: { on: false, attackSlot: null, healSlot: null, healThreshold: null },
     training: { on: false, slot: null, sid: null, reserve: 0, word: null },
@@ -88,30 +100,32 @@ function sliceConfig(overrides = {}) {
     huntStats: { on: false },
     learning: { knownWords: [] },
     routes: { on: false },
-    attack: { on: false, targeting: 'lowest-hp', sid: null, runeSlot: null },
-    cavebot: { on: false, paused: false, route: [] },
+    attack: { on: false, targeting: 'lowest-hp', sid: null, runeSlot: null, reserve: 0 },
+    cavebot: { on: false, paused: false, route: [], monsters: [], targeting: 'nearest' },
     armed: true,
   }, overrides);
 }
 
 /* ------------------------------ attack (REQ-35) ----------------------------- */
 
-test('REQ-35: getState reports the attack skeleton — disclosure, pickers, no loop', async () => {
-  const { dom } = makePage();
+test('Attack Assist fires through the real bundle only at the manual target', async () => {
+  const { dom, casts, gameClient } = makePage();
   try {
     const handle = dom.window.__mbAgentHandle;
     assert.equal(await waitFor(() => handle.isReady()), true);
     dom.window.__mbAgent.applyConfig(sliceConfig({
-      attack: { on: true, targeting: 'nearest', sid: 12, runeSlot: 5 },
+      attack: { on: true, targeting: 'nearest', sid: 12, runeSlot: null, reserve: 10 },
     }));
+    await new Promise((r) => setTimeout(r, 700));
+    assert.equal(casts.length, 0, 'assist does not target or cast by itself');
+    gameClient.player.__target = { id: 9, name: 'Rat' };
+    assert.equal(await waitFor(() => casts.length >= 1), true, 'manual target -> configured hotbar spell fires');
+    assert.equal(casts[0], 3);
     const st = handle.getState().modules.attack;
-    assert.equal(st.skeleton, true);
-    assert.equal(st.disclosure, 'skeleton — limited');
-    assert.equal(st.combatLoop, false);
     assert.equal(st.on, true);
+    assert.equal(st.mode, 'assist');
     assert.equal(st.targeting, 'nearest');
-    assert.deepEqual(JSON.parse(JSON.stringify(st.spell)), { sid: 12 });
-    assert.deepEqual(JSON.parse(JSON.stringify(st.rune)), { slot: 5 });
+    assert.deepEqual(JSON.parse(JSON.stringify(st.spell)), { sid: 12, slot: 3 });
   } finally {
     teardown(dom);
   }
@@ -119,18 +133,18 @@ test('REQ-35: getState reports the attack skeleton — disclosure, pickers, no l
 
 /* ------------------------------ cavebot (REQ-36) ---------------------------- */
 
-test('REQ-36: getState reports the cavebot skeleton — route, pause, editing FUTURE', async () => {
+test('Cavebot state reports its active route/combat configuration', async () => {
   const { dom } = makePage();
   try {
     const handle = dom.window.__mbAgentHandle;
     assert.equal(await waitFor(() => handle.isReady()), true);
     dom.window.__mbAgent.applyConfig(sliceConfig({
-      cavebot: { on: true, paused: false, route: [{ x: 100, y: 100 }, { x: 120, y: 140 }] },
+      cavebot: { on: true, paused: false, route: [{ x: 100, y: 100 }, { x: 120, y: 140 }], monsters: ['Rat'], targeting: 'lowest-hp' },
     }));
     const st = handle.getState().modules.cavebot;
-    assert.equal(st.skeleton, true);
-    assert.equal(st.editing, 'future');
+    assert.equal(st.editing, 'record-and-save');
     assert.equal(st.paused, false);
+    assert.deepEqual(JSON.parse(JSON.stringify(st.monsters)), ['Rat']);
     assert.equal(st.savedRoute.count, 2);
     assert.equal(st.recording.active, false);
   } finally {
@@ -294,22 +308,55 @@ test('REQ-36: record RPCs are armed-gated and idempotent', async () => {
 
 /* --------------------------- no tree loop (REQ-35/36) ------------------------ */
 
-test('REQ-35/36: skeletons run NO tree actions and never walk on their own', async () => {
-  const { dom, pathCalls } = makePage();
+test('Cavebot targets configured monsters, then resumes its native route after combat', async () => {
+  const creatures = { 1: { id: 1, name: 'Rat', state: { __state: { health: 30, maxHealth: 100 } } } };
+  const { dom, pathCalls, gameClient } = makePage({ creatures });
   try {
     const handle = dom.window.__mbAgentHandle;
     assert.equal(await waitFor(() => handle.isReady()), true);
     dom.window.__mbAgent.applyConfig(sliceConfig({
-      attack: { on: true, targeting: 'lowest-hp', sid: 12, runeSlot: 3 },
-      cavebot: { on: true, paused: false, route: [{ x: 100, y: 100 }] },
+      cavebot: { on: true, paused: false, route: [{ x: 100, y: 100 }], monsters: ['Rat'], targeting: 'nearest' },
     }));
-    // Let ticks run for a moment with both skeletons ON.
-    await new Promise((r) => setTimeout(r, 1200));
-    const q = handle.getState().queue;
-    assert.equal(q.enqueued, 0, 'no queue entry from the skeletons (no tree loop)');
-    assert.equal(q.dispatched, 0, 'no dispatch from the skeletons');
-    assert.equal(pathCalls.length, 0, 'never an autonomous walk');
-    assert.equal(handle.getState().armed, true);
+    assert.equal(await waitFor(() => gameClient.player.__target && gameClient.player.__target.name === 'Rat'), true,
+      'configured monster is selected through world.targetMonster');
+    delete creatures[1];
+    gameClient.player.__target = null;
+    assert.equal(await waitFor(() => pathCalls.length >= 1), true,
+      'no target -> route resumes through native pathTo');
+    assert.deepEqual(pathCalls[0], { x: 100, y: 100 });
+  } finally {
+    teardown(dom);
+  }
+});
+
+
+test('Survival: mana potions use a selected BP CID through the real bundle after HP safety nodes', async () => {
+  const { dom, uses } = makePage({ backpackSlots: [{ index: 2, cid: 268 }] });
+  try {
+    const handle = dom.window.__mbAgentHandle;
+    assert.equal(await waitFor(() => handle.isReady()), true);
+    dom.window.__mbAgent.applyConfig(sliceConfig({
+      manaItems: { on: true, threshold: 100, slotCids: [268] },
+    }));
+    assert.equal(await waitFor(() => uses.length >= 1), true, 'selected mana CID reaches native item use');
+    assert.deepEqual(JSON.parse(JSON.stringify(uses[0])), { which: 0, index: 2 });
+    assert.equal(handle.getState().modules.manaItems.on, true);
+  } finally {
+    teardown(dom);
+  }
+});
+
+test('Survival: hotbar catalogue exposes the real spell SID to slot mapping', async () => {
+  const { dom } = makePage();
+  try {
+    const handle = dom.window.__mbAgentHandle;
+    assert.equal(await waitFor(() => handle.isReady()), true);
+    const catalog = dom.window.__mbAgent.getHotbarCatalog();
+    assert.equal(catalog.available, true);
+    assert.deepEqual(JSON.parse(JSON.stringify(catalog.slots)), [{
+      slot: 3, sid: 12, name: '', words: '', manaCost: 20, level: null,
+      vocations: [], category: null, icon: null, imageDataURL: null, source: 'client',
+    }]);
   } finally {
     teardown(dom);
   }

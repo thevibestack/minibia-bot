@@ -70,7 +70,17 @@ function makePage() {
     interface: {
       getSpell: (sid) => ({ 61: { cost: 20 }, 50: { cost: 25 } }[sid] || null),
       hotbarManager: {
-        __handleClick: (slot) => casts.push({ slot, at: Date.now() }),
+        // Trainer now verifies the live SID -> F-slot mapping and requires
+        // observable mana consumption before treating a cast as accepted.
+        // Keep this shared client realistic so wiring tests exercise the
+        // actual confirmation flow rather than a click-only mock.
+        slots: [{}, { spell: { sid: 61 } }, {}, {}, {}, {}, { spell: { sid: 50 } }],
+        __handleClick: (slot) => {
+          casts.push({ slot, at: Date.now() });
+          const sid = slot === 2 ? 61 : slot === 7 ? 50 : null;
+          const spell = sid === null ? null : ({ 61: { cost: 20 }, 50: { cost: 25 } }[sid] || null);
+          if (spell) gameClient.player.state.mana -= spell.cost;
+        },
         __useItemOnSelf: (args) => selfUses.push(args),
         __canPlayerCastSpell: () => true,
         __runeAttackUntil: null,

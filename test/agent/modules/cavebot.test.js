@@ -76,12 +76,12 @@ test('REQ-36: nearestWaypoint degrades — no position / empty route / junk rout
 
 /* ------------------------------- skeleton -------------------------------- */
 
-test('REQ-36: skeleton state — disclosure, no loop, editing FUTURE', () => {
+test('cavebot state exposes a real route/combat flow, not a skeleton disclosure', () => {
   const { mod } = makeModule();
   const st = mod.getState();
-  assert.equal(st.skeleton, true);
-  assert.equal(st.disclosure, 'skeleton — limited');
-  assert.equal(st.editing, 'future', 'REQ-36: route editing is FUTURE');
+  assert.equal(st.skeleton, undefined);
+  assert.equal(st.mode, 'route');
+  assert.equal(st.editing, 'record-and-save');
   assert.equal(st.recording.active, false);
   assert.equal(st.savedRoute.count, 0);
 });
@@ -229,4 +229,31 @@ test('REQ-36: session buffer survives config rebuilds (timers container)', () =>
   assert.equal(rebuilt.getState().recording.points, 1, 'buffer survived the rebuild');
   mod.stopRecording();
   assert.equal(rebuilt.isRecording(), false, 'stop on one instance stops the session');
+});
+
+test('continuous cavebot acquires configured monsters, pauses walking and resumes the route', () => {
+  const now = { t: 1000 };
+  const creatures = [{ id: 1, name: 'Rat', state: { __state: { health: 40, maxHealth: 100 } } }];
+  let target = null;
+  const walks = [];
+  const mod = createCavebotModule({
+    config: { on: true, paused: false, route: [{ x: 10, y: 10 }, { x: 20, y: 20 }], monsters: ['Rat'], targeting: 'lowest-hp' },
+    readPosition: () => ({ x: 0, y: 0 }),
+    readCreatures: () => creatures,
+    readTarget: () => target,
+    readAutoWalk: () => ({ isAutoWalking: false }),
+    selectTarget: (creature) => { target = creature; return true; },
+    walkTo: (x, y) => { walks.push({ x, y }); return true; },
+    timers: {}, now: () => now.t,
+  });
+  let d = mod.decide();
+  assert.equal(d.kind, 'target');
+  assert.equal(mod.fire(d), true);
+  assert.equal(mod.decide().reason, 'combat', 'targeted monster pauses route movement');
+  target = null;
+  creatures.length = 0;
+  d = mod.decide();
+  assert.equal(d.kind, 'walk');
+  assert.equal(mod.fire(d), true);
+  assert.deepEqual(walks, [{ x: 10, y: 10 }]);
 });
