@@ -22,9 +22,9 @@ The panel is a **separate localhost window**, never drawn over the game page.
 ## Run
 
 ```bash
-bun app/entry-compiled.js     # PRIMARY: launches its own dedicated Chrome
-                              # (profile keeps login), opens minibia.com/play,
-                              # prints the panel URL
+bun app/entry-compiled.js     # PRIMARY: first attaches to an existing debug-capable
+                              # minibia.com/PWA window; if none is found, launches
+                              # its own dedicated Chrome and prints the panel URL
 ```
 
 The control-panel URL is printed at startup:
@@ -34,9 +34,15 @@ The control-panel URL is printed at startup:
 ```
 
 Open that URL in your browser — the whole UI lives there: config wizard,
-TRAINER tab, mana/CAP bars, rune-check banner, hotkeys.
+TRAINER tab, mana/CAP bars, rune-check banner, hotkeys. If the panel opens
+before a game session is linked, click **Link first PWA** after opening a
+`minibia.com` PWA/Chrome window with the remote-debugging port enabled.
 
 ### Attach to an already-open Chrome / PWA window
+
+`bun app/entry-compiled.js` already does this first. The helper below is only
+when you want **attach-only** behavior and do not want launch fallback.
+
 
 ```bash
 # 1. Relaunch Chrome with the debug port open (close Chrome first — the flag
