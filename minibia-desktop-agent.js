@@ -3265,6 +3265,7 @@ const FIRING_MOD = require('adapters/firing');
  * @returns {{
  *   decide: (ctx: object) => {fire: boolean, reason: string, slot?: number, priority?: string},
  *   fire: () => boolean,
+ *   getState: () => object,
  *   isEnabled: () => boolean,
  * }}
  */
@@ -3272,6 +3273,10 @@ function createHealMagic(opts = {}) {
   const { config, getSpellCost = null, canCastSpell = null, readCooldown = null, now = Date.now, log = {} } = opts;
   const warn = typeof log.warn === 'function' ? log.warn : () => {};
   const warned = new Set();
+
+  // Live runtime state (REQ-10): surfaced via getState() so the panel can
+  // show what the module ACTUALLY did, never config-derived guesses.
+  const state = { lastReason: null, lastFireAt: 0 };
 
   /**
    * Pure decision (REQ-14).
@@ -3343,6 +3348,8 @@ function createHealMagic(opts = {}) {
   function fire(decision, deps = {}) {
     const slot = Number(decision.slot);
     if (!Number.isInteger(slot) || slot < 1 || slot > 12) return false;
+    state.lastReason = decision.reason || 'low-hp';
+    state.lastFireAt = now();
     return FIRING_MOD.fireSlot(slot, {
       mode: 'handleClick',
       gameClient: deps.gameClient,
@@ -3356,7 +3363,23 @@ function createHealMagic(opts = {}) {
     return Boolean(config && config.on === true);
   }
 
-  return { decide, fire, isEnabled };
+  /**
+   * @returns {object} module state (snapshot -> panel live state, REQ-10):
+   *   on/threshold/slot/sid configuration surface plus the RUNTIME values
+   *   lastReason/lastFireAt — honest, never config-derived guesses.
+   */
+  function getState() {
+    return {
+      on: Boolean(config && config.on === true),
+      lastReason: state.lastReason,
+      lastFireAt: state.lastFireAt,
+      threshold: config ? config.threshold : null,
+      slot: config ? config.slot : null,
+      sid: config ? config.sid : null,
+    };
+  }
+
+  return { decide, fire, getState, isEnabled };
 }
 
 module.exports = { createHealMagic };

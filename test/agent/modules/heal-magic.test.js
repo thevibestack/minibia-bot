@@ -128,3 +128,37 @@ test('REQ-31/D2 (PR3): reserve 0 (default) keeps the plain mana gate', () => {
   const m = moduleWith({}, { getSpellCost: () => 20 });
   assert.equal(m.decide({ ...ctx, mana: 20 }).fire, true, 'no reserve — cost-only gate');
 });
+
+/* -------------------- PR 1 (slice C) — getState live surface (REQ-10) -------------------- */
+
+test('REQ-10 (T1): getState exposes on/threshold/slot/sid and honest idle state', () => {
+  const m = moduleWith({ on: true, threshold: 150, slot: 2, sid: 61 });
+  const s = m.getState();
+  assert.equal(s.on, true);
+  assert.equal(s.threshold, 150);
+  assert.equal(s.slot, 2);
+  assert.equal(s.sid, 61);
+  assert.equal(s.lastReason, null, 'no cast yet — honest null');
+  assert.equal(s.lastFireAt, 0, 'no cast yet — honest zero');
+});
+
+test('REQ-10 (T1): getState reports on:false when the module is OFF', () => {
+  const m = moduleWith({ on: false });
+  assert.equal(m.getState().on, false);
+});
+
+test('REQ-10 (T1): getState tracks lastReason/lastFireAt across a real fire', () => {
+  const clicks = [];
+  const m = moduleWith({});
+  const d = m.decide(ctx);
+  assert.equal(d.fire, true);
+  const ok = m.fire({ slot: 2, reason: d.reason }, {
+    gameClient: { interface: { hotbarManager: { __handleClick: (index) => clicks.push(index + 1) } } },
+    document: null,
+  });
+  assert.equal(ok, true);
+  assert.deepEqual(clicks, [2]);
+  const s = m.getState();
+  assert.equal(s.lastReason, 'low-hp', 'the reason of the last cast is surfaced');
+  assert.equal(s.lastFireAt, 1000, 'injected now() clock records the cast time');
+});
