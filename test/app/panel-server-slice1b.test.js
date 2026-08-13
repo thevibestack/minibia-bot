@@ -368,3 +368,135 @@ test('Trainer save rejects a stale F-slot so it cannot fire an unrelated live sp
   assert.match((await res.json()).reason, /stale hotbar mapping.*F8/i);
   assert.deepEqual(calls.applyConfig, []);
 });
+
+/* ----------- REQ-08 dual-read: unified eat.magic food shape (PR 2) ----------- */
+
+const FOOD = { sid: 12, name: 'Food', words: 'exevo pan', mana: 30, level: 1, vocations: ['druid'] };
+const catalogWithFood = () => rawCatalogWith({ spells: RAW_CATALOG.concat([FOOD]) });
+
+test('REQ-08: /api/config accepts the unified eat.magic food shape (live food spell + matching F-slot)', async (t) => {
+  const { srv, calls, base } = await makeServer(t, {
+    spellCatalog: catalogWithFood,
+    hotbar: () => ({ available: true, slots: [{ slot: 5, sid: 12 }] }),
+  });
+  const cfg = store.defaultConfig('Flamamex');
+  cfg.modules.eat.magic = { enabled: true, slot: 5, sid: 12 };
+  const res = await fetch(srv.url + '/api/config', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ character: 'Flamamex', config: cfg }),
+  });
+  assert.equal(res.status, 200);
+  assert.equal((await res.json()).ok, true);
+  assert.equal(calls.applyConfig[0].modules.eat.magic.sid, 12, 'unified shape pushed through');
+  assert.equal(store.loadCharacter({ baseDir: base, name: 'Flamamex' }).config.modules.eat.magic.enabled, true, 'persisted');
+});
+
+test('REQ-08: /api/config rejects a non-food spell in the unified eat.magic shape', async (t) => {
+  const { srv, calls } = await makeServer(t, {
+    spellCatalog: catalogWithFood,
+    hotbar: () => ({ available: true, slots: [{ slot: 5, sid: 12 }] }),
+  });
+  const cfg = store.defaultConfig('Flamamex');
+  cfg.modules.eat.magic = { enabled: true, slot: 5, sid: 3 }; // Intense Healing — not food
+  const res = await fetch(srv.url + '/api/config', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ character: 'Flamamex', config: cfg }),
+  });
+  assert.equal(res.status, 409);
+  assert.match((await res.json()).reason, /food-creation spell/i);
+  assert.deepEqual(calls.applyConfig, []);
+});
+
+test('REQ-08: /api/config rejects a stale F-slot for the unified eat.magic shape', async (t) => {
+  const { srv, calls } = await makeServer(t, {
+    spellCatalog: catalogWithFood,
+    hotbar: () => ({ available: true, slots: [{ slot: 9, sid: 12 }] }), // food moved to F9
+  });
+  const cfg = store.defaultConfig('Flamamex');
+  cfg.modules.eat.magic = { enabled: true, slot: 5, sid: 12 };
+  const res = await fetch(srv.url + '/api/config', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ character: 'Flamamex', config: cfg }),
+  });
+  assert.equal(res.status, 409);
+  assert.match((await res.json()).reason, /stale hotbar mapping.*F9/i);
+  assert.deepEqual(calls.applyConfig, []);
+});
+
+test('REQ-08: /api/config blanks an unknown eat.magic sid (validateAndSanitize dual-read)', async (t) => {
+  const { srv } = await makeServer(t, {
+    spellCatalog: catalogWithFood,
+    hotbar: () => ({ available: true, slots: [{ slot: 5, sid: 12 }] }),
+  });
+  const cfg = store.defaultConfig('Flamamex');
+  cfg.modules.eat.magic = { enabled: true, slot: 5, sid: 999 };
+  const res = await fetch(srv.url + '/api/config', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ character: 'Flamamex', config: cfg }),
+  });
+  assert.equal(res.status, 409);
+  assert.equal((await res.json()).reason, 'unknown spell (sid 999)');
+});
+
+test('REQ-08: /api/config blanks an unknown sid in the LEGACY eatWithMagic shape (sanitize dual-read)', async (t) => {
+  const { srv } = await makeServer(t, {
+    spellCatalog: catalogWithFood,
+    hotbar: () => ({ available: true, slots: [{ slot: 3, sid: 12 }] }),
+  });
+  const cfg = store.defaultConfig('Flamamex');
+  cfg.modules.training = { on: true, slot: 3, sid: 3, reserve: 0, eatWithMagic: { enabled: true, slot: 3, sid: 999 } };
+  const res = await fetch(srv.url + '/api/config', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ character: 'Flamamex', config: cfg }),
+  });
+  assert.equal(res.status, 409);
+  assert.equal((await res.json()).reason, 'unknown spell (sid 999)', 'sanitize catches the legacy food sid before the hotbar food check');
+});
+
+test('REQ-08: load-profile blanks an invalid unified eat.magic sid (dual-read sanitize)', async (t) => {
+  const { srv, base } = await makeServer(t, {
+    spellCatalog: catalogWithFood,
+    hotbar: () => ({ available: true, slots: [{ slot: 5, sid: 12 }] }),
+  });
+  const gob = store.defaultConfig('Gobernador');
+  gob.modules.eat.magic = { enabled: true, slot: 5, sid: 999 };
+  store.saveCharacter({ baseDir: base, name: 'Gobernador', config: gob });
+  const body = await (await fetch(srv.url + '/api/load-profile', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ character: 'Flamamex', from: 'Gobernador' }),
+  })).json();
+  assert.deepEqual(body.rejected, [{ key: 'eat.magic.sid', reason: 'unknown spell (sid 999)' }]);
+  assert.equal(body.config.modules.eat.magic.sid, null, 'rejected food sid blanked in the applied config');
+});
+
+test('REQ-08: dual-read precedence — the unified eat.magic wins when both shapes are enabled', async (t) => {
+  const { srv, calls } = await makeServer(t, {
+    spellCatalog: catalogWithFood,
+    hotbar: () => ({ available: true, slots: [{ slot: 3, sid: 3 }, { slot: 5, sid: 12 }] }), // food lives at F5
+  });
+  const cfg = store.defaultConfig('Flamamex');
+  cfg.modules.eat.magic = { enabled: true, slot: 5, sid: 12 };
+  cfg.modules.training = { on: true, slot: 3, sid: 3, reserve: 0, eatWithMagic: { enabled: true, slot: 3, sid: 12, everyRunes: 1 } };
+  const res = await fetch(srv.url + '/api/config', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ character: 'Flamamex', config: cfg }),
+  });
+  assert.equal(res.status, 200, 'new-shape slot 5 matches the live hotbar; the stale legacy slot must NOT drive');
+  assert.equal((await res.json()).ok, true);
+  assert.equal(calls.applyConfig.length, 1);
+});
+
+test('REQ-08: legacy eatWithMagic food shape still accepted (old saved files keep saving)', async (t) => {
+  const { srv } = await makeServer(t, {
+    spellCatalog: catalogWithFood,
+    hotbar: () => ({ available: true, slots: [{ slot: 3, sid: 3 }, { slot: 5, sid: 12 }] }),
+  });
+  const cfg = store.defaultConfig('Flamamex');
+  cfg.modules.training = { on: true, slot: 3, sid: 3, reserve: 0, eatWithMagic: { enabled: true, slot: 5, sid: 12, everyRunes: 1 } };
+  const res = await fetch(srv.url + '/api/config', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ character: 'Flamamex', config: cfg }),
+  });
+  assert.equal(res.status, 200, 'legacy shape still validated against the live hotbar');
+  assert.equal((await res.json()).ok, true);
+});

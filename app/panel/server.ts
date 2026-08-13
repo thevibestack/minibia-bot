@@ -129,6 +129,21 @@ function validateAndSanitize(config, catalog, ctx) {
       if (err) { rejected.push(err); m.sid = null; }
     }
   }
+  // REQ-08 (PR 2): food magic sid — read BOTH the unified eat.magic.sid and
+  // the legacy training.eatWithMagic.sid during the migration window (one
+  // release of tolerance: old saved files keep validating while the new
+  // shape arms). Each rejected sid is blanked in place, the rest applies.
+  const foodSources = [
+    { host: () => out.modules && out.modules.eat && out.modules.eat.magic, key: 'eat.magic.sid' },
+    { host: () => out.modules && out.modules.training && out.modules.training.eatWithMagic, key: 'training.eatWithMagic.sid' },
+  ];
+  for (const src of foodSources) {
+    const food = src.host();
+    if (food && food.sid !== null && food.sid !== undefined) {
+      const err = sidError(src.key, food.sid);
+      if (err) { rejected.push(err); food.sid = null; }
+    }
+  }
   return { rejected, config: out };
 }
 
@@ -156,10 +171,20 @@ function validateTrainerHotbarIntegrity(config, catalog, hotbar) {
   const hasSid = (value) => value !== null && value !== undefined && value !== '' && Number.isInteger(Number(value));
   if (hasSid(training.sid)) wanted.push({ key: 'training', sid: Number(training.sid), slot: training.slot });
   if (hasSid(runes.fallbackSid)) wanted.push({ key: 'fallback', sid: Number(runes.fallbackSid), slot: runes.fallbackSlot });
-  const food = training.eatWithMagic || {};
-  if (food.enabled === true) {
+  // REQ-08 (PR 2): dual-read during the migration window — the unified
+  // modules.eat.magic shape is authoritative when enabled; the legacy
+  // training.eatWithMagic shape is still honored for configs saved by older
+  // builds (one release of tolerance). The rejected key names the source.
+  const newFood = modules.eat && modules.eat.magic && typeof modules.eat.magic === 'object' ? modules.eat.magic : {};
+  const legacyFood = training.eatWithMagic && typeof training.eatWithMagic === 'object' ? training.eatWithMagic : {};
+  const food = newFood.enabled === true
+    ? Object.assign({ key: 'eat.magic' }, newFood)
+    : legacyFood.enabled === true
+      ? Object.assign({ key: 'training.eatWithMagic' }, legacyFood)
+      : null;
+  if (food) {
     if (!hasSid(food.sid) || !isFoodCreationSpell(spells[Number(food.sid)])) {
-      return { key: 'training.eatWithMagic.sid', reason: 'food spell must be a live food-creation spell (for example, exevo pan)' };
+      return { key: food.key + '.sid', reason: 'food spell must be a live food-creation spell (for example, exevo pan)' };
     }
     wanted.push({ key: 'food', sid: Number(food.sid), slot: food.slot });
   }

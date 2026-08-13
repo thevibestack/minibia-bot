@@ -129,6 +129,10 @@ test('REQ-08 fix: every nested module toggle + setting reaches the agent (getSta
     // Settings that ride the nested entries (unit-tested in full; the
     // observable getState surfaces assert the reach).
     cfg.modules.training.eatWithMagic = { enabled: true, slot: 8, sid: 55 };
+    // PR 2 (REQ-08): the unified eat shape — the COMMITTED bundle must
+    // tolerate the new keys (agent lands them in PR 3 / T7).
+    cfg.modules.eat.safetyNetMinutes = 20;
+    cfg.modules.eat.magic = { enabled: true, slot: 8, sid: 55 };
     cfg.modules.runes.fallbackSlot = 5;
     cfg.modules.runes.fallbackManaPct = 0.6;
     cfg.modules.cavebot.paused = false;
@@ -142,6 +146,8 @@ test('REQ-08 fix: every nested module toggle + setting reaches the agent (getSta
     assert.equal(st.runes.on, true);
     assert.equal(st.training.on, true);
     assert.equal(st.eat.on, true);
+    assert.equal(st.eat.magic, undefined,
+      'agent tolerates the unified eat shape — runtime state carries no magic until PR 3 (T7)');
     assert.equal(st.trade.on, true);
     assert.equal(st.trade.message, 'buying runes', 'trade message from the nested entry');
     assert.equal(st.loot.on, true);
@@ -200,7 +206,8 @@ const BASE_CFG = {
     healMagic: { on: false },
     runes: { on: false },
     training: { on: false },
-    eat: { on: false, slot: null, everyCasts: 0 },
+    eat: { on: false, slot: null, everyCasts: 0, safetyNetMinutes: 20,
+      magic: { enabled: false, slot: null, sid: null } },
     loot: { on: false, defaultDest: null, perMonster: {} },
     antibot: { on: false, replies: [] },
     attack: { on: false, targeting: 'lowest-hp', sid: null, runeSlot: null },
