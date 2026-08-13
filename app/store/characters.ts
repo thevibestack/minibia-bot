@@ -52,7 +52,6 @@ function defaultConfig(characterName) {
       runes: { on: false, attackSlot: null, healSlot: null, reserve: 0,
         capMode: 'strict', capFullThreshold: 1.0, fallbackSid: null, fallbackSlot: null, fallbackManaPct: 0.5 },
       training: { on: false, slot: null, word: null, sid: null, reserve: 0,
-        eatWithMagic: { enabled: false, slot: null, sid: null, everyRunes: 1 },
         // Slice B (REQ-46, D-B3): per-character hotkey assignments (F-keys)
         // persisted so a reload restores the Rune/Fallback hotbar keybinds.
         hotkeys: { runeKey: 'F4', fallbackKey: 'F5' },
@@ -60,7 +59,13 @@ function defaultConfig(characterName) {
         // at the runes module off only (heal/eat continue); persisted so the
         // panel restores the stop state + banner after a reload.
         stopRuneMaking: false, stopBotting: false },
-      eat: { on: false, everyCasts: null, warningWindowSec: 60, fallbackIntervalSec: 10 },
+      // REQ-08 (PR 2): UNIFIED eat shape (design A+C) — the legacy
+      // training.eatWithMagic key is gone from defaults; migrateFoodLegacy
+      // carries old saved files over. everyCasts:0 = cadence off (0=off);
+      // magic-first applies iff magic.enabled && valid slot(1-12) && valid sid.
+      eat: { on: false, slot: null, cids: [], everyCasts: 0,
+        warningWindowSec: 60, fallbackIntervalSec: 10, safetyNetMinutes: 20,
+        magic: { enabled: false, slot: null, sid: null } },
       trade: { on: false, message: '', intervalMs: 180000 },
       loot: { on: false, defaultDest: null, perMonster: {} },
       spawns: { on: false },
@@ -170,9 +175,49 @@ function characterFilePath(baseDir, characterName) {
 }
 
 /**
+ * REQ-08 (PR 2): migrate a legacy food config to the unified shape.
+ *
+ * The pre-unification builds kept food magic under
+ * `training.eatWithMagic.{enabled,slot,sid,everyRunes}`; the unified shape
+ * moves it to `eat.magic.{enabled,slot,sid}` (the everyRunes cadence is
+ * DROPPED — design decision #1), while `eat.slot`/`eat.cids` stay where
+ * they are.
+ *
+ * Idempotency (design ambiguity #4): migrate ONLY when `eat.magic` is
+ * ABSENT (a file already carrying the unified shape is never touched) AND
+ * `training.eatWithMagic` is present; the legacy key is deleted as part of
+ * the migration, so a re-run finds nothing. A partial legacy entry copies
+ * the fields it carries; missing fields keep the unified defaults (no
+ * enabled:true => magic off).
+ * @param {object} config - config to migrate in place (returns the same
+ *   object for chaining).
+ * @returns {object}
+ */
+function migrateFoodLegacy(config) {
+  const modules = config && config.modules;
+  if (!modules || typeof modules !== 'object') return config;
+  const eat = modules.eat;
+  const training = modules.training;
+  if (!eat || typeof eat !== 'object' || !training || typeof training !== 'object') return config;
+  if (eat.magic !== undefined) return config; // unified shape already present
+  const legacy = training.eatWithMagic;
+  if (!legacy || typeof legacy !== 'object') return config; // nothing to migrate
+  eat.magic = {
+    enabled: legacy.enabled === true,
+    slot: legacy.slot !== undefined ? legacy.slot : null,
+    sid: legacy.sid !== undefined ? legacy.sid : null,
+  };
+  delete training.eatWithMagic;
+  return config;
+}
+
+/**
  * Load a character's config. Missing file -> defaults (no warning). Corrupt
  * content -> defaults + warning (REQ-09: "warns and runs with defaults, no
  * crash"). Shape drift (saved config missing newer keys) -> defaults merged.
+ * REQ-08 (PR 2): legacy food configs are migrated to the unified eat.magic
+ * shape BEFORE the defaults merge — the merged default now carries
+ * `eat.magic`, so the "magic absent" guard must see the SAVED file state.
  * @param {{baseDir: string, name: string}} opts
  * @returns {{config: object, warning: string|null}}
  */
@@ -195,6 +240,7 @@ function loadCharacter(opts) {
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
     return { config: defaults, warning: 'corrupt config for ' + opts.name + ' (' + file + ') — not a config object; starting fresh' };
   }
+  migrateFoodLegacy(parsed);
   const config = mergeConfig(parsed, defaults);
   config.character = String(opts.name);
   return { config, warning: null };
@@ -241,6 +287,7 @@ function listCharacters(baseDir) {
 module.exports = {
   defaultConfig,
   mergeConfig,
+  migrateFoodLegacy,
   storeBaseDir,
   safeCharacterFileName,
   charactersDir,

@@ -53,7 +53,15 @@ test('REQ-09: missing file -> defaults (first run), no warning', (t) => {
   assert.equal(config.modules.runes.fallbackSlot, null);
   assert.equal(config.modules.runes.fallbackManaPct, 0.5);
   assert.equal(config.modules.runes.reserve, 0, 'runes reserve default');
-  assert.deepEqual(config.modules.training.eatWithMagic, { enabled: false, slot: null, sid: null, everyRunes: 1 });
+  // REQ-08 (PR 2): the legacy eat-with-magic shape is GONE from defaults —
+  // the unified eat.magic replaces it (design: eat gains slot/cids/magic/
+  // safetyNetMinutes; everyRunes cadence dropped).
+  assert.equal(config.modules.training.eatWithMagic, undefined, 'legacy eatWithMagic key removed from defaults');
+  assert.deepEqual(config.modules.eat, {
+    on: false, slot: null, cids: [], everyCasts: 0,
+    warningWindowSec: 60, fallbackIntervalSec: 10,
+    safetyNetMinutes: 20, magic: { enabled: false, slot: null, sid: null },
+  }, 'unified eat defaults (design: safetyNetMinutes 20, magic off)');
   assert.deepEqual(config.modules.training.hotkeys, { runeKey: 'F4', fallbackKey: 'F5' }, 'hotkey defaults (REQ-46)');
   assert.equal(config.modules.training.stopRuneMaking, false, 'stop rune-making default off');
   assert.equal(config.modules.training.stopBotting, false, 'stop botting default off');
@@ -153,4 +161,98 @@ test('path safety: hostile character names cannot escape the characters dir', (t
 test('storeBaseDir follows the design D9 conventions', () => {
   const dir = store.storeBaseDir();
   assert.ok(dir.endsWith('minibia-desktop-bot'), 'app subdir: ' + dir);
+});
+
+/* ----------------- REQ-08 legacy food migration (PR 2) ----------------- */
+
+/** Simulate a config saved by a PRE-unification build: the legacy
+ *  training.eatWithMagic shape + the old eat shape (no magic, no
+ *  safetyNetMinutes). */
+function legacyFoodConfig(name = 'Flamamex') {
+  const cfg = store.defaultConfig(name);
+  cfg.modules.training.eatWithMagic = { enabled: true, slot: 3, sid: 55, everyRunes: 1 };
+  delete cfg.modules.eat.magic;
+  delete cfg.modules.eat.safetyNetMinutes;
+  return cfg;
+}
+
+test('REQ-08: full legacy config migrates training.eatWithMagic -> eat.magic on load (everyRunes dropped)', (t) => {
+  const base = makeBaseDir(t);
+  store.saveCharacter({ baseDir: base, name: 'Flamamex', config: legacyFoodConfig() });
+
+  const { config } = store.loadCharacter({ baseDir: base, name: 'Flamamex' });
+  assert.deepEqual(config.modules.eat.magic, { enabled: true, slot: 3, sid: 55 },
+    'legacy enabled/slot/sid land in the unified magic shape');
+  assert.equal(config.modules.training.eatWithMagic, undefined, 'legacy key deleted');
+  assert.equal(config.modules.eat.everyCasts, 0, 'everyRunes cadence NOT carried over (dropped)');
+  assert.equal(config.modules.eat.safetyNetMinutes, 20, 'new default supplied after migration');
+});
+
+test('REQ-08: no legacy food config -> unified defaults, saved eat.slot/cids kept', (t) => {
+  const base = makeBaseDir(t);
+  const cfg = store.defaultConfig('Flamamex');
+  cfg.modules.eat.slot = 5;
+  cfg.modules.eat.cids = [9];
+  store.saveCharacter({ baseDir: base, name: 'Flamamex', config: cfg });
+
+  const { config } = store.loadCharacter({ baseDir: base, name: 'Flamamex' });
+  assert.deepEqual(config.modules.eat.magic, { enabled: false, slot: null, sid: null }, 'magic defaults');
+  assert.equal(config.modules.eat.safetyNetMinutes, 20);
+  assert.equal(config.modules.eat.slot, 5, 'saved eat.slot kept');
+  assert.deepEqual(config.modules.eat.cids, [9], 'saved eat.cids kept');
+  assert.equal(config.modules.training.eatWithMagic, undefined);
+});
+
+test('REQ-08: partial legacy config — present fields copied, missing fields default', (t) => {
+  const base = makeBaseDir(t);
+  // sid missing: copied fields land, sid defaults to null.
+  const cfg = store.defaultConfig('Flamamex');
+  cfg.modules.training.eatWithMagic = { enabled: true, slot: 8 };
+  delete cfg.modules.eat.magic;
+  delete cfg.modules.eat.safetyNetMinutes;
+  store.saveCharacter({ baseDir: base, name: 'Flamamex', config: cfg });
+  assert.deepEqual(store.loadCharacter({ baseDir: base, name: 'Flamamex' }).config.modules.eat.magic,
+    { enabled: true, slot: 8, sid: null }, 'copied fields kept, missing sid defaults to null');
+
+  // enabled flag missing: magic stays OFF (strict true-gate).
+  const cfg2 = store.defaultConfig('Flamamex');
+  cfg2.modules.training.eatWithMagic = { slot: 4, sid: 12 };
+  delete cfg2.modules.eat.magic;
+  delete cfg2.modules.eat.safetyNetMinutes;
+  store.saveCharacter({ baseDir: base, name: 'Flamamex', config: cfg2 });
+  assert.deepEqual(store.loadCharacter({ baseDir: base, name: 'Flamamex' }).config.modules.eat.magic,
+    { enabled: false, slot: 4, sid: 12 }, 'magic disabled without an explicit enabled:true');
+});
+
+test('REQ-08: migration is idempotent — a double-run finds nothing to migrate', (t) => {
+  const base = makeBaseDir(t);
+  store.saveCharacter({ baseDir: base, name: 'Flamamex', config: legacyFoodConfig() });
+
+  // Run 1: migrates + deletes the legacy key.
+  const first = store.loadCharacter({ baseDir: base, name: 'Flamamex' });
+  assert.deepEqual(first.config.modules.eat.magic, { enabled: true, slot: 3, sid: 55 });
+  assert.equal(first.config.modules.training.eatWithMagic, undefined);
+
+  // The app persists the migrated config; run 2 sees no legacy key.
+  store.saveCharacter({ baseDir: base, name: 'Flamamex', config: first.config });
+  const second = store.loadCharacter({ baseDir: base, name: 'Flamamex' });
+  assert.deepEqual(second.config.modules.eat.magic, { enabled: true, slot: 3, sid: 55 }, 'migrated values preserved');
+  assert.equal(second.config.modules.training.eatWithMagic, undefined, 'no legacy key left to find on the re-run');
+
+  // Function-level double-run on the same config object is a no-op too.
+  const direct = legacyFoodConfig();
+  store.migrateFoodLegacy(direct);
+  const snapshot = JSON.parse(JSON.stringify(direct));
+  store.migrateFoodLegacy(direct);
+  assert.deepEqual(direct, snapshot, 'second migrateFoodLegacy call changes nothing');
+});
+
+test('REQ-08: mixed config — eat.magic present wins, legacy key left alone (design guard)', () => {
+  const cfg = store.defaultConfig('Flamamex');
+  cfg.modules.eat.magic = { enabled: true, slot: 2, sid: 99 };
+  cfg.modules.training.eatWithMagic = { enabled: true, slot: 3, sid: 55, everyRunes: 1 };
+  store.migrateFoodLegacy(cfg);
+  assert.deepEqual(cfg.modules.eat.magic, { enabled: true, slot: 2, sid: 99 }, 'unified shape untouched when already present');
+  assert.deepEqual(cfg.modules.training.eatWithMagic, { enabled: true, slot: 3, sid: 55, everyRunes: 1 },
+    'legacy key NOT deleted when eat.magic exists (migrate only when magic absent)');
 });
