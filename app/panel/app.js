@@ -558,13 +558,9 @@
       dispatch({ type: 'UPDATE_TRAINER_INPUT', key: 'runeSid', value: target.value });
     } else if (target && target.matches && target.matches('#trainer-fallback-select')) {
       dispatch({ type: 'UPDATE_TRAINER_INPUT', key: 'fallbackSid', value: target.value });
-    } else if (target && target.matches && target.matches('#trainer-food-magic-select')) {
-      dispatch({ type: 'UPDATE_TRAINER_INPUT', key: 'foodMagicSid', value: target.value });
     } else if (target && target.matches && target.matches('#trainer-auto-fallback')) {
       // Auto fallback is valid only after its spell resolves to a live slot.
       dispatch({ type: 'UPDATE_TRAINER_INPUT', key: 'autoFallback', value: target.checked ? 'true' : 'false' });
-    } else if (target && target.matches && target.matches('#trainer-food-magic-enabled')) {
-      dispatch({ type: 'UPDATE_TRAINER_INPUT', key: 'foodMagicEnabled', value: target.checked ? 'true' : 'false' });
     } else if (target && target.matches && target.matches('#trainer-sound-alert')) {
       // REQ-44 (B): Sound Alert toggle — maps to the existing SET_SOUND
       // action (PR4 reuse), persisted via 'mb-panel-sound'.
@@ -616,12 +612,12 @@
           : target.matches('#heal-item-threshold') ? 'itemThreshold' : 'manaItemThreshold';
       dispatch({ type: 'UPDATE_HEAL_INPUT', key: healKey, value: target.value });
     } else if (target && target.matches && target.matches(
-      '#trainer-cap-threshold, #trainer-fallback-pct, #trainer-reserve, #trainer-food-every-runes')) {
+      '#trainer-cap-threshold, #trainer-fallback-pct, #trainer-reserve')) {
       // Trainer slots are derived from the live hotbar catalogue. Only real
       // rule values are editable here; no F-slot can be invented in the UI.
+      // PR 4 (REQ-01): the legacy trainer food cadence input is gone.
       var trainerKey = target.matches('#trainer-cap-threshold') ? 'capFullThreshold'
-        : target.matches('#trainer-fallback-pct') ? 'fallbackManaPct'
-          : target.matches('#trainer-food-every-runes') ? 'foodEveryRunes' : 'reserve';
+        : target.matches('#trainer-fallback-pct') ? 'fallbackManaPct' : 'reserve';
       dispatch({ type: 'UPDATE_TRAINER_INPUT', key: trainerKey, value: target.value });
     } else if (target && target.matches && target.matches(
       '#others-food-slot, #others-every-casts, #others-food-safety-net, #others-loot-dest, #others-replies')) {

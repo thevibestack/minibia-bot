@@ -40,7 +40,9 @@ test('trainer saves live rune/fallback SIDs with their actual hotbar slots and c
   assert.equal(result.state.config.modules.training.slot, 4, 'rune slot is resolved from live hotbar');
   assert.equal(result.state.config.modules.training.reserve, 30);
   assert.equal(result.state.config.modules.training.word, 'adori gran');
-  assert.deepEqual(result.state.config.modules.training.eatWithMagic, { enabled: false, slot: null, sid: null, everyRunes: 1 }, 'food magic stays disabled until the user explicitly enables it');
+  assert.equal(result.state.config.modules.training.eatWithMagic, undefined,
+    'trainer save no longer writes or keeps eatWithMagic (REQ-01)');
+  assert.equal(result.state.config.modules.eat, undefined, 'trainer save never touches the eat module');
   assert.equal(result.state.config.modules.runes.fallbackSid, 2);
   assert.equal(result.state.config.modules.runes.fallbackSlot, 7, 'fallback slot is resolved from live hotbar');
   assert.equal(result.state.config.modules.runes.fallbackManaPct, 0.5);
@@ -96,21 +98,50 @@ test('trainer execution card explains its next action from the live mana snapsho
 });
 
 
-test('trainer food magic persists only a selected live spell mapped to the hotbar and an every-N cadence', () => {
-  const result = save(armedLiveState(), { foodMagicEnabled: 'true', foodMagicSid: '12', foodEveryRunes: '1' });
+test('REQ-01 (PR4): trainer food-magic fields are dead — save ignores them and leaves no eatWithMagic', () => {
+  // The legacy trainer food surface is GONE: UPDATE_TRAINER_INPUT no longer
+  // accepts food keys and the save never writes training.eatWithMagic. The
+  // unified surface lives in Others (panel-slice-others.test.js).
+  let state = armedLiveState();
+  state = P.panelReducer(state, { type: 'UPDATE_TRAINER_INPUT', key: 'foodMagicEnabled', value: 'true' }).state;
+  assert.equal(state.trainerForm.foodMagicEnabled, undefined, 'food keys are no longer trainer form values');
+  state = save(state).state;
+  assert.equal(state.config.modules.training.eatWithMagic, undefined, 'valid trainer save writes no eatWithMagic');
+  // A stale legacy key present in the saved config is DELETED by a re-save
+  // (REQ-01: SHALL NOT leave training.eatWithMagic).
+  state.config.modules.training.eatWithMagic = { enabled: true, slot: 8, sid: 12, everyRunes: 1 };
+  const result = P.panelReducer(state, { type: 'SAVE_TRAINER_SETTINGS' });
   assert.deepEqual(result.effects, [{ type: 'push-config' }]);
-  assert.deepEqual(result.state.config.modules.training.eatWithMagic, { enabled: true, slot: 8, sid: 12, everyRunes: 1 });
+  assert.equal(result.state.refusal, null);
+  assert.equal(result.state.config.modules.training.eatWithMagic, undefined,
+    'stale legacy key removed by the trainer save');
 });
 
-test('trainer food magic rejects healing/attack spells and only exposes live food creation spells', () => {
-  const result = save(armedLiveState(), { foodMagicEnabled: 'true', foodMagicSid: '2', foodEveryRunes: '1' });
-  assert.deepEqual(result.effects, []);
-  assert.match(result.state.refusal.reason, /food spell.*live catalog|magia de comida.*catálogo vivo/i);
-  assert.deepEqual(P.filterFoodCatalog(armedLiveState()).map((spell) => spell.sid), [12]);
+test('REQ-01 (PR4): filterFoodCatalog still exposes live food spells for the Others form', () => {
+  assert.deepEqual(P.filterFoodCatalog(armedLiveState()).map((spell) => spell.sid), [12],
+    'the food catalog filter is kept — the Others form consumes it');
+  const result = save(armedLiveState(), { foodMagicEnabled: 'true', foodMagicSid: '12', foodEveryRunes: '1' });
+  assert.equal(result.state.refusal, null, 'trainer no longer validates food fields');
+  assert.equal(result.state.config.modules.training.eatWithMagic, undefined);
+});
+
+test('REQ-01 (PR4): renderConfigForm shows the trainer without the legacy food-magic block (REQ-12 kept surfaces)', () => {
+  let state = armedLiveState();
+  const result = save(state);
+  state = result.state;
+  const html = P.renderConfigForm(state);
+  assert.doesNotMatch(html, /trainer-food-magic-enabled|trainer-food-magic-select|trainer-food-every-runes/,
+    'no legacy food-magic controls in the trainer form');
+  assert.doesNotMatch(html, /Food created by magic|Comida creada por magia/);
+  assert.match(html, /Live execution/, 'execution card stays');
+  assert.match(html, /id="trainer-rune-select"/, 'rune select stays');
+  assert.match(html, /id="trainer-auto-fallback"/, 'auto fallback stays');
+  assert.match(html, /id="trainer-stop-runes"/, 'stop-rune toggle stays');
+  assert.match(html, /id="trainer-save-btn"/, 'save stays');
 });
 
 test('live hotbar refresh remaps Trainer SIDs by SID and pushes the safe current F-slots', () => {
-  let state = save(armedLiveState(), { foodMagicEnabled: 'true', foodMagicSid: '12' }).state;
+  let state = save(armedLiveState()).state;
   const result = P.panelReducer(state, {
     type: 'HOTBAR_CATALOG', ok: true, available: true,
     slots: [{ slot: 9, sid: 35 }, { slot: 6, sid: 2 }, { slot: 11, sid: 12 }],
@@ -118,7 +149,8 @@ test('live hotbar refresh remaps Trainer SIDs by SID and pushes the safe current
   assert.deepEqual(result.effects, [{ type: 'push-config' }]);
   assert.equal(result.state.config.modules.training.slot, 9);
   assert.equal(result.state.config.modules.runes.fallbackSlot, 6);
-  assert.equal(result.state.config.modules.training.eatWithMagic.slot, 11);
+  assert.equal(result.state.config.modules.training.eatWithMagic, undefined,
+    'hotbar reconcile no longer maintains the legacy food mapping');
   assert.equal(result.state.trainerHotbarIssue, null);
 });
 

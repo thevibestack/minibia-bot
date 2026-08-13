@@ -186,6 +186,31 @@ test('REQ-09: /api/connect with a mismatched character name is refused', async (
   assert.deepEqual(calls.applyConfig, []);
 });
 
+test('REQ-01 (PR4): /api/config persists the unified eat.magic shape — no training.eatWithMagic invented', async (t) => {
+  const { srv, calls, base } = await makeServer(t);
+  const cfg = store.defaultConfig('Flamamex');
+  cfg.modules.eat = {
+    on: true, slot: 2, cids: [], everyCasts: 0, warningWindowSec: 60, fallbackIntervalSec: 10,
+    safetyNetMinutes: 30, magic: { enabled: true, slot: 8, sid: 12 },
+  };
+  const res = await fetch(srv.url + '/api/config', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ character: 'Flamamex', config: cfg }),
+  });
+  assert.equal(res.status, 200);
+  assert.equal((await res.json()).ok, true);
+  const pushed = calls.applyConfig[calls.applyConfig.length - 1];
+  assert.deepEqual(pushed.modules.eat.magic, { enabled: true, slot: 8, sid: 12 }, 'unified magic pushed');
+  assert.equal(pushed.modules.eat.safetyNetMinutes, 30, 'safety net pushed');
+  assert.equal(pushed.modules.training.eatWithMagic, undefined, 'no legacy food key in the push (REQ-01)');
+  const reloaded = store.loadCharacter({ baseDir: base, name: 'Flamamex' });
+  assert.deepEqual(reloaded.config.modules.eat.magic, { enabled: true, slot: 8, sid: 12 }, 'unified magic persisted');
+  assert.equal(reloaded.config.modules.eat.safetyNetMinutes, 30, 'safety net persisted');
+  assert.equal(reloaded.config.modules.training.eatWithMagic, undefined,
+    'legacy key absent after the save round-trip (REQ-01)');
+});
+
 test('REQ-09: /api/config persists and pushes the armed config', async (t) => {
   const { srv, calls, base } = await makeServer(t);
   const cfg = store.defaultConfig('Flamamex');

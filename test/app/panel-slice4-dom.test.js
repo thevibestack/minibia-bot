@@ -26,7 +26,7 @@ const BASE_CFG = {
     healItems: { on: false },
     healMagic: { on: false },
     runes: { on: false, capMode: 'strict', capFullThreshold: 1.0, fallbackSlot: null, fallbackManaPct: 0.5 },
-    training: { on: false, reserve: 0, eatWithMagic: { enabled: false, slot: null, sid: null } },
+    training: { on: false, reserve: 0 },
   },
 };
 
@@ -174,6 +174,29 @@ test('TRAINER DOM: shows a compact live execution card and keeps optional rules 
     for (const id of ['trainer-rune-slot', 'trainer-fallback-slot', 'trainer-eat-magic-slot', 'trainer-rune-key', 'trainer-fallback-key']) {
       assert.equal(dom.window.document.getElementById(id), null, id + ' is intentionally absent');
     }
+  } finally { await teardown(dom); }
+});
+
+test('REQ-01/12 (PR4, jsdom): legacy trainer food-magic controls are gone; rune/fallback/cap/stop surfaces stay', async () => {
+  const { dom, requests } = makePanel(liveRoutes());
+  try {
+    await connect(dom);
+    await configureTrainer(dom);
+    for (const id of ['trainer-food-magic-enabled', 'trainer-food-magic-select', 'trainer-food-every-runes']) {
+      assert.equal(dom.window.document.getElementById(id), null, id + ' removed from the trainer form');
+    }
+    assert.ok(dom.window.document.getElementById('trainer-rune-select'), 'rune select stays');
+    assert.ok(dom.window.document.getElementById('trainer-auto-fallback'), 'auto fallback stays');
+    assert.ok(dom.window.document.getElementById('trainer-fallback-select'), 'fallback select stays');
+    assert.ok(dom.window.document.getElementById('trainer-reserve'), 'reserve stays');
+    assert.ok(dom.window.document.getElementById('trainer-stop-runes'), 'stop-rune toggle stays');
+    assert.ok(dom.window.document.getElementById('trainer-stop-botting'), 'stop-botting toggle stays');
+    assert.match(dom.window.document.body.innerHTML, /Live execution/, 'execution card stays');
+
+    click(dom, '#trainer-save-btn');
+    await new Promise((r) => setTimeout(r, 40));
+    const cfg = requests.filter((r) => r.url === '/api/config').at(-1).body.config;
+    assert.equal(cfg.modules.training.eatWithMagic, undefined, 'trainer save posts no legacy eatWithMagic (REQ-01)');
   } finally { await teardown(dom); }
 });
 

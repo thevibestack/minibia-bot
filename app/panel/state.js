@@ -256,8 +256,6 @@
       'trainer.fallbackSlot': 'Fallback slot (empty = idle)',
       'trainer.fallbackManaPct': 'Fallback mana %',
       'trainer.reserve': 'Mana reserve',
-      'trainer.eatWithMagic': 'Eat with magic when mana low',
-      'trainer.eatMagicSlot': 'Magic food slot',
       'trainer.save': 'Save trainer settings',
       'trainer.capFullAlert': 'Rune cap full — rune-making stopped (fallback or idle)',
       // PR A (REQ-40/41, D-A3/A5): rune-check pause banner + resume + alert
@@ -523,8 +521,6 @@
       'trainer.fallbackSlot': 'Slot alternativo (vacío = esperar)',
       'trainer.fallbackManaPct': 'Maná para el alternativo %',
       'trainer.reserve': 'Reserva de maná',
-      'trainer.eatWithMagic': 'Comer con magia cuando falte maná',
-      'trainer.eatMagicSlot': 'Slot de comida mágica',
       'trainer.save': 'Guardar entrenamiento',
       'trainer.capFullAlert': 'Tope de runas lleno — se detuvo la fabricación (alternativo o espera)',
       // PR A (REQ-40/41, D-A3/A5): banner de pausa por check de runas +
@@ -794,7 +790,6 @@
       trainerForm: {
         capMode: '', capFullThreshold: '', fallbackSid: '', fallbackManaPct: '', reserve: '',
         runeSid: '', autoFallback: '', stopRuneMaking: '', stopBotting: '',
-        foodMagicEnabled: '', foodMagicSid: '', foodEveryRunes: '',
       },
       // Slice 5 (PR5, REQ-33/34): OTHERS settings form raw values — pure UI
       // strings (food slot, every-N-casts, loot default destination, anti-bot
@@ -921,9 +916,6 @@
       autoFallback: hasSpellSid(runes.fallbackSid) ? 'true' : 'false',
       stopRuneMaking: training.stopRuneMaking === true ? 'true' : 'false',
       stopBotting: training.stopBotting === true ? 'true' : 'false',
-      foodMagicEnabled: training.eatWithMagic && training.eatWithMagic.enabled === true ? 'true' : 'false',
-      foodMagicSid: hasSpellSid(training.eatWithMagic && training.eatWithMagic.sid) ? String(Number(training.eatWithMagic.sid)) : '',
-      foodEveryRunes: String(Math.max(1, Math.floor(Number(training.eatWithMagic && training.eatWithMagic.everyRunes) || 1))),
     };
   }
 
@@ -1025,8 +1017,8 @@
     const mappings = [];
     if (hasSpellSid(training.sid)) mappings.push({ key: 'rune', sid: Number(training.sid), object: training, property: 'slot' });
     if (hasSpellSid(runes.fallbackSid)) mappings.push({ key: 'fallback', sid: Number(runes.fallbackSid), object: runes, property: 'fallbackSlot' });
-    const food = training.eatWithMagic;
-    if (food && food.enabled === true && hasSpellSid(food.sid)) mappings.push({ key: 'food', sid: Number(food.sid), object: food, property: 'slot' });
+    // PR 4 (REQ-01): no legacy training.eatWithMagic mapping — the unified
+    // food shape lives in modules.eat.magic and is validated on save.
     if (mappings.length === 0) return { state, changed: false, issue: null };
     const missing = mappings.find((mapping) => slotFor(mapping.sid) === null);
     if (missing) {
@@ -1130,7 +1122,7 @@
 
   /** Compact operational summary for Trainer. It only derives information
    * from the connected snapshot, catalog and live F1–F12 mapping. */
-  function renderTrainerExecutionCard(state, stats, runeSpell, requiredMana, foodSid, foodEnabled) {
+  function renderTrainerExecutionCard(state, stats, runeSpell, requiredMana) {
     const snapshot = state.snapshot && typeof state.snapshot === 'object' ? state.snapshot : {};
     const training = (snapshot.agent && snapshot.agent.training) || snapshot.training || null;
     const es = state.lang === LANG_ES;
@@ -1144,9 +1136,7 @@
       else if (mana < requiredMana) status = say('Esperando maná: ' + Math.floor(mana) + '/' + requiredMana + ' MP.', 'Waiting for mana: ' + Math.floor(mana) + '/' + requiredMana + ' MP.');
       else status = say('Lista para lanzar la runa en el próximo ciclo del juego.', 'Ready to cast the rune on the next game cycle.');
     }
-    const next = foodEnabled && foodSid
-      ? say('Después de las runas configuradas: crea y come comida nueva.', 'After the configured rune count: creates and consumes new food.')
-      : say('Siguiente acción: crear runa al llegar al maná requerido.', 'Next action: create the rune at required mana.');
+    const next = say('Siguiente acción: crear runa al llegar al maná requerido.', 'Next action: create the rune at required mana.');
     return '<section class="trainer-execution-card" aria-live="polite">'
       + '<div class="trainer-execution-head"><div><span>' + escapeHtml(say('Ejecución en vivo', 'Live execution')) + '</span><strong>' + escapeHtml(next) + '</strong></div>'
       + '<button type="button" class="trainer-refresh-btn" data-refresh-game-data>' + escapeHtml(say('Actualizar datos', 'Refresh data')) + '</button></div>'
@@ -1283,9 +1273,6 @@
     const rawReserve = String(form.reserve || '').trim();
     const runeSidRaw = String(form.runeSid || '').trim();
     const fallbackSidRaw = String(form.fallbackSid || '').trim();
-    const foodMagicEnabled = String(form.foodMagicEnabled || '') || 'false';
-    const foodMagicSidRaw = String(form.foodMagicSid || '').trim();
-    const rawFoodEveryRunes = String(form.foodEveryRunes || '').trim();
     const autoFallback = String(form.autoFallback || '') || 'false';
     const stopRuneMaking = String(form.stopRuneMaking || '') || 'false';
     const stopBotting = String(form.stopBotting || '') || 'false';
@@ -1330,24 +1317,10 @@
         return invalid('Add the selected fallback spell to F1–F12 in the game, refresh Live hotbar, then save.', 'Agregá la magia alternativa a F1–F12 en el juego, refrescá el hotbar vivo y guardá.');
       }
     }
-    if (foodMagicEnabled !== 'true' && foodMagicEnabled !== 'false') return invalid('Set Food magic to On or Off.', 'Definí Magia de comida en activada o desactivada.');
-    let foodSpell = null;
-    let foodSlot = null;
-    let foodEveryRunes = 1;
-    if (foodMagicEnabled === 'true') {
-      foodSpell = findSpell(foodMagicSidRaw);
-      if (!foodSpell || !isFoodCreationSpell(foodSpell)) {
-        return invalid('Choose your food spell from the live catalog (for example, exevo pan).', 'Elegí tu magia de comida del catálogo vivo (por ejemplo, exevo pan).');
-      }
-      foodSlot = hotbarSlotForSpell(state, foodSpell.sid);
-      if (foodSlot === null) {
-        return invalid('Add the selected food spell to F1–F12 in the game, refresh Live hotbar, then save.', 'Agregá la magia de comida a F1–F12 en el juego, refrescá el hotbar vivo y guardá.');
-      }
-      foodEveryRunes = Number(rawFoodEveryRunes === '' ? '1' : rawFoodEveryRunes);
-      if (!Number.isInteger(foodEveryRunes) || foodEveryRunes < 1) {
-        return invalid('Fix “Cast food every N runes”: enter 1 or more.', 'Corregí “Lanzar comida cada N runas”: ingresá 1 o más.');
-      }
-    }
+    // PR 4 (REQ-01): the trainer no longer owns ANY food surface — the
+    // unified food form lives in Others (modules.eat.magic + safety net).
+    // A stale legacy training.eatWithMagic key is DELETED here so a trainer
+    // save can never leave it behind (REQ-01 "SHALL NOT leave").
     if (stopRuneMaking !== 'true' && stopRuneMaking !== 'false') return invalid('Set Stop rune-making to On or Off.', 'Definí Detener fabricación de runas en activada o desactivada.');
     if (stopBotting !== 'true' && stopBotting !== 'false') return invalid('Set Stop botting to On or Off.', 'Definí Detener el bot en activada o desactivada.');
     const config = JSON.parse(JSON.stringify(state.config || {}));
@@ -1365,10 +1338,7 @@
     config.modules.training.slot = runeSlot;
     config.modules.training.word = typeof runeSpell.words === 'string' ? runeSpell.words : null;
     config.modules.training.reserve = reserve;
-    config.modules.training.eatWithMagic = {
-      enabled: foodMagicEnabled === 'true', slot: foodSlot,
-      sid: foodSpell ? Number(foodSpell.sid) : null, everyRunes: foodEveryRunes,
-    };
+    delete config.modules.training.eatWithMagic; // PR 4 (REQ-01): legacy trainer food shape removed
     config.modules.training.stopRuneMaking = stopRuneMaking === 'true';
     config.modules.training.stopBotting = stopBotting === 'true';
     const modules = Object.assign({}, state.modules);
@@ -1384,7 +1354,6 @@
           capMode, capFullThreshold: String(capAvailable ? threshold : 100), fallbackSid: fallbackSpell ? String(fallbackSpell.sid) : '',
           fallbackManaPct: String(fallbackPct), reserve: String(reserve), runeSid: String(runeSpell.sid),
           autoFallback, stopRuneMaking, stopBotting,
-          foodMagicEnabled, foodMagicSid: foodSpell ? String(foodSpell.sid) : '', foodEveryRunes: String(foodEveryRunes),
         },
         refusal: null,
       }),
@@ -1565,7 +1534,6 @@
           modules, config: config || null, trainerForm: {
             capMode: '', capFullThreshold: '', fallbackSid: '', fallbackManaPct: '', reserve: '', runeSid: '',
             autoFallback: '', stopRuneMaking: '', stopBotting: '',
-            foodMagicEnabled: '', foodMagicSid: '', foodEveryRunes: '',
           },
           refusal: null,
         });
@@ -1984,13 +1952,11 @@
         // + the toggle switches are form values too.
         const key = String(action.key || '');
         const TRAINER_KEYS = ['capMode', 'capFullThreshold', 'fallbackSid', 'fallbackManaPct',
-          'reserve', 'runeSid', 'autoFallback', 'stopRuneMaking', 'stopBotting',
-          'foodMagicEnabled', 'foodMagicSid', 'foodEveryRunes'];
+          'reserve', 'runeSid', 'autoFallback', 'stopRuneMaking', 'stopBotting'];
         if (TRAINER_KEYS.indexOf(key) === -1) return { state, effects: [] };
         const trainerForm = Object.assign({}, state.trainerForm || {
           capMode: '', capFullThreshold: '', fallbackSid: '', fallbackManaPct: '', reserve: '',
           runeSid: '', autoFallback: '', stopRuneMaking: '', stopBotting: '',
-          foodMagicEnabled: '', foodMagicSid: '', foodEveryRunes: '',
         });
         trainerForm[key] = String(action.value === null || action.value === undefined ? '' : action.value);
         const refusal = state.refusal && state.refusal.action === 'SAVE_TRAINER_SETTINGS' ? null : state.refusal;
@@ -2886,10 +2852,10 @@
    * and Save bottom-right.
    * Values come from the pure-UI trainerForm state (survive re-renders)
    * falling back to the saved config (ratios shown as percent). KEPT element
-   * ids: trainer-cap-mode, trainer-cap-threshold, trainer-fallback-slot,
-   * trainer-fallback-pct, trainer-reserve, trainer-eat-magic,
-   * trainer-eat-magic-slot, trainer-save-btn (rollback: revert to the
-   * string-concat form).
+   * ids: trainer-cap-mode, trainer-cap-threshold, trainer-fallback-select,
+   * trainer-fallback-pct, trainer-reserve, trainer-save-btn (rollback: revert
+   * to the string-concat form). PR 4 (REQ-01): the legacy food-magic block is
+   * GONE — food lives in the Others form only.
    * @param {object} state
    * @returns {string}
    */
@@ -2904,10 +2870,8 @@
     const capAvailable = Boolean(cap && cap.ratio !== null);
     const rune = filterRuneCatalog(state);
     const fallbackSpells = filterFallbackCatalog(state);
-    const foodSpells = filterFoodCatalog(state);
     const currentSid = val('runeSid');
     const fallbackSid = val('fallbackSid');
-    const foodSid = val('foodMagicSid');
     const runeSpell = ((state.catalog && state.catalog.spells) || []).filter((spell) => String(Number(spell.sid)) === currentSid)[0] || null;
     const cost = Number(runeSpell && runeSpell.mana);
     const reserve = Math.max(0, Number(val('reserve')) || 0);
@@ -2926,7 +2890,6 @@
       return '<p class="trainer-note">' + escapeHtml(text('Elegí una magia del catálogo vivo.', 'Choose a spell from the live catalog.')) + '</p>';
     };
     const autoFallback = val('autoFallback') === 'true';
-    const foodMagicEnabled = val('foodMagicEnabled') === 'true';
     const stopRuneMaking = val('stopRuneMaking') === 'true';
     const stopBotting = val('stopBotting') === 'true';
     const stopNote = stopBotting ? '<div class="module-alert alert-stop-botting">' + escapeHtml(t(state, 'trainer.stopBottingActive')) + '</div>' : '';
@@ -2943,7 +2906,7 @@
         + ' <input type="number" id="trainer-cap-threshold" min="0" max="100" step="1" value="' + escapeHtml(val('capFullThreshold')) + '"></label></div></details>'
       : '<details class="trainer-optional trainer-optional-unavailable"><summary>' + escapeHtml(text('Capacidad: no disponible', 'Capacity: unavailable')) + '</summary><div class="trainer-optional-body"><p class="trainer-note">' + escapeHtml(text('Esta PWA no expone CAP. No se inventa ni bloquea el entrenamiento. Actualizá datos si el cliente llega a exponerla.', 'This PWA does not expose CAP. It is not guessed and does not block Trainer. Refresh data if the client starts exposing it.')) + '</p></div></details>';
     return '<div class="trainer-form"><h3>' + escapeHtml(t(state, 'trainer.formTitle')) + '</h3>' + stopNote
-      + renderTrainerExecutionCard(state, stats, runeSpell, requiredMana, foodSid, foodMagicEnabled)
+      + renderTrainerExecutionCard(state, stats, runeSpell, requiredMana)
       + '<div class="trainer-grid"><div class="trainer-col trainer-primary"><h4>' + escapeHtml(t(state, 'trainer.runeMakingTitle')) + '</h4>'
       + renderSpellCard(state, 'training', t(state, 'picker.module.training'), currentSid)
       + '<label class="trainer-field">' + escapeHtml(t(state, 'trainer.runeSelect')) + ' '
@@ -2960,16 +2923,6 @@
         + select('trainer-fallback-select', fallbackSpells, fallbackSid, text('Sin alternativa', 'No fallback')) + '</label>' + mapping(fallbackSid, text('La alternativa', 'Fallback'))
         + '<label class="trainer-field">' + escapeHtml(t(state, 'trainer.fallbackManaPct'))
         + ' <input type="number" id="trainer-fallback-pct" min="0" max="100" step="1" value="' + escapeHtml(val('fallbackManaPct')) + '"></label>' : '')
-      + '</div></details>'
-      + '<details class="trainer-optional"' + (foodMagicEnabled ? ' open' : '') + '><summary>' + escapeHtml(text('Comida creada por magia (opcional)', 'Food created by magic (optional)')) + '</summary><div class="trainer-optional-body">'
-      + '<label class="toggle"><input type="checkbox" id="trainer-food-magic-enabled"' + (foodMagicEnabled ? ' checked' : '') + '> '
-      + escapeHtml(text('Usar magia de comida al fabricar runas', 'Use food magic while making runes')) + '</label>'
-      + (foodMagicEnabled ? renderSpellCard(state, 'trainer-food-magic', text('Magia de comida', 'Food magic'), foodSid)
-        + '<label class="trainer-field">' + escapeHtml(text('Elegir magia de comida (ej. exevo pan)', 'Choose food spell (e.g. exevo pan)')) + ' '
-        + select('trainer-food-magic-select', foodSpells, foodSid, text('Elegí una magia', 'Select spell')) + '</label>' + mapping(foodSid, text('La magia de comida', 'Food spell'))
-        + '<label class="trainer-field">' + escapeHtml(text('Lanzar comida cada N runas creadas', 'Cast food every N created runes'))
-        + ' <input type="number" id="trainer-food-every-runes" min="1" step="1" value="' + escapeHtml(val('foodEveryRunes')) + '"></label>'
-        + '<p class="trainer-note">' + escapeHtml(text('Sólo usa la comida nueva que aparece en los primeros 20 slots.', 'Only uses the new food that appears in the first 20 slots.')) + '</p>' : '')
       + '</div></details>'
       + '</div><div class="trainer-col trainer-secondary">'
       + capSection
