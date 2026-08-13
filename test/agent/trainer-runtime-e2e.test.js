@@ -30,7 +30,8 @@ function page() {
   const hotbarManager = {
     slots: [{}, {}, { spell: { sid: 35 } }, { spell: { sid: 24 } }],
     __canPlayerCastSpell: () => true,
-    __handleClick(slot) {
+    __handleClick(index) {
+      const slot = index + 1; // real client: __handleClick is 0-based
       clicks.push(slot);
       if (slot === 3) player.state.mana -= 210;
       if (slot === 4) {

@@ -75,7 +75,7 @@ function makePage(overrides = {}) {
     },
     interface: {
       hotbarManager: {
-        __handleClick: (slot) => { casts.push({ slot, at: Date.now(), rune: false }); },
+        __handleClick: (index) => { casts.push({ slot: index + 1, at: Date.now(), rune: false }); },
         __canPlayerCastSpell: () => true,
       },
     },

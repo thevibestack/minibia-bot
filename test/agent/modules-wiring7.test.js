@@ -55,7 +55,7 @@ function makePage(overrides = {}) {
       getSpell: (sid) => (sid === 12 ? { cost: 20 } : null),
       hotbarManager: {
         slots: [{}, {}, { spell: { sid: 12 } }],
-        __handleClick: (slot) => casts.push(slot),
+        __handleClick: (index) => casts.push(index + 1), // 0-based input, F-slot output
         __canPlayerCastSpell: () => true,
       },
     },

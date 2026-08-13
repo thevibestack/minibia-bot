@@ -100,7 +100,7 @@ test('REQ-14: fire calls __handleClick via the proven firing path', () => {
   const clicks = [];
   const m = moduleWith({});
   const ok = m.fire({ slot: 2 }, {
-    gameClient: { interface: { hotbarManager: { __handleClick: (slot) => clicks.push(slot) } } },
+    gameClient: { interface: { hotbarManager: { __handleClick: (index) => clicks.push(index + 1) } } },
     document: null,
   });
   assert.equal(ok, true);

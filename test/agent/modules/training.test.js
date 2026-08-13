@@ -28,7 +28,7 @@ function harness(overrides = {}) {
     actionConfirmationTimeoutMs: 1000,
     foodArrivalTimeoutMs: 1000,
   });
-  const deps = { mana: null, gameClient: { interface: { hotbarManager: { __handleClick: (slot) => clicks.push(slot) } } } };
+  const deps = { mana: null, gameClient: { interface: { hotbarManager: { __handleClick: (index) => clicks.push(index + 1) } } } };
   return {
     m, clicks, consumes, hotbar,
     slots: () => slots,

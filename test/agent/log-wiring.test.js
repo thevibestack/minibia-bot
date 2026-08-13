@@ -42,7 +42,7 @@ function makePage() {
     interface: {
       getSpell: (sid) => ({ 61: { cost: 20 } }[sid] || null),
       hotbarManager: {
-        __handleClick: (slot) => casts.push({ slot, at: Date.now() }),
+        __handleClick: (index) => casts.push({ slot: index + 1, at: Date.now() }),
         __useItemOnSelf: () => {},
         __canPlayerCastSpell: () => true,
         __runeAttackUntil: null,

@@ -42,7 +42,7 @@ function makePage() {
     interface: {
       hotbarManager: {
         __VOCATION_NAMES: { 0: 'none', 1: 'knight', 2: 'paladin', 3: 'sorcerer', 4: 'druid' },
-        __handleClick: (slot) => { casts.push({ slot, at: Date.now() }); },
+        __handleClick: (index) => { casts.push({ slot: index + 1, at: Date.now() }); },
       },
     },
     mouse: { use: () => {} },

@@ -75,7 +75,8 @@ function makePage() {
         // Keep this shared client realistic so wiring tests exercise the
         // actual confirmation flow rather than a click-only mock.
         slots: [{}, { spell: { sid: 61 } }, {}, {}, {}, {}, { spell: { sid: 50 } }],
-        __handleClick: (slot) => {
+        __handleClick: (index) => {
+          const slot = index + 1; // real client: __handleClick is 0-based
           casts.push({ slot, at: Date.now() });
           const sid = slot === 2 ? 61 : slot === 7 ? 50 : null;
           const spell = sid === null ? null : ({ 61: { cost: 20 }, 50: { cost: 25 } }[sid] || null);

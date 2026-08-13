@@ -27,7 +27,7 @@ function makeGameClient(overrides = {}) {
 test('REQ-07: handleClick mode fires via hotbarManager.__handleClick(slot)', () => {
   const clicked = [];
   const gameClient = makeGameClient();
-  gameClient.interface.hotbarManager.__handleClick = (slot) => clicked.push(slot);
+  gameClient.interface.hotbarManager.__handleClick = (index) => clicked.push(index + 1); // real client is 0-based
   const ok = fireSlot(4, { gameClient });
   assert.equal(ok, true);
   assert.deepEqual(clicked, [4]);
@@ -37,7 +37,7 @@ test('REQ-07: slot > 12 is a logged no-op, __handleClick never called', () => {
   const clicked = [];
   const errors = [];
   const gameClient = makeGameClient();
-  gameClient.interface.hotbarManager.__handleClick = (slot) => clicked.push(slot);
+  gameClient.interface.hotbarManager.__handleClick = (index) => clicked.push(index + 1); // real client is 0-based
   const ok = fireSlot(13, { gameClient, log: { error: (m) => errors.push(m) } });
   assert.equal(ok, false);
   assert.deepEqual(clicked, []);
@@ -107,7 +107,7 @@ test('REQ-08: no keybind for the slot -> immediate fallback to __handleClick', (
   const clicked = [];
   const warns = [];
   const gameClient = makeGameClient({ keybinds: { 2: 50 } }); // no bind for slot 4
-  gameClient.interface.hotbarManager.__handleClick = (slot) => clicked.push(slot);
+  gameClient.interface.hotbarManager.__handleClick = (index) => clicked.push(index + 1); // real client is 0-based
 
   const keydowns = [];
   dom.window.document.addEventListener('keydown', (e) => keydowns.push(e));
@@ -130,7 +130,7 @@ test('REQ-08: keybind fires but no cast results -> __handleClick fallback', () =
   const dom = makeDom();
   const clicked = [];
   const gameClient = makeGameClient({ keybinds: { 4: 70 } });
-  gameClient.interface.hotbarManager.__handleClick = (slot) => clicked.push(slot);
+  gameClient.interface.hotbarManager.__handleClick = (index) => clicked.push(index + 1); // real client is 0-based
 
   const ok = fireSlot(4, {
     mode: 'keyboard',
@@ -147,7 +147,7 @@ test('keyboard mode keeps the dispatch result when didCast reports a cast', () =
   const dom = makeDom();
   const clicked = [];
   const gameClient = makeGameClient({ keybinds: { 4: 70 } });
-  gameClient.interface.hotbarManager.__handleClick = (slot) => clicked.push(slot);
+  gameClient.interface.hotbarManager.__handleClick = (index) => clicked.push(index + 1); // real client is 0-based
 
   const ok = fireSlot(4, {
     mode: 'keyboard',
@@ -179,7 +179,7 @@ test('keybind lookup tolerates string slot keys', () => {
 test('handleClick mode is unaffected by a missing document', () => {
   const clicked = [];
   const gameClient = makeGameClient();
-  gameClient.interface.hotbarManager.__handleClick = (slot) => clicked.push(slot);
+  gameClient.interface.hotbarManager.__handleClick = (index) => clicked.push(index + 1); // real client is 0-based
   assert.equal(fireSlot(2, { gameClient }), true);
   assert.deepEqual(clicked, [2]);
 });

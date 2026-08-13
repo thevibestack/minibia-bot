@@ -59,7 +59,7 @@ function makePage(overrides = {}) {
     },
     interface: {
       hotbarManager: {
-        __handleClick: (slot) => { casts.push({ slot, at: Date.now() }); },
+        __handleClick: (index) => { casts.push({ slot: index + 1, at: Date.now() }); },
         __canPlayerCastSpell: () => true,
       },
     },

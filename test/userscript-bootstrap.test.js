@@ -38,7 +38,8 @@ function makePage(overrides = {}) {
     },
     interface: {
       hotbarManager: {
-        __handleClick: (slot) => {
+        __handleClick: (index) => {
+          const slot = index + 1; // real client: __handleClick is 0-based
           casts.push(slot);
           // Optional mana depletion so a repeat spell eventually becomes
           // infeasible and the every-Casts eat rule gets a tick.

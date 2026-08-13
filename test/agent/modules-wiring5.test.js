@@ -53,7 +53,7 @@ function makePage(overrides = {}) {
     interface: {
       getSpell: (sid) => ({ 61: { cost: 20 }, 50: { cost: 25 } }[sid] || null),
       hotbarManager: {
-        __handleClick: (slot) => casts.push({ slot, at: Date.now() }),
+        __handleClick: (index) => casts.push({ slot: index + 1, at: Date.now() }),
         __canPlayerCastSpell: () => true,
         __runeAttackUntil: null,
         __runeHealUntil: null,

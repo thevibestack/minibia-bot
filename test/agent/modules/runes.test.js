@@ -115,7 +115,7 @@ test('REQ-15: fire calls __handleClick on the rune slot and records lastFireAt',
   const clicks = [];
   const m = moduleWith({}, { now: () => 777000 });
   const ok = m.fire({ slot: 4, kind: 'rune-attack' }, {
-    gameClient: { interface: { hotbarManager: { __handleClick: (slot) => clicks.push(slot) } } },
+    gameClient: { interface: { hotbarManager: { __handleClick: (index) => clicks.push(index + 1) } } },
     document: null,
   });
   assert.equal(ok, true);

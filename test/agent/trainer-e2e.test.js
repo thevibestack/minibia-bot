@@ -57,7 +57,8 @@ function makePage(overrides = {}) {
         // The Trainer verifies the current live SID mapping and confirms a
         // cast from observable mana loss. Model the same live contract here.
         slots: [{}, {}, { spell: { sid: 7 } }, {}, { spell: { sid: 12 } }, {}, { spell: { sid: 7 } }],
-        __handleClick: (slot) => {
+        __handleClick: (index) => {
+          const slot = index + 1; // real client: __handleClick is 0-based
           casts.push({ slot, at: Date.now() });
           const sid = slot === 5 ? 12 : (slot === 3 || slot === 7 ? 7 : null);
           if (sid !== null) gameClient.player.state.mana -= gameClient.player.spellbook.spells[sid].cost;

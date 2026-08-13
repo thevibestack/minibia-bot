@@ -63,7 +63,8 @@ function makePage(overrides = {}) {
     },
     interface: {
       hotbarManager: {
-        __handleClick: (slot) => {
+        __handleClick: (index) => {
+          const slot = index + 1; // real client: __handleClick is 0-based
           const h = dom.window.__mbAgentHandle;
           casts.push({
             slot,

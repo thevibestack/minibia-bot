@@ -2496,7 +2496,11 @@ function fireHandleClick(slot, gameClient, error) {
     error(`fireSlot: hotbarManager.__handleClick unavailable for slot ${slot}`);
     return false;
   }
-  hotbar.__handleClick(slot);
+  // The real client's __handleClick indexes hotbar slots 0-based (F1 = index
+  // 0 — confirmed by the game's own handleKeyPress: `__handleClick(key -
+  // KEYS.F1)`), while the bot's slot values are 1-based F-keys. Convert here
+  // so F3 (rune) really fires the third slot instead of the fourth.
+  hotbar.__handleClick(slot - 1);
   return true;
 }
 
