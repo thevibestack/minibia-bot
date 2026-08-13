@@ -96,12 +96,13 @@ function readBody(req) {
  * Validate + sanitize the spell-bearing config keys against the client
  * catalog (design D5/D6, REQ-27/28): every integer sid in healMagic.sid /
  * training.sid must resolve to a spell the CURRENT character can cast
- * (vocation + level; mana when ctx.mana is provided). Returns
+ * (vocation + level). Current mana is a runtime concern: a valid
+ * configuration must arm even while the character is at 0 mana. Returns
  * {rejected: [{key, reason}], config} — each rejected sid is blanked (null)
  * in the returned config so "the rest applies" (REQ-27 cross-load).
  * @param {object} config
  * @param {Array<object>} catalog - raw client catalog rows ({sid, vocations, level, mana})
- * @param {{vocationLabel: string, playerLevel: number|null, mana: number|null}} ctx
+ * @param {{vocationLabel: string, playerLevel: number|null}} ctx
  * @returns {{rejected: Array<{key: string, reason: string}>, config: object}}
  */
 function validateAndSanitize(config, catalog, ctx) {
@@ -131,16 +132,52 @@ function validateAndSanitize(config, catalog, ctx) {
   return { rejected, config: out };
 }
 
-/** Read current mana from a snapshot payload (app stats shape + legacy
- *  flat shape). Null when not readable (the mana re-check is skipped then). */
-function readMana(payload) {
-  if (!payload || typeof payload !== 'object') return null;
-  const raw = (payload.stats && typeof payload.stats === 'object' && payload.stats.mana !== undefined)
-    ? payload.stats.mana
-    : payload.mana;
-  if (raw === null || raw === undefined || raw === '') return null;
-  const n = Number(raw);
-  return Number.isFinite(n) ? n : null;
+/** Panel and API must agree that food magic is an actual food-creation spell.
+ * MiniTibia supplies metadata, not a type enum, so this is deliberately a
+ * positive allow-list of its exposed wording rather than "any exevo". */
+function isFoodCreationSpell(spell) {
+  const text = [spell && spell.name, spell && spell.words, spell && spell.description]
+    .filter(Boolean).join(' ').toLowerCase();
+  return /\bexevo\s+pan\b/.test(text)
+    || /\bfood\b/.test(text)
+    || /\b(create|creates|conjure|conjures)\b.*\b(food|bread|pan)\b/.test(text);
+}
+
+/** Validate SID -> F-slot integrity at the trust boundary. A stale slot could
+ * fire a different live spell after the player rearranges MiniTibia, so the
+ * save is rejected until the panel refresh/reconciliation has run. */
+function validateTrainerHotbarIntegrity(config, catalog, hotbar) {
+  const modules = config && config.modules || {};
+  const training = modules.training || {};
+  const runes = modules.runes || {};
+  const spells = Object.create(null);
+  for (const spell of (Array.isArray(catalog) ? catalog : [])) spells[Number(spell && spell.sid)] = spell;
+  const wanted = [];
+  const hasSid = (value) => value !== null && value !== undefined && value !== '' && Number.isInteger(Number(value));
+  if (hasSid(training.sid)) wanted.push({ key: 'training', sid: Number(training.sid), slot: training.slot });
+  if (hasSid(runes.fallbackSid)) wanted.push({ key: 'fallback', sid: Number(runes.fallbackSid), slot: runes.fallbackSlot });
+  const food = training.eatWithMagic || {};
+  if (food.enabled === true) {
+    if (!hasSid(food.sid) || !isFoodCreationSpell(spells[Number(food.sid)])) {
+      return { key: 'training.eatWithMagic.sid', reason: 'food spell must be a live food-creation spell (for example, exevo pan)' };
+    }
+    wanted.push({ key: 'food', sid: Number(food.sid), slot: food.slot });
+  }
+  if (wanted.length === 0) return null;
+  if (!hotbar || !Array.isArray(hotbar.slots) || hotbar.available === false) {
+    return { key: 'hotbar', reason: 'live hotbar unavailable — refresh game data before saving Trainer' };
+  }
+  for (const mapping of wanted) {
+    const live = hotbar.slots.find((entry) => Number(entry && entry.sid) === mapping.sid);
+    const liveSlot = Number(live && live.slot);
+    if (!Number.isInteger(liveSlot) || liveSlot < 1 || liveSlot > 12) {
+      return { key: mapping.key + '.slot', reason: 'selected ' + mapping.key + ' spell is not in live F1–F12 — refresh game data and save again' };
+    }
+    if (Number(mapping.slot) !== liveSlot) {
+      return { key: mapping.key + '.slot', reason: 'stale hotbar mapping — selected ' + mapping.key + ' spell is now F' + liveSlot + '; refresh game data and save again' };
+    }
+  }
+  return null;
 }
 
 /**
@@ -166,6 +203,11 @@ function readMana(payload) {
  * @param {() => Promise<{spells: Array<object>, playerLevel: number|null,
  *   vocationLabel: string|null}|null>} [opts.spellCatalog] -
  *   REQ-28 in-page getSpellCatalog RPC (raw list + player context)
+ * @param {() => Promise<{containers: Array<object>}|null>} [opts.inventory] -
+ * @param {() => Promise<{available: boolean, slots: Array<object>}|null>} [opts.hotbar] -
+ *   read-only live container catalog for item selectors
+ * @param {() => Promise<{creatures: Array<object>}|null>} [opts.creatures] -
+ *   current in-game creature catalog for Cavebot selectors
  * @param {object} opts.store - {loadCharacter, saveCharacter} (app/store/characters.ts);
  *   {listCharacters} optional — names for /api/profiles (REQ-27)
  * @param {string} [opts.host='127.0.0.1'] - REQ-05: local only
@@ -187,6 +229,10 @@ function createPanelServer(opts) {
   const cavebotRpcFn = typeof opts.cavebotRpc === 'function'
     ? opts.cavebotRpc : async () => ({ ok: false, reason: 'unavailable' });
   const spellCatalogFn = typeof opts.spellCatalog === 'function' ? opts.spellCatalog : async () => null;
+  const inventoryFn = typeof opts.inventory === 'function' ? opts.inventory : async () => null;
+  const hotbarFn = typeof opts.hotbar === 'function' ? opts.hotbar : async () => null;
+  const creaturesFn = typeof opts.creatures === 'function' ? opts.creatures : async () => null;
+  const attachFirstFn = typeof opts.attachFirst === 'function' ? opts.attachFirst : null;
   const store = opts.store;
   const host = opts.host || '127.0.0.1';
 
@@ -214,6 +260,29 @@ function createPanelServer(opts) {
   const server = http.createServer(async (req, res) => {
     const url = (req.url || '/').split('?')[0];
     try {
+      if (req.method === 'POST' && url === '/api/attach-first') {
+        // Desktop panel can boot without an attached session. This explicit
+        // button scans the local debug ports and links the FIRST minibia.com
+        // PWA/window exposed through CDP. A normal browser/PWA without
+        // --remote-debugging-port is not attachable, so the response stays
+        // actionable instead of pretending injection happened.
+        if (!attachFirstFn) {
+          sendJson(res, 503, { ok: false, reason: 'attach unavailable' });
+          return;
+        }
+        const result = await attachFirstFn();
+        if (!result || result.ok !== true) {
+          sendJson(res, 404, {
+            ok: false,
+            reason: result && (result.reason || result.message) || 'no debug-capable minibia.com PWA found',
+            errors: result && result.errors || [],
+          });
+          return;
+        }
+        const identity = await identityFn();
+        sendJson(res, 200, { ok: true, identity });
+        return;
+      }
       if (req.method === 'GET' && url === '/api/identity') {
         const identity = await identityFn();
         sendJson(res, 200, { identity });
@@ -222,6 +291,33 @@ function createPanelServer(opts) {
       if (req.method === 'GET' && url === '/api/snapshot') {
         const payload = await snapshotFn();
         sendJson(res, 200, payload === null || payload === undefined ? { } : payload);
+        return;
+      }
+      if (req.method === 'GET' && url === '/api/inventory') {
+        const raw = await inventoryFn();
+        if (!raw || !Array.isArray(raw.containers)) {
+          sendJson(res, 200, { ok: false, reason: 'inventory unavailable', containers: [] });
+          return;
+        }
+        sendJson(res, 200, { ok: true, containers: raw.containers });
+        return;
+      }
+      if (req.method === 'GET' && url === '/api/hotbar') {
+        const raw = await hotbarFn();
+        if (!raw || !Array.isArray(raw.slots)) {
+          sendJson(res, 200, { ok: false, available: false, reason: 'hotbar unavailable', slots: [] });
+          return;
+        }
+        sendJson(res, 200, { ok: raw.available !== false, available: raw.available !== false, slots: raw.slots });
+        return;
+      }
+      if (req.method === 'GET' && url === '/api/creatures') {
+        const raw = await creaturesFn();
+        if (!raw || !Array.isArray(raw.creatures)) {
+          sendJson(res, 200, { ok: false, reason: 'creature catalog unavailable', creatures: [] });
+          return;
+        }
+        sendJson(res, 200, { ok: true, creatures: raw.creatures });
         return;
       }
       if (req.method === 'GET' && url === '/api/spell-catalog') {
@@ -367,7 +463,7 @@ function createPanelServer(opts) {
         }
         // REQ-28 (slice 1b): spell-save re-check — every spell sid in the
         // config must still be castable by the current character (vocation +
-        // level + CURRENT mana, D5). A rejection refuses the WHOLE save with
+        // level, D5). A rejection refuses the WHOLE save with
         // the first reason (no persist, no push) — the picker validated
         // client-side at pick time; this guards drops since then. Catalog
         // unavailable -> save proceeds (client-side validation already ran).
@@ -377,10 +473,14 @@ function createPanelServer(opts) {
           const { rejected } = validateAndSanitize(config, raw.spells, {
             vocationLabel: (identity && identity.vocationLabel) || raw.vocationLabel || '',
             playerLevel: raw.playerLevel,
-            mana: readMana(await snapshotFn()),
           });
           if (rejected.length > 0) {
             sendJson(res, 409, { ok: false, reason: rejected[0].reason, rejected });
+            return;
+          }
+          const trainerHotbarError = validateTrainerHotbarIntegrity(config, raw.spells, await hotbarFn());
+          if (trainerHotbarError) {
+            sendJson(res, 409, { ok: false, reason: trainerHotbarError.reason, rejected: [trainerHotbarError] });
             return;
           }
         }
@@ -403,8 +503,9 @@ function createPanelServer(opts) {
         // config. Every spell sid is validated against the CURRENT
         // character's vocation (+ level) via the live catalog; incompatible
         // entries are REJECTED with a visible reason and blanked, the rest
-        // applies (merge + persist + push). Mana is NOT checked here — the
-        // save path (/api/config) re-checks it (REQ-28).
+        // applies (merge + persist + push). Mana is never checked during
+        // saving: the agent waits at runtime until a configured spell is
+        // affordable.
         const body = await readBody(req);
         const name = typeof body.character === 'string' && body.character ? body.character : lastCharacter;
         if (!name) {
@@ -436,7 +537,6 @@ function createPanelServer(opts) {
         const { rejected, config } = validateAndSanitize(src.config, raw.spells, {
           vocationLabel: identity.vocationLabel || raw.vocationLabel || '',
           playerLevel: raw.playerLevel,
-          mana: null,
         });
         config.character = name;
         config.connected = true;

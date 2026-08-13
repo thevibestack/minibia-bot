@@ -186,11 +186,11 @@ test('REQ-09: PREFILL_CONFIG pre-Connect is refused', () => {
 
 /* ------------------------------ render (REQ-08) --------------------------- */
 
-test('REQ-08: renderPanel shows the status bar, 12 toggles, config shell, live view', () => {
+test('REQ-08: renderPanel shows the status bar, 13 toggles, config shell, live view', () => {
   const html = P.renderPanel(P.createInitialState());
   assert.match(html, /Disconnected/, 'gate label rendered');
   const count = (html.match(/class="module-toggle"/g) || []).length;
-  assert.equal(count, 12, 'all 12 module toggles present');
+  assert.equal(count, 13, 'all 13 module toggles present');
   for (const def of P.MODULE_DEFS) assert.match(html, new RegExp(def.id));
   assert.match(html, /Configuration/, 'config form shell');
   assert.match(html, /Live state/, 'live state view placeholder');

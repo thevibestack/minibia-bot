@@ -19,7 +19,7 @@ const APP_JS = fs.readFileSync(path.join(PANEL_DIR, 'app.js'), 'utf8');
 
 const FLAMAMEX = { name: 'Flamamex', vocationId: 4, vocationLabel: 'druid' };
 
-const BASE_CFG = { character: 'Flamamex', modules: { healItems: { on: false }, healMagic: { on: false }, training: { on: false } } };
+const BASE_CFG = { character: 'Flamamex', modules: { healItems: { on: false }, manaItems: { on: false }, healMagic: { on: false, sid: 2 }, training: { on: false } } };
 
 /** jsdom shell with a route-based fetch stub that RECORDS every request. */
 function makePanel(routes) {
@@ -69,10 +69,12 @@ function type(dom, id, value) {
 
 const ROUTES = {
   '/api/identity': () => ({ identity: FLAMAMEX }),
-  '/api/snapshot': () => ({ stats: { health: 30, mana: 100, maxMana: 120, maxHealth: 200 } }),
+  '/api/snapshot': () => ({ stats: { health: 30, mana: 100, maxMana: 120, maxHealth: 200 }, agent: { modules: { training: { cap: { capacity: 209, maxCapacity: 400, ratio: 0.52 } } } } }),
   '/api/character-config': () => ({ ok: true, config: BASE_CFG, warning: null }),
   '/api/connect': () => ({ ok: true, identity: FLAMAMEX, config: BASE_CFG }),
-  '/api/spell-catalog': () => ({ ok: true, catalog: [], total: 0, playerLevel: 20, vocationLabel: 'druid' }),
+  '/api/spell-catalog': () => ({ ok: true, catalog: [{ sid: 2, name: 'Healing', mana: 25, level: 1 }], total: 1, playerLevel: 20, vocationLabel: 'druid' }),
+  '/api/hotbar': () => ({ ok: true, available: true, slots: [{ slot: 2, sid: 2, name: 'Healing', mana: 25 }] }),
+  '/api/inventory': () => ({ ok: true, containers: [{ which: 0, name: 'Backpack', items: [{ cid: 7618, name: 'Health Potion', count: 20 }] }] }),
   '/api/profiles': () => ({ ok: true, profiles: ['Flamamex'], current: 'Flamamex' }),
   '/api/config': () => ({ ok: true }),
 };
@@ -95,13 +97,12 @@ test('REQ-29 (PR3, jsdom): typing the HEAL form + Save posts /api/config with th
 
     // Type the form: 50% of maxHealth 200 -> absolute 100.
     type(dom, 'heal-threshold', '50');
-    type(dom, 'heal-slot', '2');
     type(dom, 'heal-reserve', '10');
 
     // A snapshot re-render must not wipe the typed values.
     await new Promise((r) => setTimeout(r, 600));
     assert.equal(dom.window.document.getElementById('heal-threshold').value, '50', 'threshold survives re-render');
-    assert.equal(dom.window.document.getElementById('heal-slot').value, '2', 'slot survives re-render');
+    assert.match(dom.window.document.body.innerHTML, /Mapped to live hotbar slot F2/, 'slot comes from live game hotbar');
     assert.equal(dom.window.document.getElementById('heal-reserve').value, '10', 'reserve survives re-render');
 
     click(dom, '#heal-save-btn');
@@ -113,7 +114,7 @@ test('REQ-29 (PR3, jsdom): typing the HEAL form + Save posts /api/config with th
     assert.equal(cfg.modules.healMagic.on, true, 'toggle carried');
     assert.equal(cfg.modules.healMagic.threshold, 100, '50% of maxHealth 200 converted to absolute 100');
     assert.equal(cfg.modules.healMagic.slot, 2);
-    assert.equal(cfg.modules.healMagic.reserve, 10);
+    assert.equal(cfg.modules.healMagic.reserve, 12, '10% of max mana 120 stored as absolute reserve');
     assert.equal(dom.window.__mbPanel.getState().refusal, null, 'valid save not refused');
   } finally {
     await teardown(dom);
@@ -147,6 +148,34 @@ test('REQ-29 (PR3, jsdom): toggling healItems does NOT change the healMagic togg
   }
 });
 
+test('Panel UX: a focused configuration select survives draft changes and live polling', async () => {
+  const { dom } = makePanel(ROUTES);
+  try {
+    dom.window.__mbPanel.dispatch({ type: 'PROBE_START' });
+    dom.window.__mbPanel.dispatch({ type: 'PROBE_RESULT', identity: FLAMAMEX });
+    dom.window.__mbPanel.dispatch({ type: 'CONNECT' });
+    await new Promise((r) => setTimeout(r, 60));
+    click(dom, '.tab-btn[data-tab="trainer"]');
+
+    const select = dom.window.document.getElementById('trainer-cap-mode');
+    assert.ok(select, 'CAP mode select rendered');
+    select.focus();
+    select.value = 'off';
+    select.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+
+    assert.equal(dom.window.document.getElementById('trainer-cap-mode'), select,
+      'draft change does not replace the native select');
+    assert.equal(select.value, 'off');
+    assert.equal(dom.window.__mbPanel.getState().trainerForm.capMode, 'off');
+
+    dom.window.__mbPanel.dispatch({ type: 'SNAPSHOT', data: { stats: { health: 200, maxHealth: 200 }, agent: { modules: { training: { cap: { capacity: 209, maxCapacity: 400, ratio: 0.52 } } } } } });
+    assert.equal(dom.window.document.getElementById('trainer-cap-mode'), select,
+      'live polling does not tear down the focused select');
+  } finally {
+    await teardown(dom);
+  }
+});
+
 test('REQ-29 (PR3, jsdom): the HEAL settings form is NOT rendered before Connect', async () => {
   const { dom, requests } = makePanel(ROUTES);
   try {
@@ -154,6 +183,32 @@ test('REQ-29 (PR3, jsdom): the HEAL settings form is NOT rendered before Connect
     assert.equal(dom.window.__mbPanel.getState().gate, 'confirmed');
     assert.ok(!dom.window.document.getElementById('heal-save-btn'), 'no heal form pre-Connect');
     assert.ok(!requests.some((r) => r.url === '/api/config'), 'no config push pre-Connect');
+  } finally {
+    await teardown(dom);
+  }
+});
+
+
+test('Survival UI: item cards select real backpack CIDs and persist item-only healing', async () => {
+  const { dom, requests } = makePanel(ROUTES);
+  try {
+    dom.window.__mbPanel.dispatch({ type: 'PROBE_START' });
+    dom.window.__mbPanel.dispatch({ type: 'PROBE_RESULT', identity: FLAMAMEX });
+    dom.window.__mbPanel.dispatch({ type: 'CONNECT' });
+    await new Promise((r) => setTimeout(r, 80));
+
+    click(dom, '[data-heal-mode="items"]');
+    type(dom, 'heal-item-threshold', '45');
+    click(dom, '[data-heal-item-cid="7618"]');
+    click(dom, '#heal-save-btn');
+    await new Promise((r) => setTimeout(r, 40));
+
+    const cfg = requests.filter((r) => r.url === '/api/config').pop().body.config;
+    assert.equal(cfg.modules.healMagic.on, false);
+    assert.equal(cfg.modules.healItems.on, true);
+    assert.equal(cfg.modules.healItems.threshold, 90);
+    assert.deepEqual(cfg.modules.healItems.slotCids, [7618]);
+    assert.ok(requests.some((r) => r.url === '/api/inventory'), 'inventory loaded after Connect');
   } finally {
     await teardown(dom);
   }

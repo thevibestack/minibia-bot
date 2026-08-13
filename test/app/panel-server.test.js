@@ -44,6 +44,8 @@ async function makeServer(t, overrides = {}) {
     identity: overrides.identity || (async () => FLAMAMEX),
     applyConfig: async (config) => { calls.applyConfig.push(config); return true; },
     snapshot: overrides.snapshot || (async () => ({ stats: { health: 42, mana: 80 }, ok: true })),
+    inventory: overrides.inventory || (async () => ({ containers: [] })),
+    attachFirst: overrides.attachFirst,
     store: {
       loadCharacter: (o) => store.loadCharacter(Object.assign({ baseDir: base }, o)),
       saveCharacter: (o) => { calls.saveCount += 1; return store.saveCharacter(Object.assign({ baseDir: base }, o)); },
@@ -89,6 +91,39 @@ test('REQ-02: /api/identity returns the confirmed player shape', async (t) => {
   const { srv } = await makeServer(t);
   const res = await (await fetch(srv.url + '/api/identity')).json();
   assert.deepEqual(res.identity, FLAMAMEX);
+});
+
+
+test('link-first endpoint calls the attach callback and returns the linked identity', async (t) => {
+  let attached = false;
+  const { srv } = await makeServer(t, {
+    identity: async () => (attached ? FLAMAMEX : null),
+    attachFirst: async () => { attached = true; return { ok: true, attached: true }; },
+  });
+  const res = await fetch(srv.url + '/api/attach-first', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({}),
+  });
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.equal(body.ok, true);
+  assert.deepEqual(body.identity, FLAMAMEX);
+});
+
+test('link-first endpoint reports an actionable failure when no PWA is attachable', async (t) => {
+  const { srv } = await makeServer(t, {
+    attachFirst: async () => ({ ok: false, reason: 'No minibia.com window found on ports 9222.' }),
+  });
+  const res = await fetch(srv.url + '/api/attach-first', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({}),
+  });
+  assert.equal(res.status, 404);
+  const body = await res.json();
+  assert.equal(body.ok, false);
+  assert.match(body.reason, /No minibia\.com window found/);
 });
 
 test('REQ-02: /api/connect is refused (409) when the identity is unreadable', async (t) => {
@@ -185,6 +220,13 @@ test('REQ-02: /api/disconnect pushes armed:false and marks the character offline
   assert.equal(store.loadCharacter({ baseDir: base, name: 'Flamamex' }).config.connected, false);
 });
 
+test('Survival inventory endpoint returns only serializable container item metadata', async (t) => {
+  const containers = [{ which: 0, name: 'Backpack', items: [{ cid: 7618, index: 1, name: 'Health Potion', count: 20, imageDataURL: 'data:image/png;base64,AA==' }] }];
+  const { srv } = await makeServer(t, { inventory: async () => ({ containers }) });
+  const res = await (await fetch(srv.url + '/api/inventory')).json();
+  assert.deepEqual(res, { ok: true, containers });
+});
+
 test('REQ-04: /api/snapshot returns the live payload', async (t) => {
   const { srv } = await makeServer(t);
   const res = await (await fetch(srv.url + '/api/snapshot')).json();
@@ -227,6 +269,79 @@ function makeCdpEnv({ list = () => [] } = {}) {
   env.ws = makeMockWebSocket({ autoAnswerFor: ['Page.enable', 'Runtime.enable'] });
   return env;
 }
+
+test('link-first: runMain can show the panel before any game session and attach later', async (t) => {
+  let available = false;
+  const env = makeCdpEnv({ list: () => (available ? [MINIBIA_TARGET] : []) });
+  env.ws = makeMockWebSocket({ autoAnswer: true });
+  const base = makeBaseDir(t);
+  const handle = await main.runMain({
+    launch: false,
+    scanPorts: [9222],
+    fetchImpl: env.fetchImpl,
+    WebSocketCtor: env.ws.ctor,
+    onState: (s) => env.states.push(s),
+    panel: true,
+    panelStaticDir: STATIC_DIR,
+    store: {
+      loadCharacter: (o) => store.loadCharacter(Object.assign({ baseDir: base }, o)),
+      saveCharacter: (o) => store.saveCharacter(Object.assign({ baseDir: base }, o)),
+    },
+  });
+  t.after(async () => { await handle.stop(); });
+
+  assert.equal(handle.session, null, 'no session at boot');
+  assert.ok(handle.panel, 'panel still opens so the user can link later');
+  assert.ok(env.states.find((s) => s.phase === 'no-target'));
+  assert.ok(env.states.find((s) => s.phase === 'panel-ready'));
+
+  available = true;
+  const res = await fetch(handle.panel.url + '/api/attach-first', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({}),
+  });
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.equal(body.ok, true);
+  assert.equal(env.ws.instances.length, 1, 'linked to the first detected PWA target');
+});
+
+
+test('link-first: closed CDP session is dropped so the panel can reconnect', async (t) => {
+  let available = true;
+  const env = makeCdpEnv({ list: () => (available ? [MINIBIA_TARGET] : []) });
+  env.ws = makeMockWebSocket({ autoAnswer: true });
+  const base = makeBaseDir(t);
+  const handle = await main.runMain({
+    launch: false,
+    scanPorts: [9222],
+    fetchImpl: env.fetchImpl,
+    WebSocketCtor: env.ws.ctor,
+    panel: true,
+    panelStaticDir: STATIC_DIR,
+    store: {
+      loadCharacter: (o) => store.loadCharacter(Object.assign({ baseDir: base }, o)),
+      saveCharacter: (o) => store.saveCharacter(Object.assign({ baseDir: base }, o)),
+    },
+  });
+  t.after(async () => { await handle.stop(); });
+
+  assert.ok(handle.session, 'initial scan attached');
+  env.ws.instances[0].close();
+
+  const identity = await (await fetch(handle.panel.url + '/api/identity')).json();
+  assert.deepEqual(identity, { identity: null }, 'closed session degrades instead of throwing');
+
+  const res = await fetch(handle.panel.url + '/api/attach-first', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({}),
+  });
+  assert.equal(res.status, 200);
+  assert.equal((await res.json()).ok, true);
+  assert.equal(env.ws.instances.length, 2, 'new WebSocket session opened after stale one closed');
+});
 
 test('REQ-02/04/05: runMain({panel:true}) starts the panel and the identity/connect flows reach the page agent', async (t) => {
   const env = makeCdpEnv({ list: [MINIBIA_TARGET] });

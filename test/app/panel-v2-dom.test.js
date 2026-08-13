@@ -56,7 +56,7 @@ const panelOf = (dom, id) => dom.window.document.querySelector('.tab-panel[data-
 
 /* ---------------------------------- tabs ---------------------------------- */
 
-test('1.6: shell renders 5 tabs, all 12 toggles in the DOM, heal panel active', async () => {
+test('1.6: shell renders 5 tabs, all 13 toggles in the DOM, heal panel active', async () => {
   const dom = makePanel();
   try {
     const doc = dom.window.document;
@@ -64,10 +64,10 @@ test('1.6: shell renders 5 tabs, all 12 toggles in the DOM, heal panel active', 
     for (const id of ['heal', 'attack', 'trainer', 'cavebot', 'others']) {
       assert.ok(doc.querySelector(tabBtn(id)), 'tab ' + id + ' rendered');
     }
-    assert.equal(doc.querySelectorAll('input[data-module]').length, 12, 'all 12 toggles present');
+    assert.equal(doc.querySelectorAll('input[data-module]').length, 13, 'all 13 toggles present');
     assert.equal(panelOf(dom, 'heal').hidden, false, 'heal panel visible by default');
     assert.equal(panelOf(dom, 'trainer').hidden, true, 'inactive panels hidden');
-    assert.match(doc.querySelector('.tab-panel[data-tab-panel="attack"]').textContent, /Skeleton/);
+    assert.match(doc.querySelector('.tab-panel[data-tab-panel="attack"]').textContent, /Attack/);
   } finally {
     await teardown(dom);
   }
@@ -96,7 +96,7 @@ test('1.6: each tab panel holds its own module toggles (regrouped per tab)', asy
   try {
     const doc = dom.window.document;
     const healModules = doc.querySelectorAll('.tab-panel[data-tab-panel="heal"] input[data-module]');
-    assert.deepEqual([...healModules].map((i) => i.getAttribute('data-module')), ['healItems', 'healMagic']);
+    assert.deepEqual([...healModules].map((i) => i.getAttribute('data-module')), ['healItems', 'manaItems', 'healMagic']);
     const trainerModules = doc.querySelectorAll('.tab-panel[data-tab-panel="trainer"] input[data-module]');
     assert.deepEqual([...trainerModules].map((i) => i.getAttribute('data-module')), ['runes', 'training']);
     const othersModules = doc.querySelectorAll('.tab-panel[data-tab-panel="others"] input[data-module]');
@@ -161,18 +161,19 @@ test('1.5: first run shows the tutorial; Next walks every tab; Dismiss persists 
     assert.ok(doc.querySelector('[data-tutorial]'), 'tutorial overlay on first run');
     assert.equal(dom.window.__mbPanel.getState().tutorial.step, 0);
 
-    // Next -> walks to the heal step and switches the active tab.
+    // Next -> live-data step. A disconnected guide stays on the real status
+    // control rather than pretending configuration data already exists.
     click(dom, '[data-tutorial-action="next"]');
     assert.equal(dom.window.__mbPanel.getState().tutorial.step, 1);
-    assert.equal(dom.window.__mbPanel.getState().tab, 'heal', 'stepper activates the heal tab');
+    assert.ok(doc.querySelector('#status-bar').classList.contains('tutorial-target'));
 
-    // Jump to the last step (cavebot) then finish.
+    // Walk through every real-control step, then finish.
     let s = dom.window.__mbPanel.getState();
-    while (s.tutorial && s.tutorial.step < 5) {
+    while (s.tutorial && s.tutorial.step < dom.window.MbPanelState.TUTORIAL_STEPS.length - 1) {
       click(dom, '[data-tutorial-action="next"]');
       s = dom.window.__mbPanel.getState();
     }
-    assert.equal(s.tab, 'others', 'last step lands on the others tab');
+    assert.equal(s.tab, 'trainer', 'last configuration step remains trainer before verification');
     click(dom, '[data-tutorial-action="next"]'); // Finish
     s = dom.window.__mbPanel.getState();
     assert.equal(s.tutorial, null, 'tour closed');
@@ -197,6 +198,26 @@ test('1.5: Dismiss skips the tour and persists tutorialSeen', async () => {
   }
 });
 
+test('1.5: tutorial highlights the current real control, supports Back and can be restarted', async () => {
+  const dom = makePanel();
+  try {
+    click(dom, '[data-tutorial-action="next"]');
+    const status = dom.window.document.querySelector('#status-bar');
+    assert.ok(status.classList.contains('tutorial-target'), 'live-data step highlights the real connection status');
+    assert.equal(status.getAttribute('data-tutorial-active'), 'true');
+    click(dom, '[data-tutorial-action="back"]');
+    assert.equal(dom.window.__mbPanel.getState().tutorial.step, 0, 'Back returns without saving');
+
+    click(dom, '[data-tutorial-action="dismiss"]');
+    assert.equal(dom.window.__mbPanel.getState().tutorial, null);
+    click(dom, '[data-tutorial-action="restart"]');
+    assert.equal(dom.window.__mbPanel.getState().tutorial.step, 0, 'Guide starts the tutorial again after dismissal');
+    assert.ok(dom.window.document.querySelector('#link-first-btn').classList.contains('tutorial-target'), 'restart returns to the real link control');
+  } finally {
+    await teardown(dom);
+  }
+});
+
 test('1.5: tutorialSeen already set -> no overlay on boot', async () => {
   const dom = makePanel({ preEval: (win) => win.localStorage.setItem('tutorialSeen', '1') });
   try {
@@ -213,7 +234,8 @@ test('1.5: tutorial steps are localized — ES shows the Spanish step text', asy
     click(dom, '.lang-btn[data-lang="es"]');
     click(dom, '[data-tutorial-action="next"]');
     const card = dom.window.document.querySelector('.tutorial-card');
-    assert.match(card.textContent, /CURAR — configurá la curación/, 'ES step body');
+    assert.match(card.textContent, /Cargá los datos vivos/, 'ES step body');
+    assert.match(card.textContent, /Atrás/, 'ES back label');
     assert.match(card.textContent, /Omitir tutorial/, 'ES dismiss label');
     assert.match(card.textContent, /Siguiente/, 'ES next label');
   } finally {

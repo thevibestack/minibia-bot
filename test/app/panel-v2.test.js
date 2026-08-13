@@ -29,13 +29,13 @@ function run(actions, fromState) {
 
 test('1.3: initial state has 5 tabs, heal active, all 10 modules regrouped', () => {
   const s = P.createInitialState();
-  assert.deepEqual(P.TAB_IDS, ['heal', 'attack', 'trainer', 'cavebot', 'others']);
+  assert.deepEqual(P.TAB_IDS, ['heal', 'attack', 'cavebot', 'trainer', 'others']);
   assert.equal(s.tab, 'heal', 'heal tab active by default');
-  assert.equal(P.MODULE_IDS.length, 12, 'all 12 module ids (PR6: attack + cavebot)');
+  assert.equal(P.MODULE_IDS.length, 13, 'all 13 module ids (PR6: attack + cavebot)');
   const flat = P.TABS.flatMap((t) => t.modules).sort();
   assert.deepEqual(flat, P.MODULE_IDS.slice().sort(), 'every module lands in exactly one tab');
   // REQ-26 per-module On/Off: heal tab owns the heal modules; trainer owns runes/training.
-  assert.deepEqual(P.MODULE_BY_TAB.heal.map((d) => d.id), ['healItems', 'healMagic']);
+  assert.deepEqual(P.MODULE_BY_TAB.heal.map((d) => d.id), ['healItems', 'manaItems', 'healMagic']);
   assert.deepEqual(P.MODULE_BY_TAB.trainer.map((d) => d.id), ['runes', 'training']);
 });
 
@@ -47,15 +47,15 @@ test('1.3: SET_TAB switches the active tab; unknown ids ignored', () => {
   assert.equal(r2.effects.length, 0);
 });
 
-test('1.3: renderModuleList renders 5 tab buttons + 12 toggles, active panel visible only', () => {
+test('1.3: renderModuleList renders 5 tab buttons + 13 toggles, active panel visible only', () => {
   const html = P.renderModuleList(P.createInitialState());
   assert.equal((html.match(/class="tab-btn/g) || []).length, 5, '5 tab buttons');
-  assert.equal((html.match(/class="module-toggle"/g) || []).length, 12, 'all 12 toggles in the DOM');
+  assert.equal((html.match(/class="module-toggle"/g) || []).length, 13, 'all 13 toggles in the DOM');
   for (const tab of P.TABS) assert.match(html, new RegExp('data-tab="' + tab.id + '"'));
   assert.ok(html.includes('data-tab-panel="heal"') && !html.includes('data-tab-panel="heal" hidden'),
     'active panel not hidden');
   assert.match(html, /data-tab-panel="trainer"[^>]*hidden/, 'inactive panels hidden');
-  assert.match(html, /Skeleton — limited/, 'ATTACK/CAVEBOT reserve space with the skeleton disclosure');
+  assert.doesNotMatch(html, /Skeleton — limited/, 'operational modules do not claim to be skeletons');
 });
 
 test('1.3: toggle state survives tab switching (same reducer state, panel hidden in DOM)', () => {
@@ -115,12 +115,34 @@ test('1.4: status bar + module labels render Spanish after SET_LANG (ES render t
   assert.match(P.renderLog(state), /Registro de actividad/);
 });
 
+
+test('link-first button is available before a game session is confirmed', () => {
+  const disconnected = P.createInitialState();
+  assert.match(P.renderStatusBar(disconnected), /id="link-first-btn"/);
+  assert.match(P.renderStatusBar(disconnected), /Link first PWA/);
+
+  const probing = run([{ type: 'PROBE_START' }]).state;
+  assert.match(P.renderStatusBar(probing), /id="link-first-btn"/);
+
+  const confirmed = run([{ type: 'PROBE_START' }, { type: 'PROBE_RESULT', identity: FLAMAMEX }]).state;
+  assert.doesNotMatch(P.renderStatusBar(confirmed), /id="link-first-btn"/);
+});
+
+test('ATTACH_FIRST enters probing and emits the attach-first effect', () => {
+  const result = run([{ type: 'ATTACH_FIRST' }]);
+  assert.equal(result.state.gate, P.GATE_PROBING);
+  assert.deepEqual(result.effects, [{ type: 'attach-first' }]);
+  const failed = P.panelReducer(result.state, { type: 'ATTACH_FIRST_FAILED', message: 'no PWA' }).state;
+  assert.equal(failed.gate, P.GATE_DISCONNECTED);
+  assert.equal(failed.lastError, 'no PWA');
+});
+
 /* -------------------------------- tutorial -------------------------------- */
 
-test('1.5: TUTORIAL_START opens step 0; NEXT walks each tab and finishes with tutorial-seen', () => {
+test('1.5: TUTORIAL_START opens the ordered interactive guide; Next walks real-control tabs and finishes with tutorial-seen', () => {
   const r = run([{ type: 'TUTORIAL_START' }]);
   assert.deepEqual(r.state.tutorial, { step: 0 }, 'starts at the intro step');
-  assert.equal(P.TUTORIAL_STEPS.length, 6, 'intro + 5 tab steps');
+  assert.equal(P.TUTORIAL_STEPS.length, 11, 'connection, survival, combat, trainer and verification steps');
 
   let state = r.state;
   const seenTabs = [];
@@ -130,12 +152,50 @@ test('1.5: TUTORIAL_START opens step 0; NEXT walks each tab and finishes with tu
     assert.equal(state.tutorial.step, i, 'step ' + i);
     if (P.TUTORIAL_STEPS[i].tab !== null) seenTabs.push(state.tab);
   }
-  assert.deepEqual(seenTabs, ['heal', 'attack', 'trainer', 'cavebot', 'others'],
-    'the stepper walks every tab (REQ-26)');
+  assert.deepEqual([...new Set(seenTabs)], ['heal', 'attack', 'cavebot', 'trainer'],
+    'the guide walks every configuration tab with a real control');
 
   const done = P.panelReducer(state, { type: 'TUTORIAL_NEXT' });
   assert.equal(done.state.tutorial, null, 'last step closes the tour');
   assert.deepEqual(done.effects, [{ type: 'tutorial-seen' }], 'finish emits the persist effect');
+});
+
+test('1.5: tutorial resolves only existing controls and explains unavailable live data', () => {
+  let state = P.createInitialState();
+  let step = P.tutorialStepFor(state, 2);
+  assert.equal(step.target, '#status-bar', 'disconnected catalog step highlights connection status, not a missing picker');
+  assert.equal(step.body, 'tutorial.connectRequired');
+  assert.equal(step.unavailable, true);
+
+  state.gate = P.GATE_ARMED;
+  state.catalog = { loaded: true, spells: [{ sid: 2, name: 'Healing' }] };
+  state.hotbar = { available: false, slots: [] };
+  state.inventory = { loaded: true, containers: [] };
+  step = P.tutorialStepFor(state, 3);
+  assert.equal(step.target, '#heal-save-btn', 'missing hotbar highlights the real save validation path');
+  assert.equal(step.body, 'tutorial.hotbarUnavailable');
+
+  state.hotbar = { available: true, slots: [{ slot: 2, sid: 2 }] };
+  step = P.tutorialStepFor(state, 3);
+  assert.equal(step.target, '#heal-items-refresh', 'empty BP state highlights its real refresh control');
+  assert.equal(step.body, 'tutorial.inventoryUnavailable');
+
+  state.inventory = { loaded: true, containers: [{ items: [{ cid: 7618, name: 'Health Potion' }] }] };
+  step = P.tutorialStepFor(state, 3);
+  assert.equal(step.target, '#heal-save-btn');
+  assert.equal(step.unavailable, false);
+});
+
+test('1.5: TUTORIAL_BACK is navigation-only and returns to the prior step/tab', () => {
+  let state = run([{ type: 'TUTORIAL_START' }]).state;
+  state = P.panelReducer(state, { type: 'TUTORIAL_NEXT' }).state;
+  state = P.panelReducer(state, { type: 'TUTORIAL_NEXT' }).state;
+  assert.equal(state.tutorial.step, 2);
+  assert.equal(state.tab, 'heal');
+  const back = P.panelReducer(state, { type: 'TUTORIAL_BACK' });
+  assert.equal(back.state.tutorial.step, 1);
+  assert.equal(back.state.tab, 'heal');
+  assert.deepEqual(back.effects, [], 'back never saves or invokes bot work');
 });
 
 test('1.5: TUTORIAL_DISMISS closes the tour with the persist effect; NEXT before start is a no-op', () => {
@@ -154,14 +214,15 @@ test('1.5: TUTORIAL_DISMISS closes the tour with the persist effect; NEXT before
   assert.deepEqual(twice.state.tutorial, { step: 0 }, 'START while running is a no-op');
 });
 
-test('1.5: renderTutorial shows the step card with localized title, progress and actions', () => {
+test('1.5: renderTutorial shows the step card with localized title, progress and accessible navigation', () => {
   const state = run([{ type: 'TUTORIAL_START' }, { type: 'TUTORIAL_NEXT' }]).state;
   const html = P.renderTutorial(state);
   assert.match(html, /data-tutorial/, 'overlay rendered');
   assert.match(html, /data-tutorial-action="next"/);
+  assert.match(html, /data-tutorial-action="back"/);
   assert.match(html, /data-tutorial-action="dismiss"/);
-  assert.match(html, /2 \/ 6/, 'progress');
-  assert.match(html, /HEAL/, 'step title is the tab label');
+  assert.match(html, /2 \/ 11/, 'progress');
+  assert.match(html, /Load live data/, 'step title is actionable');
   assert.equal(P.renderTutorial(P.createInitialState()), '', 'no overlay when not running');
 });
 

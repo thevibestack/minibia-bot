@@ -5,7 +5,7 @@
  * /api/spell-catalog (proxy of the in-page getSpellCatalog RPC, filtered to
  * the CURRENT character's vocation + level), GET /api/profiles (cross-load
  * offer list), POST /api/load-profile (cross-load with per-sid rejection)
- * and the /api/config mana re-check (REQ-28). Real HTTP on an ephemeral
+ * and the /api/config static spell re-check (REQ-28). Real HTTP on an ephemeral
  * 127.0.0.1 port + real store on a temp dir.
  */
 
@@ -55,6 +55,9 @@ async function makeServer(t, overrides = {}) {
       calls.spellCatalog.push(1);
       return (typeof overrides.spellCatalog === 'function' ? overrides.spellCatalog() : rawCatalogWith());
     },
+    hotbar: overrides.hotbar === null ? null : async () => (
+      typeof overrides.hotbar === 'function' ? overrides.hotbar() : { available: true, slots: [] }
+    ),
     store: {
       loadCharacter: (o) => store.loadCharacter(Object.assign({ baseDir: base }, o)),
       saveCharacter: (o) => { calls.saveCount += 1; return store.saveCharacter(Object.assign({ baseDir: base }, o)); },
@@ -240,24 +243,28 @@ test('REQ-27: load-profile degrades when the spell catalog RPC is unavailable', 
 
 /* ------------- /api/config spell re-check (2.8, REQ-28) ------------- */
 
-test('REQ-28: /api/config refuses a save whose spell sid exceeds current mana — no persist, no push', async (t) => {
-  const { srv, calls, base } = await makeServer(t);
+test('REQ-28: /api/config saves Trainer at 96 mana when its 210-MP rune is otherwise valid', async (t) => {
+  const rune = { sid: 35, name: 'Heavy Magic Missile', words: 'adori gran', mana: 210, level: 3, vocations: ['druid'] };
+  const { srv, calls, base } = await makeServer(t, {
+    snapshot: async () => ({ stats: { health: 42, mana: 96, maxMana: 270 } }),
+    spellCatalog: () => rawCatalogWith({ spells: RAW_CATALOG.concat([rune]) }),
+    hotbar: () => ({ available: true, slots: [{ slot: 3, sid: 35 }] }),
+  });
   const cfg = store.defaultConfig('Flamamex');
-  cfg.modules.healMagic = { on: true, threshold: 120, slot: 2, sid: 3 }; // Intense Healing costs 170
+  cfg.modules.training = { on: true, slot: 3, sid: 35, reserve: 30 };
   const res = await fetch(srv.url + '/api/config', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ character: 'Flamamex', config: cfg }),
   });
-  assert.equal(res.status, 409);
+  assert.equal(res.status, 200);
   const body = await res.json();
-  assert.equal(body.ok, false);
-  assert.equal(body.reason, 'not enough mana — costs 170, you have 80');
-  assert.deepEqual(body.rejected, [{ key: 'healMagic.sid', reason: 'not enough mana — costs 170, you have 80' }]);
-  assert.deepEqual(calls.applyConfig, [], 'no armed push on rejection');
+  assert.equal(body.ok, true);
+  assert.equal(calls.applyConfig[0].modules.training.sid, 35, 'valid rule arms despite current mana');
+  assert.equal(calls.applyConfig[0].modules.training.reserve, 30);
   const reloaded = store.loadCharacter({ baseDir: base, name: 'Flamamex' });
-  assert.equal(reloaded.config.modules.healMagic.sid, null, 'nothing persisted (defaults remain)');
-  assert.equal(calls.saveCount, 0, 'store never written');
+  assert.equal(reloaded.config.modules.training.sid, 35, 'configuration persisted for future mana recovery');
+  assert.equal(calls.saveCount, 1, 'save is not blocked by runtime mana');
 });
 
 test('REQ-28: /api/config accepts a save whose spell sid fits the current mana', async (t) => {
@@ -326,4 +333,38 @@ test('REQ-28: /api/config degrades when the catalog RPC is unavailable — save 
   });
   assert.equal(res.status, 200, 'catalog absent -> client-side validation is the only gate');
   assert.equal(calls.applyConfig.length, 1);
+});
+
+test('Trainer save rejects food magic that is not a live food-creation spell', async (t) => {
+  const food = { sid: 12, name: 'Food', words: 'exevo pan', mana: 30, level: 1, vocations: ['druid'] };
+  const { srv, calls } = await makeServer(t, {
+    spellCatalog: () => rawCatalogWith({ spells: RAW_CATALOG.concat([food]) }),
+    hotbar: () => ({ available: true, slots: [{ slot: 3, sid: 3 }] }),
+  });
+  const cfg = store.defaultConfig('Flamamex');
+  cfg.modules.training = { on: true, sid: 3, slot: 3, reserve: 0, eatWithMagic: { enabled: true, sid: 3, slot: 3, everyRunes: 1 } };
+  const res = await fetch(srv.url + '/api/config', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ character: 'Flamamex', config: cfg }),
+  });
+  assert.equal(res.status, 409);
+  assert.match((await res.json()).reason, /food-creation spell/i);
+  assert.deepEqual(calls.applyConfig, []);
+});
+
+test('Trainer save rejects a stale F-slot so it cannot fire an unrelated live spell', async (t) => {
+  const rune = { sid: 35, name: 'Heavy Magic Missile', words: 'adori gran', mana: 210, level: 3, vocations: ['druid'] };
+  const { srv, calls } = await makeServer(t, {
+    spellCatalog: () => rawCatalogWith({ spells: RAW_CATALOG.concat([rune]) }),
+    hotbar: () => ({ available: true, slots: [{ slot: 8, sid: 35 }] }),
+  });
+  const cfg = store.defaultConfig('Flamamex');
+  cfg.modules.training = { on: true, sid: 35, slot: 3, reserve: 0 };
+  const res = await fetch(srv.url + '/api/config', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ character: 'Flamamex', config: cfg }),
+  });
+  assert.equal(res.status, 409);
+  assert.match((await res.json()).reason, /stale hotbar mapping.*F8/i);
+  assert.deepEqual(calls.applyConfig, []);
 });

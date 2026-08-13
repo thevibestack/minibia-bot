@@ -51,10 +51,11 @@
    * with later updates.
    */
   const TABS = [
-    { id: 'heal', modules: ['healItems', 'healMagic'] },
-    { id: 'attack', modules: ['attack'], skeleton: true },   // PR6 (REQ-35): skeleton module — disclosed
+    // A bot is a survival system first. Everything else is lower priority.
+    { id: 'heal', modules: ['healItems', 'manaItems', 'healMagic'] },
+    { id: 'attack', modules: ['attack'] },
+    { id: 'cavebot', modules: ['cavebot'] },
     { id: 'trainer', modules: ['runes', 'training'] },
-    { id: 'cavebot', modules: ['cavebot'], skeleton: true }, // PR6 (REQ-36): skeleton module — disclosed
     { id: 'others', modules: ['eat', 'trade', 'loot', 'spawns', 'huntStats', 'routes'] },
   ];
   const TAB_IDS = TABS.map((t) => t.id);
@@ -62,7 +63,10 @@
   /** The 12 modules (design config "modules" map), regrouped per tab (REQ-26). */
   const MODULE_DEFS = [
     { id: 'healItems', label: 'Heal with items', tab: 'heal' },
+    { id: 'manaItems', label: 'Mana potions', tab: 'heal' },
     { id: 'healMagic', label: 'Heal with magic', tab: 'heal' },
+    { id: 'attack', label: 'Attack', tab: 'attack' },
+    { id: 'cavebot', label: 'Cavebot', tab: 'cavebot' },
     { id: 'runes', label: 'Runes', tab: 'trainer' },
     { id: 'training', label: 'Magic training', tab: 'trainer' },
     { id: 'eat', label: 'Eat', tab: 'others' },
@@ -71,10 +75,6 @@
     { id: 'spawns', label: 'Spawn maps', tab: 'others' },
     { id: 'huntStats', label: 'Hunt stats', tab: 'others' },
     { id: 'routes', label: 'Routes', tab: 'others' },
-    // PR6 (REQ-35/36, D10): skeleton modules — state-only; the tabs disclose
-    // "skeleton — limited" until the full behaviors arrive.
-    { id: 'attack', label: 'Attack', tab: 'attack' },
-    { id: 'cavebot', label: 'Cavebot', tab: 'cavebot' },
   ];
   const MODULE_IDS = MODULE_DEFS.map((m) => m.id);
   const MODULE_BY_TAB = (function () {
@@ -101,6 +101,7 @@
       'connect': 'Connect',
       'cancel': 'Cancel',
       'disconnect': 'Disconnect',
+      'linkFirst': 'Link first PWA',
       'refused': 'refused: %reason%',
       'language': 'Language',
       'tab.heal': 'HEAL',
@@ -118,6 +119,7 @@
       'stats.mana': 'Mana',
       'skeleton.note': 'Skeleton — limited functionality arrives in a later update.',
       'module.healItems': 'Heal with items',
+      'module.manaItems': 'Mana potions',
       'module.healMagic': 'Heal with magic',
       'module.runes': 'Runes',
       'module.training': 'Magic training',
@@ -130,16 +132,41 @@
       'module.attack': 'Attack',
       'module.cavebot': 'Cavebot',
       'picker.module.attack': 'Attack spell',
-      'tutorial.title': 'Welcome to the bot panel',
-      'tutorial.body': 'This panel controls your bot, one tab per activity. This tour shows each tab — you can dismiss it at any time.',
-      'tutorial.tab.heal': 'HEAL — set up healing: health threshold, potions or magic spells.',
-      'tutorial.tab.attack': 'ATTACK — combat targeting (lowest HP / nearest) arrives in a later update.',
-      'tutorial.tab.trainer': 'TRAINER — rune-making with a strict cap, mana reserve and fallback spell.',
-      'tutorial.tab.cavebot': 'CAVEBOT — route recording and autowalk are planned for a later update.',
-      'tutorial.tab.others': 'OTHERS — food, auto-loot, trade broadcasts and anti-bot alerts.',
+      'tutorial.connect.title': '1. Connect the game',
+      'tutorial.connect.body': 'Use this control to link the game, then confirm Connect when the character name appears. The guide never connects or changes settings for you.',
+      'tutorial.live.title': '2. Load live data',
+      'tutorial.live.body': 'After Connect, wait for live health/mana, spell catalog, hotbar and backpacks to load. These are read-only game data used by the forms below.',
+      'tutorial.healSpell.title': '3. Survival: choose your healing spell',
+      'tutorial.healSpell.body': 'In Spell picker select Heal spell, then choose a valid healing spell for this character. The panel only lists live, vocation-compatible spells.',
+      'tutorial.healRules.title': '4. Survival: thresholds and potions',
+      'tutorial.healRules.body': 'Set the HP threshold and mana reserve, choose HP and optional mana potions from the visible backpacks, then Save survival settings. The chosen heal spell must show a live F-slot mapping.',
+      'tutorial.attack.title': '5. Combat: Assist is manual target only',
+      'tutorial.attack.body': 'Enable Attack only if you want spells/runes on the creature YOU already targeted. Assist never chooses a new target for you.',
+      'tutorial.caveMonsters.title': '6. Cavebot: choose monsters',
+      'tutorial.caveMonsters.body': 'Select visible monster names and the priority, then save the Cavebot configuration. Cavebot may select only those configured monsters.',
+      'tutorial.caveRoute.title': '7. Cavebot: record the route',
+      'tutorial.caveRoute.body': 'Record while you walk, Stop & keep, then Save route. Cavebot pauses its route to fight configured monsters and resumes afterward.',
+      'tutorial.trainerRune.title': '8. Trainer: choose a rune',
+      'tutorial.trainerRune.body': 'Choose the rune-making spell. It must be in the live hotbar; the form shows its real F-slot and saves only that mapping.',
+      'tutorial.trainerFallback.title': '9. Trainer: fallback spell',
+      'tutorial.trainerFallback.body': 'Optionally enable automatic fallback, choose its spell and mana percentage. It also requires a live hotbar mapping.',
+      'tutorial.trainerCap.title': '10. Trainer: capacity policy',
+      'tutorial.trainerCap.body': 'Choose whether to stop at capacity and its threshold. This policy controls rune-making only; it does not invent backpack or hotbar data.',
+      'tutorial.verify.title': '11. Verify before running',
+      'tutorial.verify.body': 'Use Live state and Activity log to confirm HP/mana, module status, route state and validation messages. Enable modules only after you saved valid settings.',
+      'tutorial.connectRequired': 'Connect a game first. Until then, the configuration controls are intentionally unavailable and the guide cannot invent live data.',
+      'tutorial.hotbarUnavailable': 'The live hotbar is unavailable or empty. Put the selected spell on F1–F12 in the game, refresh after Connect, and wait for its mapped-slot message before saving.',
+      'tutorial.inventoryUnavailable': 'No live backpack items are available. Open the backpack in the game and use Refresh items; potion choices are intentionally not guessed.',
+      'tutorial.creaturesUnavailable': 'No visible creatures were received. Bring the monsters on screen and refresh after Connect; Cavebot cannot be configured with invented names.',
       'tutorial.next': 'Next',
+      'tutorial.back': 'Back',
       'tutorial.finish': 'Finish',
       'tutorial.dismiss': 'Skip tutorial',
+      'tutorial.restart': 'Guide',
+      'gameData.refresh': 'Refresh game data',
+      'gameData.refreshing': 'Refreshing game data…',
+      'gameData.updated': 'Game data updated at %time%',
+      'gameData.partial': 'Some game data could not refresh. Check the game PWA and try again.',
       // Slice 1b (REQ-27/28): profile cross-load + spell picker.
       'profile.title': 'Profiles',
       'profile.none': 'No saved configs for other characters yet — they appear here once a Connect saves them.',
@@ -151,18 +178,35 @@
       'picker.title': 'Spell picker',
       'picker.empty': 'No spell catalog yet — connect a character to load it.',
       'picker.module.healMagic': 'Heal spell',
-      'picker.module.training': 'Training spell',
+      'picker.module.training': 'Rune-making spell',
       'picker.search': 'Search spells…',
+      'picker.categoryEmpty': 'No spells in this category for the connected character.',
       'picker.none': 'No spells match.',
       'picker.meta': 'mana %mana%, level %level%',
       'picker.pick': 'Pick',
       'picker.current': 'current',
       // Slice 2 (PR3, REQ-29): HEAL settings form + live state line.
-      'heal.formTitle': 'Heal settings',
+      'heal.formTitle': 'Survival / healing',
+      'heal.mode': 'Healing method',
+      'heal.mode.magic': 'Magic only',
+      'heal.mode.items': 'Items only',
+      'heal.mode.both': 'Magic + items',
+      'heal.magicTitle': 'Magic healing',
+      'heal.itemsTitle': 'HP potions / items',
+      'heal.manaTitle': 'Mana potions',
+      'heal.manaEnabled': 'Use mana potions',
+      'heal.manaThreshold': 'Use mana potion at mana %',
+      'heal.hotbarMapped': 'Mapped to live hotbar slot F%slot%',
+      'heal.hotbarMissing': 'Put this spell in the game hotbar first; no fake slot is saved.',
+      'heal.inventoryHint': 'Choose the actual item types from open backpacks. The game does not expose a reliable potion category, so nothing is guessed.',
       'heal.threshold': 'Health threshold %',
-      'heal.slot': 'Hotbar slot',
-      'heal.reserve': 'Mana reserve',
-      'heal.save': 'Save heal settings',
+      'heal.itemThreshold': 'Use items at health %',
+      'heal.slot': 'Spell hotbar slot (F1 = 1)',
+      'heal.reserve': 'Mana reserve after cast %',
+      'heal.itemsEmpty': 'Open the backpack with your potions and refresh the items.',
+      'heal.itemsRefresh': 'Refresh backpack',
+      'heal.itemsSelected': '%count% item type(s) selected',
+      'heal.save': 'Save survival settings',
       'heal.liveOn': 'Heal magic on — hp %pct%% of %max%, fires at %t%% (slot %slot%)',
       'heal.liveOff': 'Heal magic off — no heal actions',
       // Slice 3 (PR4, REQ-30/31/32): TRAINER settings form + cap alert.
@@ -191,6 +235,8 @@
       'trainer.runeMakingTitle': 'Rune-making',
       'trainer.capacityTitle': 'Capacity & alerts',
       'trainer.runeSelect': 'Select Rune to Create',
+      'trainer.runeSlot': 'Spell hotbar slot (1-12)',
+      'trainer.runeSlotHint': 'If this spell is on F1, set slot 1. F2 = slot 2, and so on.',
       'trainer.runeSelectFallback': 'No rune spells matched — showing the full catalog',
       'trainer.castLogic': 'If Mana >= cost + reserve',
       'trainer.runeHotkey': 'Rune Hotkey',
@@ -210,6 +256,7 @@
       'trainer.confirmYes': 'Yes, stop botting',
       'trainer.confirmNo': 'Cancel',
       'trainer.hotkeyUnavailable': 'Hotkeys unavailable — the game keyboard surface is not exposed (display only)',
+      'trainer.waitingMana': 'Rune-making armed — waiting for %required% mana (%current% available).',
       // Slice 5 (PR5, REQ-33/34): OTHERS settings form + anti-bot live state.
       'others.formTitle': 'Other settings',
       'others.foodTitle': 'Food',
@@ -229,16 +276,16 @@
       'others.alertMoved': 'Moved',
       'others.alertAttacked': 'Attack',
       // Slice 7 (PR6, REQ-35/36): ATTACK + CAVEBOT skeleton forms.
-      'attack.formTitle': 'Attack settings (skeleton)',
-      'attack.skeletonNote': 'Combat logic is limited — full targeting arrives in a later update.',
+      'attack.formTitle': 'Attack Assist settings',
+      'attack.skeletonNote': 'Uses only your selected target; it never chooses one for you.',
       'attack.targeting': 'Targeting',
       'attack.targetingLowestHp': 'Lowest HP',
       'attack.targetingNearest': 'Nearest',
       'attack.runeSlot': 'Offensive rune slot',
       'attack.spellHint': 'Offensive spell — pick it with the spell picker below.',
       'attack.save': 'Save attack settings',
-      'cavebot.formTitle': 'Cavebot (skeleton)',
-      'cavebot.skeletonNote': 'Route walking is limited — the full cavebot arrives in a later update.',
+      'cavebot.formTitle': 'Cavebot',
+      'cavebot.skeletonNote': 'Stops route movement for configured monsters and resumes afterward.',
       'cavebot.record': 'Record route',
       'cavebot.stopRecord': 'Stop & keep',
       'cavebot.saveRoute': 'Save route',
@@ -299,6 +346,7 @@
       'connect': 'Conectar',
       'cancel': 'Cancelar',
       'disconnect': 'Desconectar',
+      'linkFirst': 'Vincular primera PWA',
       'refused': 'rechazado: %reason%',
       'language': 'Idioma',
       'tab.heal': 'CURAR',
@@ -316,6 +364,7 @@
       'stats.mana': 'Maná',
       'skeleton.note': 'Esqueleto — funcionalidad limitada en una próxima actualización.',
       'module.healItems': 'Curar con objetos',
+      'module.manaItems': 'Pociones de maná',
       'module.healMagic': 'Curar con magia',
       'module.runes': 'Runas',
       'module.training': 'Entrenar magia',
@@ -328,16 +377,41 @@
       'module.attack': 'Ataque',
       'module.cavebot': 'Cavebot',
       'picker.module.attack': 'Hechizo de ataque',
-      'tutorial.title': 'Bienvenido al panel del bot',
-      'tutorial.body': 'Este panel controla tu bot, una pestaña por actividad. Este recorrido muestra cada pestaña — podés omitirlo en cualquier momento.',
-      'tutorial.tab.heal': 'CURAR — configurá la curación: umbral de vida, pociones o magia.',
-      'tutorial.tab.attack': 'ATAQUE — el targeting (menor vida / más cercano) llega en una próxima actualización.',
-      'tutorial.tab.trainer': 'ENTRENAR — runas con tope estricto, reserva de maná y hechizo alternativo.',
-      'tutorial.tab.cavebot': 'CAVEBOT — grabado de rutas y autowalk planificados para una próxima actualización.',
-      'tutorial.tab.others': 'OTROS — comida, auto-loot, difusión de comercio y alertas anti-bot.',
+      'tutorial.connect.title': '1. Conectá el juego',
+      'tutorial.connect.body': 'Usá este control para vincular el juego y después confirmá Conectar cuando aparezca el personaje. La guía nunca conecta ni cambia ajustes por vos.',
+      'tutorial.live.title': '2. Cargá los datos vivos',
+      'tutorial.live.body': 'Después de Conectar, esperá vida/maná, catálogo de magias, hotbar y mochilas. Son datos de juego de solo lectura usados por los formularios.',
+      'tutorial.healSpell.title': '3. Supervivencia: elegí la magia de curación',
+      'tutorial.healSpell.body': 'En Selector de magias elegí Hechizo de curación y una magia válida del personaje. El panel sólo lista magias reales y compatibles con tu vocación.',
+      'tutorial.healRules.title': '4. Supervivencia: umbrales y pociones',
+      'tutorial.healRules.body': 'Definí vida, reserva de maná, pociones HP y opcionalmente de maná desde las mochilas visibles; después guardá. La magia elegida debe mostrar su F-slot vivo.',
+      'tutorial.attack.title': '5. Combate: Assist usa objetivo manual',
+      'tutorial.attack.body': 'Activá Ataque sólo para lanzar magia/runa sobre el monstruo que VOS ya marcaste. Assist nunca elige un objetivo nuevo.',
+      'tutorial.caveMonsters.title': '6. Cavebot: elegí monstruos',
+      'tutorial.caveMonsters.body': 'Elegí monstruos visibles y prioridad, y guardá la configuración. Cavebot sólo puede seleccionar los monstruos configurados.',
+      'tutorial.caveRoute.title': '7. Cavebot: grabá la ruta',
+      'tutorial.caveRoute.body': 'Grabá mientras caminás, detené y conservá, y guardá la ruta. Cavebot pausa la ruta para pelear y luego la retoma.',
+      'tutorial.trainerRune.title': '8. Entrenar: elegí una runa',
+      'tutorial.trainerRune.body': 'Elegí la magia de runa. Debe estar en el hotbar vivo: el formulario muestra su F-slot real y sólo guarda ese mapeo.',
+      'tutorial.trainerFallback.title': '9. Entrenar: magia alternativa',
+      'tutorial.trainerFallback.body': 'Opcionalmente activá la alternativa, elegí su magia y porcentaje de maná. También necesita un mapeo vivo del hotbar.',
+      'tutorial.trainerCap.title': '10. Entrenar: política de capacidad',
+      'tutorial.trainerCap.body': 'Definí si se detiene al llegar a capacidad y su umbral. Esta regla sólo controla runas; no inventa mochilas ni hotkeys.',
+      'tutorial.verify.title': '11. Verificá antes de correr',
+      'tutorial.verify.body': 'Revisá Estado en vivo y Registro para confirmar vida/maná, módulos, ruta y validaciones. Activá módulos recién después de guardar ajustes válidos.',
+      'tutorial.connectRequired': 'Primero conectá el juego. Hasta entonces los controles están bloqueados a propósito: la guía no inventa datos vivos.',
+      'tutorial.hotbarUnavailable': 'El hotbar vivo no está disponible o está vacío. Poné la magia elegida en F1–F12 dentro del juego, refrescá después de Conectar y esperá el mensaje de slot mapeado antes de guardar.',
+      'tutorial.inventoryUnavailable': 'No hay objetos de mochila disponibles. Abrí la BP en el juego y usá Refrescar objetos; las pociones no se adivinan.',
+      'tutorial.creaturesUnavailable': 'No llegaron criaturas visibles. Poné los monstruos en pantalla y refrescá después de Conectar; Cavebot no se configura con nombres inventados.',
       'tutorial.next': 'Siguiente',
+      'tutorial.back': 'Atrás',
       'tutorial.finish': 'Terminar',
       'tutorial.dismiss': 'Omitir tutorial',
+      'tutorial.restart': 'Guía',
+      'gameData.refresh': 'Actualizar datos del juego',
+      'gameData.refreshing': 'Actualizando datos del juego…',
+      'gameData.updated': 'Datos del juego actualizados a las %time%',
+      'gameData.partial': 'No se pudieron actualizar algunos datos. Revisá la PWA del juego e intentá de nuevo.',
       // Slice 1b (REQ-27/28): profile cross-load + spell picker.
       'profile.title': 'Perfiles',
       'profile.none': 'Todavía no hay configs de otros personajes — aparecen acá cuando un Connect las guarda.',
@@ -349,18 +423,35 @@
       'picker.title': 'Selector de magias',
       'picker.empty': 'Todavía no hay catálogo de magias — conectá un personaje para cargarlo.',
       'picker.module.healMagic': 'Hechizo de curación',
-      'picker.module.training': 'Hechizo de entrenamiento',
+      'picker.module.training': 'Magia para crear runa',
       'picker.search': 'Buscar magias…',
+      'picker.categoryEmpty': 'No hay magias de esta categoría para el personaje conectado.',
       'picker.none': 'No hay magias que coincidan.',
       'picker.meta': 'maná %mana%, nivel %level%',
       'picker.pick': 'Elegir',
       'picker.current': 'actual',
       // Slice 2 (PR3, REQ-29): formulario de ajustes de CURAR + línea de estado.
-      'heal.formTitle': 'Ajustes de curación',
-      'heal.threshold': 'Umbral de vida %',
-      'heal.slot': 'Slot del hotbar',
-      'heal.reserve': 'Reserva de maná',
-      'heal.save': 'Guardar curación',
+      'heal.formTitle': 'Supervivencia / curación',
+      'heal.mode': 'Método de curación',
+      'heal.mode.magic': 'Solo magia',
+      'heal.mode.items': 'Solo objetos',
+      'heal.mode.both': 'Magia + objetos',
+      'heal.magicTitle': 'Curación con magia',
+      'heal.itemsTitle': 'Pociones / objetos de vida',
+      'heal.manaTitle': 'Pociones de maná',
+      'heal.manaEnabled': 'Usar pociones de maná',
+      'heal.manaThreshold': 'Usar poción de maná al % de maná',
+      'heal.hotbarMapped': 'Mapeado al slot vivo F%slot%',
+      'heal.hotbarMissing': 'Primero poné este hechizo en el hotbar del juego; no se guarda un slot inventado.',
+      'heal.inventoryHint': 'Elegí los tipos reales de objetos de las BP abiertas. El juego no expone una categoría confiable de pociones, así que no se adivina.',
+      'heal.threshold': 'Curar con magia al % de vida',
+      'heal.itemThreshold': 'Usar objetos al % de vida',
+      'heal.slot': 'Slot de magia (F1 = 1)',
+      'heal.reserve': 'Reserva de maná después de curar %',
+      'heal.itemsEmpty': 'Abrí la BP con las pociones y actualizá los objetos.',
+      'heal.itemsRefresh': 'Actualizar BP',
+      'heal.itemsSelected': '%count% tipo(s) de objeto seleccionado(s)',
+      'heal.save': 'Guardar supervivencia',
       'heal.liveOn': 'Magia de curación activa — vida %pct%% de %max%, dispara al %t%% (slot %slot%)',
       'heal.liveOff': 'Magia de curación apagada — sin acciones de curación',
       // Slice 3 (PR4, REQ-30/31/32): formulario de ENTRENAR + alerta de tope.
@@ -390,6 +481,8 @@
       'trainer.runeMakingTitle': 'Fabricar runas',
       'trainer.capacityTitle': 'Capacidad y alertas',
       'trainer.runeSelect': 'Elegir runa a crear',
+      'trainer.runeSlot': 'Slot del hotbar para esta magia (1-12)',
+      'trainer.runeSlotHint': 'Si esta magia está en F1, poné slot 1. F2 = slot 2, y así.',
       'trainer.runeSelectFallback': 'No se encontraron runas — mostrando todo el catálogo',
       'trainer.castLogic': 'Si Maná >= coste + reserva',
       'trainer.runeHotkey': 'Tecla de runa',
@@ -409,6 +502,7 @@
       'trainer.confirmYes': 'Sí, detener el bot',
       'trainer.confirmNo': 'Cancelar',
       'trainer.hotkeyUnavailable': 'Teclas no disponibles — la superficie de teclado del juego no está expuesta (solo lectura)',
+      'trainer.waitingMana': 'Fabricación de runas activada — esperando %required% de maná (%current% disponible).',
       // Slice 5 (PR5, REQ-33/34): formulario de OTROS + estado anti-bot en vivo.
       'others.formTitle': 'Otros ajustes',
       'others.foodTitle': 'Comida',
@@ -428,16 +522,16 @@
       'others.alertMoved': 'Movimiento',
       'others.alertAttacked': 'Ataque',
       // Slice 7 (PR6, REQ-35/36): formularios esqueleto de ATAQUE + CAVEBOT.
-      'attack.formTitle': 'Ajustes de ataque (esqueleto)',
-      'attack.skeletonNote': 'La lógica de combate es limitada — el targeting completo llega en una próxima actualización.',
+      'attack.formTitle': 'Ajustes de ataque asistido',
+      'attack.skeletonNote': 'Usa solamente el objetivo que vos seleccionaste; nunca elige uno por su cuenta.',
       'attack.targeting': 'Targeting',
       'attack.targetingLowestHp': 'Menor vida',
       'attack.targetingNearest': 'Más cercano',
       'attack.runeSlot': 'Slot de runa ofensiva',
       'attack.spellHint': 'Hechizo ofensivo — elegilo con el selector de magias de abajo.',
       'attack.save': 'Guardar ataque',
-      'cavebot.formTitle': 'Cavebot (esqueleto)',
-      'cavebot.skeletonNote': 'El caminado de rutas es limitado — el cavebot completo llega en una próxima actualización.',
+      'cavebot.formTitle': 'Cavebot',
+      'cavebot.skeletonNote': 'Pausa la ruta por monstruos configurados y la retoma al terminar.',
       'cavebot.record': 'Grabar ruta',
       'cavebot.stopRecord': 'Parar y conservar',
       'cavebot.saveRoute': 'Guardar ruta',
@@ -514,19 +608,71 @@
   }
 
   /**
-   * Tutorial stepper (design D7, REQ-26): one step per tab + intro. The step
-   * carries the tab it highlights; TUTORIAL_NEXT switches the active tab so
-   * the walk physically visits every tab. localStorage 'tutorialSeen' lives
-   * in app.js (dismiss/finish effect); the reducer owns only the step state.
+   * Interactive onboarding follows real controls in the same order a safe
+   * setup happens. `requires` never unlocks or fabricates game data: the
+   * resolver below points to the honest validation control while data is
+   * missing. This makes the guide useful on both a fresh disconnected panel
+   * and an already-connected character.
    */
   const TUTORIAL_STEPS = [
-    { tab: null, key: 'tutorial.title', body: 'tutorial.body' },
-    { tab: 'heal', key: 'tutorial.tab.heal' },
-    { tab: 'attack', key: 'tutorial.tab.attack' },
-    { tab: 'trainer', key: 'tutorial.tab.trainer' },
-    { tab: 'cavebot', key: 'tutorial.tab.cavebot' },
-    { tab: 'others', key: 'tutorial.tab.others' },
+    { tab: null, key: 'tutorial.connect.title', body: 'tutorial.connect.body', target: '#link-first-btn', kind: 'connect' },
+    { tab: null, key: 'tutorial.live.title', body: 'tutorial.live.body', target: '#live-state', requires: 'armed' },
+    { tab: 'heal', key: 'tutorial.healSpell.title', body: 'tutorial.healSpell.body', target: '[data-picker-module-btn="healMagic"]', requires: 'catalog' },
+    { tab: 'heal', key: 'tutorial.healRules.title', body: 'tutorial.healRules.body', target: '#heal-save-btn', requires: 'hotbar-inventory' },
+    { tab: 'attack', key: 'tutorial.attack.title', body: 'tutorial.attack.body', target: 'input[data-module="attack"]', requires: 'armed' },
+    { tab: 'cavebot', key: 'tutorial.caveMonsters.title', body: 'tutorial.caveMonsters.body', target: '[data-cavebot-monster]', requires: 'creatures' },
+    { tab: 'cavebot', key: 'tutorial.caveRoute.title', body: 'tutorial.caveRoute.body', target: '[data-cavebot-command="record"]', requires: 'armed' },
+    { tab: 'trainer', key: 'tutorial.trainerRune.title', body: 'tutorial.trainerRune.body', target: '#trainer-rune-select', requires: 'hotbar' },
+    { tab: 'trainer', key: 'tutorial.trainerFallback.title', body: 'tutorial.trainerFallback.body', target: '#trainer-fallback-select', requires: 'hotbar' },
+    { tab: 'trainer', key: 'tutorial.trainerCap.title', body: 'tutorial.trainerCap.body', target: '#trainer-cap-mode', requires: 'armed' },
+    { tab: null, key: 'tutorial.verify.title', body: 'tutorial.verify.body', target: '#live-state', requires: 'armed' },
   ];
+
+  /**
+   * Resolve the step against the data we truly have. A missing dependency is
+   * guidance, not an error and never a reason to dispatch a game action.
+   * @param {object} state
+   * @param {number} index
+   * @returns {object|null}
+   */
+  function tutorialStepFor(state, index) {
+    const step = TUTORIAL_STEPS[index];
+    if (!step) return null;
+    const resolved = Object.assign({}, step, { unavailable: false });
+    if (step.kind === 'connect') {
+      resolved.target = state.gate === GATE_CONFIRMED ? '#connect-btn'
+        : (state.gate === GATE_ARMED ? '#live-state' : '#link-first-btn');
+      return resolved;
+    }
+    if (state.gate !== GATE_ARMED) {
+      resolved.target = '#status-bar';
+      resolved.body = 'tutorial.connectRequired';
+      resolved.unavailable = true;
+      return resolved;
+    }
+    const slots = state.hotbar && Array.isArray(state.hotbar.slots) ? state.hotbar.slots : [];
+    const hotbarReady = state.hotbar && state.hotbar.available === true && slots.length > 0;
+    const items = liveInventoryItems(state);
+    const creatures = state.creatures && Array.isArray(state.creatures.items) ? state.creatures.items : [];
+    if (step.requires === 'catalog' && (!state.catalog || state.catalog.loaded !== true || !Array.isArray(state.catalog.spells) || state.catalog.spells.length === 0)) {
+      resolved.target = '.spell-picker';
+      resolved.body = 'picker.empty';
+      resolved.unavailable = true;
+    } else if (step.requires === 'hotbar' && !hotbarReady) {
+      resolved.target = step.tab === 'trainer' ? '#trainer-rune-select' : '#heal-save-btn';
+      resolved.body = 'tutorial.hotbarUnavailable';
+      resolved.unavailable = true;
+    } else if (step.requires === 'hotbar-inventory' && (!hotbarReady || items.length === 0)) {
+      resolved.target = !hotbarReady ? '#heal-save-btn' : '#heal-items-refresh';
+      resolved.body = !hotbarReady ? 'tutorial.hotbarUnavailable' : 'tutorial.inventoryUnavailable';
+      resolved.unavailable = true;
+    } else if (step.requires === 'creatures' && creatures.length === 0) {
+      resolved.target = '#cavebot-targeting';
+      resolved.body = 'tutorial.creaturesUnavailable';
+      resolved.unavailable = true;
+    }
+    return resolved;
+  }
 
   function emptyModules() {
     const out = {};
@@ -564,21 +710,26 @@
       // Slice 1b (REQ-27/28): profile cross-load + spell picker state.
       profiles: [],            // character names with saved configs (REQ-27)
       catalog: { spells: [], loaded: false, reason: null }, // filtered client catalog (REQ-28)
+      inventory: { containers: [], loaded: false, reason: null }, // live BP/container items for survival + food
+      hotbar: { slots: [], loaded: false, available: false, reason: null }, // live spell SID -> F-slot mapping
+      creatures: { items: [], loaded: false, reason: null }, // live MiniBia creatures for Cavebot target selection
+      // Explicit read-only live-data refresh. This is intentionally separate
+      // from persisted configuration: it only describes the last panel read.
+      gameDataRefresh: { loading: false, lastUpdatedAt: null, failed: [] },
       picker: { module: 'healMagic', query: '' }, // picker module + search (REQ-28)
       profileLoad: null,       // {ok, from, rejected[], reason, at} — last cross-load (REQ-27)
       // Slice 2 (PR3, REQ-29): HEAL settings form raw values — pure UI
       // strings that survive re-renders (walkTo precedent); SAVE_HEAL_SETTINGS
       // converts + commits them into config.modules.healMagic.
-      healForm: { threshold: '', slot: '', reserve: '' },
+      healForm: { mode: '', threshold: '', reserve: '', itemThreshold: '', itemCids: '', manaEnabled: '', manaItemThreshold: '', manaItemCids: '' },
       // Slice 3 (PR4, REQ-30/31/32): TRAINER settings form raw values — pure
       // UI strings (percent/ratio conversion at save, see SAVE_TRAINER_SETTINGS).
       // Slice B (REQ-42..46): runeSid (inline rune select, D-B2), the F-key
       // hotkey selects (D-B3) and the toggle switches (D-B4) extend the form.
       trainerForm: {
-        capMode: '', capFullThreshold: '', fallbackSlot: '', fallbackManaPct: '',
-        reserve: '', eatMagic: '', eatMagicSlot: '',
-        runeSid: '', runeKey: '', fallbackKey: '',
-        autoFallback: '', stopRuneMaking: '', stopBotting: '',
+        capMode: '', capFullThreshold: '', fallbackSid: '', fallbackManaPct: '', reserve: '',
+        runeSid: '', autoFallback: '', stopRuneMaking: '', stopBotting: '',
+        foodMagicEnabled: '', foodMagicSid: '', foodEveryRunes: '',
       },
       // Slice 5 (PR5, REQ-33/34): OTHERS settings form raw values — pure UI
       // strings (food slot, every-N-casts, loot default destination, anti-bot
@@ -590,6 +741,7 @@
       // spell sid comes from the picker) + the cavebot recorded-route result
       // (CAVEBOT_RECORDED -> Save writes config.routes, REQ-36).
       attackForm: { targeting: '', runeSlot: '' },
+      cavebotForm: { monsters: [], targeting: '' },
       cavebotRecorded: null, // {points: Array<{x,y}>, at} | null — last stopped recording
     };
   }
@@ -613,14 +765,66 @@
    * @returns {{threshold: string, slot: string, reserve: string}}
    */
   function healFormFromConfig(state) {
-    const hm = state.config && state.config.modules && state.config.modules.healMagic;
-    const maxHp = snapshotStats(state.snapshot).maxHealth;
-    const threshold = hm && Number.isFinite(Number(hm.threshold)) ? Number(hm.threshold) : null;
-    const pct = threshold === null ? ''
-      : (maxHp !== null && maxHp > 0 ? String(Math.round(threshold / maxHp * 100)) : String(threshold));
-    const slot = hm && hm.slot !== null && hm.slot !== undefined ? String(hm.slot) : '';
-    const reserve = hm && Number.isFinite(Number(hm.reserve)) ? String(hm.reserve) : '';
-    return { threshold: pct, slot, reserve };
+    const modules = state.config && state.config.modules || {};
+    const hm = modules.healMagic || {};
+    const hi = modules.healItems || {};
+    const mi = modules.manaItems || {};
+    const stats = snapshotStats(state.snapshot);
+    const toPct = (value, max) => {
+      if (!Number.isFinite(Number(value))) return '';
+      return max !== null && max > 0 ? String(Math.round(Number(value) / max * 100)) : String(value);
+    };
+    const magicOn = state.modules && state.modules.healMagic === true || hm.on === true;
+    const itemsOn = state.modules && state.modules.healItems === true || hi.on === true;
+    const mode = magicOn && itemsOn ? 'both' : itemsOn ? 'items' : 'magic';
+    return {
+      mode,
+      threshold: toPct(hm.threshold, stats.maxHealth),
+      reserve: toPct(hm.reserve, stats.maxMana),
+      itemThreshold: toPct(hi.threshold, stats.maxHealth),
+      itemCids: Array.isArray(hi.slotCids) ? hi.slotCids.map(Number).filter(Number.isFinite).join(',') : '',
+      manaEnabled: mi.on === true ? 'true' : 'false',
+      manaItemThreshold: toPct(mi.threshold, stats.maxMana),
+      manaItemCids: Array.isArray(mi.slotCids) ? mi.slotCids.map(Number).filter(Number.isFinite).join(',') : '',
+    };
+  }
+
+  function selectedItemCids(state, form, key) {
+    const derived = healFormFromConfig(state);
+    const source = form && form[key] !== '' && form[key] !== undefined ? form[key] : derived[key];
+    return String(source || '').split(',').map((v) => v.trim()).filter(Boolean).map(Number)
+      .filter((v, index, list) => Number.isInteger(v) && v >= 0 && list.indexOf(v) === index);
+  }
+
+  function selectedHealItemCids(state, form) { return selectedItemCids(state, form, 'itemCids'); }
+  function selectedManaItemCids(state, form) { return selectedItemCids(state, form, 'manaItemCids'); }
+
+  function hotbarSlotForSpell(state, sid) {
+    const wanted = Number(sid);
+    if (!Number.isInteger(wanted)) return null;
+    const slots = state.hotbar && Array.isArray(state.hotbar.slots) ? state.hotbar.slots : [];
+    const found = slots.filter((entry) => Number(entry && entry.sid) === wanted)[0] || null;
+    const slot = Number(found && found.slot);
+    return Number.isInteger(slot) && slot >= 1 && slot <= 12 ? slot : null;
+  }
+
+  function hasSpellSid(value) {
+    return value !== null && value !== undefined && value !== '' && Number.isInteger(Number(value));
+  }
+
+  function liveInventoryItems(state) {
+    const containers = state.inventory && Array.isArray(state.inventory.containers) ? state.inventory.containers : [];
+    const seen = new Set();
+    const out = [];
+    for (const container of containers) {
+      for (const item of (container && container.items) || []) {
+        const cid = Number(item && item.cid);
+        if (!Number.isInteger(cid) || seen.has(cid)) continue;
+        seen.add(cid);
+        out.push(item);
+      }
+    }
+    return out;
   }
 
   /**
@@ -638,48 +842,144 @@
     const cfg = state.config && state.config.modules || {};
     const runes = cfg.runes || {};
     const training = cfg.training || {};
-    const ew = training.eatWithMagic && typeof training.eatWithMagic === 'object'
-      ? training.eatWithMagic : {};
-    const hotkeys = training.hotkeys && typeof training.hotkeys === 'object'
-      ? training.hotkeys : {};
     const threshold = Number(runes.capFullThreshold);
     const pct = Number(runes.fallbackManaPct);
-    const sid = Number(training.sid);
+    const runeSid = Number(training.sid);
+    const fallbackSid = Number(runes.fallbackSid);
     return {
       capMode: runes.capMode === 'off' ? 'off' : 'strict',
-      capFullThreshold: String(Number.isFinite(threshold) ? Math.round(threshold * 100) : 100),
-      fallbackSlot: runes.fallbackSlot !== null && runes.fallbackSlot !== undefined
-        ? String(runes.fallbackSlot) : '',
+      capFullThreshold: String(Number.isFinite(threshold) && threshold > 0 ? Math.round(threshold * 100) : 100),
+      fallbackSid: hasSpellSid(runes.fallbackSid) ? String(fallbackSid) : '',
       fallbackManaPct: String(Number.isFinite(pct) ? Math.round(pct * 100) : 50),
-      reserve: Number.isFinite(Number(training.reserve)) ? String(training.reserve) : '',
-      eatMagic: ew.enabled === true ? 'true' : 'false',
-      eatMagicSlot: ew.slot !== null && ew.slot !== undefined ? String(ew.slot) : '',
-      // Slice B (D-B2/D-B3/D-B4): rune sid + hotkey F-keys + toggles.
-      runeSid: Number.isInteger(sid) ? String(sid) : '',
-      runeKey: hotkeys.runeKey || 'F4',
-      fallbackKey: hotkeys.fallbackKey || 'F5',
-      autoFallback: runes.fallbackSlot !== null && runes.fallbackSlot !== undefined ? 'true' : 'false',
+      reserve: Number.isFinite(Number(training.reserve)) ? String(training.reserve) : '0',
+      runeSid: hasSpellSid(training.sid) ? String(runeSid) : '',
+      autoFallback: hasSpellSid(runes.fallbackSid) ? 'true' : 'false',
       stopRuneMaking: training.stopRuneMaking === true ? 'true' : 'false',
       stopBotting: training.stopBotting === true ? 'true' : 'false',
+      foodMagicEnabled: training.eatWithMagic && training.eatWithMagic.enabled === true ? 'true' : 'false',
+      foodMagicSid: hasSpellSid(training.eatWithMagic && training.eatWithMagic.sid) ? String(Number(training.eatWithMagic.sid)) : '',
+      foodEveryRunes: String(Math.max(1, Math.floor(Number(training.eatWithMagic && training.eatWithMagic.everyRunes) || 1))),
     };
   }
 
   /** Slice B (REQ-46, D-B3): the F-key selectable hotkeys. */
   const FKEYS = ['F1', 'F2', 'F3', 'F4', 'F5', 'F6', 'F7', 'F8', 'F9', 'F10', 'F11', 'F12'];
 
+  function spellText(spell) {
+    return String([spell && spell.name, spell && spell.words, spell && spell.description]
+      .filter(Boolean).join(' ')).toLowerCase();
+  }
+
+  function isPlaceholderSpell(spell) {
+    return String(spell && spell.name || '').toLowerCase() === 'unknown' && !spell.words;
+  }
+
+  function isRuneCreationSpell(spell) {
+    const text = spellText(spell);
+    return /\brune\b/.test(text) || /\badori\b/.test(text) || /create[s]?\s+.*rune/.test(text);
+  }
+
+  function isHealingSpell(spell) {
+    const text = spellText(spell);
+    return !isRuneCreationSpell(spell)
+      && (/\bheal/.test(text) || /\bexura\b/.test(text) || /\bsio\b/.test(text) || /\bvita\b/.test(text));
+  }
+
+  function isAttackSpell(spell) {
+    const text = spellText(spell);
+    return !isRuneCreationSpell(spell) && !isHealingSpell(spell)
+      && (/\bdamage\b|\bstrike\b|\battack\b|\bforce\b|\bfire\b|\benergy\b|\bpoison\b|\bdeath\b|\bexplosion\b|\bwave\b|\bbeam\b|\bexori\b|\bexevo\b/.test(text));
+  }
+
+  /** MiniTibia exposes a live spell catalog, not a canonical spell type. Food
+   * creation therefore has to be positively identified from its own metadata;
+   * never treat a generic exevo/heal/attack spell as food just because it is
+   * selectable. `exevo pan` and the live Food entry are the supported shape. */
+  function isFoodCreationSpell(spell) {
+    const text = spellText(spell);
+    return /\bexevo\s+pan\b/.test(text)
+      || /\bfood\b/.test(text)
+      || /\b(create|creates|conjure|conjures)\b.*\b(food|bread|pan)\b/.test(text);
+  }
+
+  function spellMatchesPickerModule(spell, module) {
+    if (module === 'training') return isRuneCreationSpell(spell);
+    if (module === 'healMagic') return isHealingSpell(spell);
+    if (module === 'attack') return isAttackSpell(spell);
+    return true;
+  }
+
   /**
-   * Slice B (REQ-42, D-B2): catalog rows filtered to rune spells — /rune/i on
-   * the name OR the words (the catalog carries NO rune flag, documented
-   * limitation D-B2). Falls back to the FULL list when no rune matches so the
-   * select stays honest and usable. Pure.
+   * Slice B (REQ-42, D-B2): catalog rows filtered to rune-creation spells.
+   * The live client exposes name/words/description, not a canonical type flag,
+   * so the panel classifies by those extracted fields and keeps a full-list
+   * fallback only when the client catalog carries no obvious rune makers. Pure.
    * @param {object} state
    * @returns {{runes: Array, list: Array, fallback: boolean}}
    */
   function filterRuneCatalog(state) {
     const spells = (state.catalog && state.catalog.spells) || [];
-    const runes = spells.filter((s) => s && typeof s === 'object'
-      && (/rune/i.test(String(s.name || '')) || /rune/i.test(String(s.words || ''))));
+    const runes = spells.filter((s) => s && typeof s === 'object' && isRuneCreationSpell(s));
     return { runes, list: runes.length > 0 ? runes : spells, fallback: runes.length === 0 && spells.length > 0 };
+  }
+
+  /** Live spells suitable as a CAP fallback. Rune makers are excluded because
+   * the fallback must be an alternate action, not a second creation spell. */
+  function filterFallbackCatalog(state) {
+    const spells = (state.catalog && state.catalog.spells) || [];
+    return spells.filter((s) => s && typeof s === 'object'
+      && !isPlaceholderSpell(s) && !isRuneCreationSpell(s));
+  }
+
+  function filterFoodCatalog(state) {
+    const spells = (state.catalog && state.catalog.spells) || [];
+    return spells.filter((spell) => spell && typeof spell === 'object'
+      && !isPlaceholderSpell(spell) && isFoodCreationSpell(spell));
+  }
+
+  /** Reconcile persisted Trainer slots to the live F1–F12 catalog. A slot
+   * change is safe to update by SID; a missing mapping is NOT safe: disable
+   * Trainer before the old slot can invoke an unrelated spell. */
+  function reconcileTrainerHotbar(state, slots) {
+    const config = state.config;
+    // During Connect profile config commonly arrives before the independent
+    // hotbar request. Do not disarm on that temporary unknown; reconcile only
+    // after a real hotbar response has settled.
+    if (!state.hotbar || state.hotbar.loaded !== true || !config || !config.modules || !config.modules.training) {
+      return { state, changed: false, issue: null };
+    }
+    const live = Array.isArray(slots) ? slots : [];
+    const slotFor = (sid) => {
+      const found = live.find((entry) => Number(entry && entry.sid) === Number(sid));
+      const slot = Number(found && found.slot);
+      return Number.isInteger(slot) && slot >= 1 && slot <= 12 ? slot : null;
+    };
+    const next = JSON.parse(JSON.stringify(config));
+    const training = next.modules.training || {};
+    const runes = next.modules.runes || (next.modules.runes = {});
+    const mappings = [];
+    if (hasSpellSid(training.sid)) mappings.push({ key: 'rune', sid: Number(training.sid), object: training, property: 'slot' });
+    if (hasSpellSid(runes.fallbackSid)) mappings.push({ key: 'fallback', sid: Number(runes.fallbackSid), object: runes, property: 'fallbackSlot' });
+    const food = training.eatWithMagic;
+    if (food && food.enabled === true && hasSpellSid(food.sid)) mappings.push({ key: 'food', sid: Number(food.sid), object: food, property: 'slot' });
+    if (mappings.length === 0) return { state, changed: false, issue: null };
+    const missing = mappings.find((mapping) => slotFor(mapping.sid) === null);
+    if (missing) {
+      training.on = false;
+      const modules = Object.assign({}, state.modules, { training: false });
+      const issue = { key: missing.key, sid: missing.sid, kind: 'missing' };
+      return { state: Object.assign({}, state, { modules, config: next, trainerHotbarIssue: issue }), changed: true, issue };
+    }
+    let changed = false;
+    for (const mapping of mappings) {
+      const slot = slotFor(mapping.sid);
+      if (Number(mapping.object[mapping.property]) !== slot) {
+        mapping.object[mapping.property] = slot;
+        changed = true;
+      }
+    }
+    const issue = null;
+    return { state: Object.assign({}, state, { config: next, trainerHotbarIssue: issue }), changed, issue };
   }
 
   /**
@@ -716,6 +1016,80 @@
       + escapeHtml(max === null ? '—' : String(max)) + '</span></div>'
       + '<div class="bar-track"><div class="bar-fill" style="width:' + width + '%"></div></div>'
       + '</div>';
+  }
+
+  /** Cyber cockpit selected-spell card: image when the client catalog provides
+   *  one, deterministic glyph fallback otherwise, plus the real client data we
+   *  have already extracted. This keeps the forms readable without inventing
+   *  missing data. */
+  function spellFromCatalog(state, sid) {
+    const list = state && state.catalog && Array.isArray(state.catalog.spells) ? state.catalog.spells : [];
+    if (sid === '' || sid === null || sid === undefined) return null;
+    const n = Number(sid);
+    if (!Number.isInteger(n)) return null;
+    for (let i = 0; i < list.length; i += 1) {
+      if (Number(list[i] && list[i].sid) === n) return list[i];
+    }
+    return { sid: n, name: 'SID ' + n, words: '', mana: null, level: null };
+  }
+
+  function renderSpellCard(state, moduleId, title, sid) {
+    const spell = spellFromCatalog(state, sid);
+    const empty = !spell;
+    const name = empty ? 'No spell selected' : String(spell.name || ('SID ' + spell.sid));
+    const image = spell && [spell.imageDataURL, spell.image, spell.iconUrl, spell.imageUrl]
+      .find((v) => typeof v === 'string' && v);
+    const glyph = name.trim().slice(0, 2).toUpperCase() || '∅';
+    const thumb = image
+      ? '<span class="spell-card-icon"><img alt="" src="' + escapeHtml(image) + '"></span>'
+      : '<span class="spell-card-icon spell-card-fallback">' + escapeHtml(glyph) + '</span>';
+    const liveSlot = spell ? hotbarSlotForSpell(state, spell.sid) : null;
+    // The panel speaks in game concepts (cost, level and real F-key), never
+    // implementation ids. The game catalog remains the only source of truth.
+    const chips = spell ? [
+      'MP ' + (spell.mana === null || spell.mana === undefined ? '—' : String(spell.mana)),
+      'LV ' + (spell.level === null || spell.level === undefined ? '—' : String(spell.level)),
+      liveSlot === null ? 'F —' : 'F' + String(liveSlot),
+    ] : ['Pick from live catalog'];
+    if (spell && (spell.vocation || spell.vocationLabel)) chips.push(String(spell.vocation || spell.vocationLabel));
+    if (spell && (spell.cooldown || spell.cooldownMs)) chips.push('CD ' + String(spell.cooldown || spell.cooldownMs));
+    return '<div class="spell-card" data-selected-spell="' + escapeHtml(moduleId) + '">'
+      + '<div class="spell-card-title">' + escapeHtml(title) + '</div>'
+      + '<div class="spell-card-body">' + thumb
+      + '<div class="spell-card-main"><strong>' + escapeHtml(name) + '</strong>'
+      + (spell && spell.words ? '<code>' + escapeHtml(String(spell.words)) + '</code>' : '<code>—</code>')
+      + (spell && spell.description ? '<small class="spell-card-description">' + escapeHtml(String(spell.description)) + '</small>' : '')
+      + '<div class="spell-card-chips">' + chips.map((c) => '<span>' + escapeHtml(c) + '</span>').join('') + '</div>'
+      + '</div></div></div>';
+  }
+
+  /** Compact operational summary for Trainer. It only derives information
+   * from the connected snapshot, catalog and live F1–F12 mapping. */
+  function renderTrainerExecutionCard(state, stats, runeSpell, requiredMana, foodSid, foodEnabled) {
+    const snapshot = state.snapshot && typeof state.snapshot === 'object' ? state.snapshot : {};
+    const training = (snapshot.agent && snapshot.agent.training) || snapshot.training || null;
+    const es = state.lang === LANG_ES;
+    const say = (spanish, english) => es ? spanish : english;
+    const mana = stats.mana;
+    const configured = runeSpell && hotbarSlotForSpell(state, runeSpell.sid) !== null;
+    let status = renderTrainerRuntimeStatus(state, training, stats);
+    if (!status) {
+      if (!configured) status = say('Elegí una runa del catálogo vivo y colocala en F1–F12.', 'Choose a live rune spell and put it on F1–F12.');
+      else if (mana === null || requiredMana === null) status = say('Actualizá los datos del juego para leer maná y hotbar.', 'Refresh game data to read mana and hotbar.');
+      else if (mana < requiredMana) status = say('Esperando maná: ' + Math.floor(mana) + '/' + requiredMana + ' MP.', 'Waiting for mana: ' + Math.floor(mana) + '/' + requiredMana + ' MP.');
+      else status = say('Lista para lanzar la runa en el próximo ciclo del juego.', 'Ready to cast the rune on the next game cycle.');
+    }
+    const next = foodEnabled && foodSid
+      ? say('Después de las runas configuradas: crea y come comida nueva.', 'After the configured rune count: creates and consumes new food.')
+      : say('Siguiente acción: crear runa al llegar al maná requerido.', 'Next action: create the rune at required mana.');
+    return '<section class="trainer-execution-card" aria-live="polite">'
+      + '<div class="trainer-execution-head"><div><span>' + escapeHtml(say('Ejecución en vivo', 'Live execution')) + '</span><strong>' + escapeHtml(next) + '</strong></div>'
+      + '<button type="button" class="trainer-refresh-btn" data-refresh-game-data>' + escapeHtml(say('Actualizar datos', 'Refresh data')) + '</button></div>'
+      + '<div class="trainer-execution-metrics">'
+      + '<div><small>' + escapeHtml(say('Maná actual', 'Current mana')) + '</small><b>' + escapeHtml(mana === null ? '—' : String(Math.floor(mana))) + ' / ' + escapeHtml(stats.maxMana === null ? '—' : String(Math.floor(stats.maxMana))) + '</b></div>'
+      + '<div><small>' + escapeHtml(say('Requerido', 'Required')) + '</small><b>' + escapeHtml(requiredMana === null ? '—' : String(requiredMana)) + ' MP</b></div>'
+      + '<div><small>' + escapeHtml(say('Runa', 'Rune')) + '</small><b>' + escapeHtml(runeSpell ? String(runeSpell.name || '—') : '—') + '</b></div>'
+      + '</div><p class="trainer-execution-status">' + escapeHtml(status) + '</p></section>';
   }
 
   /**
@@ -797,6 +1171,15 @@
     });
   }
 
+  /** Save failures are configuration problems, never a runtime mana state.
+   * Keep the prefix translated and preserve the server detail for action. */
+  function configSaveFailureText(state, reason) {
+    const detail = String(reason || 'save rejected');
+    return state.lang === LANG_ES
+      ? 'No se pudo guardar la configuración: ' + detail
+      : 'Could not save configuration: ' + detail;
+  }
+
   /** Identity change detection: name differs from the confirmed one. */
   function identityChanged(state, identity) {
     return Boolean(state.identity && identity && state.identity.name !== identity.name);
@@ -819,120 +1202,118 @@
    */
   function commitTrainerSettings(state, form) {
     const at = Date.now();
-    const invalid = (reason) => ({ ok: false, refusal: { action: 'SAVE_TRAINER_SETTINGS', module: 'training', reason, at } });
+    const es = state.lang === LANG_ES;
+    const invalid = (en, esText) => ({ ok: false, refusal: {
+      action: 'SAVE_TRAINER_SETTINGS', module: 'training', reason: es ? esText : en, at,
+    } });
     const capMode = String(form.capMode || '').trim() || 'strict';
     const rawThreshold = String(form.capFullThreshold || '').trim();
-    const rawFallbackSlot = String(form.fallbackSlot || '').trim();
     const rawFallbackPct = String(form.fallbackManaPct || '').trim();
     const rawReserve = String(form.reserve || '').trim();
-    const eatMagic = String(form.eatMagic || '');
-    const rawEatSlot = String(form.eatMagicSlot || '').trim();
-    const runeSid = String(form.runeSid || '').trim();
-    // Empty toggles default OFF (a fresh form never blocks an untouched save).
+    const runeSidRaw = String(form.runeSid || '').trim();
+    const fallbackSidRaw = String(form.fallbackSid || '').trim();
+    const foodMagicEnabled = String(form.foodMagicEnabled || '') || 'false';
+    const foodMagicSidRaw = String(form.foodMagicSid || '').trim();
+    const rawFoodEveryRunes = String(form.foodEveryRunes || '').trim();
     const autoFallback = String(form.autoFallback || '') || 'false';
     const stopRuneMaking = String(form.stopRuneMaking || '') || 'false';
     const stopBotting = String(form.stopBotting || '') || 'false';
-    const runeKey = String(form.runeKey || '').trim() || 'F4';
-    const fallbackKey = String(form.fallbackKey || '').trim() || 'F5';
-    if (capMode !== 'strict' && capMode !== 'off') {
-      return invalid('invalid trainer settings — cap mode must be strict or off');
+    if (capMode !== 'strict' && capMode !== 'off') return invalid('Choose a CAP policy: Strict or Off.', 'Elegí una política de capacidad: Estricto o Apagado.');
+    const cap = snapshotCap(state.snapshot);
+    const capAvailable = Boolean(cap && cap.ratio !== null);
+    const threshold = rawThreshold === '' ? 100 : Number(rawThreshold);
+    const fallbackPct = rawFallbackPct === '' ? 50 : Number(rawFallbackPct);
+    const reserve = rawReserve === '' ? 0 : Number(rawReserve);
+    if (!Number.isFinite(threshold) || threshold < 0 || threshold > 100) {
+      return invalid('Fix “CAP full at %”: enter 0–100 (100 is the safe default).', 'Corregí “Tope lleno al %”: ingresá 0–100 (100 es el valor seguro).');
     }
-    const threshold = Number(rawThreshold);
-    const fallbackPct = Number(rawFallbackPct);
-    const reserve = Number(rawReserve);
-    if (rawThreshold === '' || rawFallbackPct === '' || rawReserve === ''
-      || !Number.isFinite(threshold) || threshold < 0 || threshold > 100
-      || !Number.isFinite(fallbackPct) || fallbackPct < 0 || fallbackPct > 100
-      || !Number.isFinite(reserve) || reserve < 0) {
-      return invalid('invalid trainer settings — cap % 0-100, fallback mana % 0-100, reserve >= 0');
+    if (!Number.isFinite(fallbackPct) || fallbackPct < 0 || fallbackPct > 100) {
+      return invalid('Fix “Fallback mana %”: enter 0–100.', 'Corregí “Maná para alternativa %”: ingresá 0–100.');
     }
-    const fallbackSlot = rawFallbackSlot === '' ? null : Number(rawFallbackSlot);
-    if (fallbackSlot !== null && (!Number.isInteger(fallbackSlot) || fallbackSlot < 1 || fallbackSlot > 12)) {
-      return invalid('invalid trainer settings — fallback slot must be 1-12 or empty');
+    if (!Number.isFinite(reserve) || reserve < 0) {
+      return invalid('Fix “Mana reserve”: enter 0 or more.', 'Corregí “Reserva de maná”: ingresá 0 o más.');
     }
-    const ewEnabled = eatMagic === 'true';
-    if (eatMagic !== 'true' && eatMagic !== 'false') {
-      return invalid('invalid trainer settings — eat with magic must be on or off');
+    const spells = (state.catalog && state.catalog.spells) || [];
+    const findSpell = (raw) => {
+      const sid = Number(raw);
+      return Number.isInteger(sid) ? spells.filter((spell) => Number(spell && spell.sid) === sid)[0] || null : null;
+    };
+    const runeSpell = findSpell(runeSidRaw);
+    if (!runeSpell || !isRuneCreationSpell(runeSpell)) {
+      return invalid('Choose a live rune-making spell in “Select Rune to Create”.', 'Elegí una magia real para fabricar runas en “Elegir runa a crear”.');
     }
-    const eatSlot = rawEatSlot === '' ? null : Number(rawEatSlot);
-    if (eatSlot !== null && (!Number.isInteger(eatSlot) || eatSlot < 1 || eatSlot > 12)) {
-      return invalid('invalid trainer settings — magic food slot must be 1-12 or empty');
+    const runeSlot = hotbarSlotForSpell(state, runeSpell.sid);
+    if (runeSlot === null) {
+      return invalid('Add the selected rune spell to F1–F12 in the game, refresh Live hotbar, then save.', 'Agregá la runa elegida a F1–F12 en el juego, refrescá el hotbar vivo y guardá.');
     }
-    if (ewEnabled && eatSlot === null) {
-      return invalid('invalid trainer settings — eat with magic needs a magic food slot');
-    }
-    // Slice B (REQ-42, D-B2): the inline rune select — a non-empty sid MUST
-    // resolve to a catalog spell (PICK_SPELL pattern, REQ-28).
-    if (runeSid !== '') {
-      const sid = Number(runeSid);
-      if (!Number.isInteger(sid)) {
-        return invalid('invalid trainer settings — rune spell id must be a number');
+    if (autoFallback !== 'true' && autoFallback !== 'false') return invalid('Set Automatic fallback to On or Off.', 'Definí Magia alternativa automática en activada o desactivada.');
+    let fallbackSpell = null;
+    let fallbackSlot = null;
+    if (autoFallback === 'true') {
+      fallbackSpell = findSpell(fallbackSidRaw);
+      if (!fallbackSpell || isRuneCreationSpell(fallbackSpell)) {
+        return invalid('Choose a live non-rune fallback spell, or turn Automatic fallback off.', 'Elegí una magia alternativa real que no sea runa, o apagá la alternativa automática.');
       }
-      const spells = (state.catalog && state.catalog.spells) || [];
-      if (spells.filter((s) => Number(s.sid) === sid).length === 0) {
-        const label = (state.identity && state.identity.vocationLabel) || 'current vocation';
-        return invalid('invalid trainer settings — rune spell not available for ' + label);
+      fallbackSlot = hotbarSlotForSpell(state, fallbackSpell.sid);
+      if (fallbackSlot === null) {
+        return invalid('Add the selected fallback spell to F1–F12 in the game, refresh Live hotbar, then save.', 'Agregá la magia alternativa a F1–F12 en el juego, refrescá el hotbar vivo y guardá.');
       }
     }
-    // Slice B (REQ-44, D-B4): toggle value validation.
-    if (autoFallback !== 'true' && autoFallback !== 'false') {
-      return invalid('invalid trainer settings — auto fallback magic must be on or off');
+    if (foodMagicEnabled !== 'true' && foodMagicEnabled !== 'false') return invalid('Set Food magic to On or Off.', 'Definí Magia de comida en activada o desactivada.');
+    let foodSpell = null;
+    let foodSlot = null;
+    let foodEveryRunes = 1;
+    if (foodMagicEnabled === 'true') {
+      foodSpell = findSpell(foodMagicSidRaw);
+      if (!foodSpell || !isFoodCreationSpell(foodSpell)) {
+        return invalid('Choose your food spell from the live catalog (for example, exevo pan).', 'Elegí tu magia de comida del catálogo vivo (por ejemplo, exevo pan).');
+      }
+      foodSlot = hotbarSlotForSpell(state, foodSpell.sid);
+      if (foodSlot === null) {
+        return invalid('Add the selected food spell to F1–F12 in the game, refresh Live hotbar, then save.', 'Agregá la magia de comida a F1–F12 en el juego, refrescá el hotbar vivo y guardá.');
+      }
+      foodEveryRunes = Number(rawFoodEveryRunes === '' ? '1' : rawFoodEveryRunes);
+      if (!Number.isInteger(foodEveryRunes) || foodEveryRunes < 1) {
+        return invalid('Fix “Cast food every N runes”: enter 1 or more.', 'Corregí “Lanzar comida cada N runas”: ingresá 1 o más.');
+      }
     }
-    if (autoFallback === 'true' && fallbackSlot === null) {
-      return invalid('invalid trainer settings — auto fallback magic needs a fallback slot');
-    }
-    if (stopRuneMaking !== 'true' && stopRuneMaking !== 'false') {
-      return invalid('invalid trainer settings — stop rune-making must be on or off');
-    }
-    if (stopBotting !== 'true' && stopBotting !== 'false') {
-      return invalid('invalid trainer settings — stop botting must be on or off');
-    }
-    // Slice B (REQ-46, D-B3): hotkeys must be selectable F-keys.
-    if (FKEYS.indexOf(runeKey) === -1 || FKEYS.indexOf(fallbackKey) === -1) {
-      return invalid('invalid trainer settings — hotkeys must be F1-F12');
-    }
+    if (stopRuneMaking !== 'true' && stopRuneMaking !== 'false') return invalid('Set Stop rune-making to On or Off.', 'Definí Detener fabricación de runas en activada o desactivada.');
+    if (stopBotting !== 'true' && stopBotting !== 'false') return invalid('Set Stop botting to On or Off.', 'Definí Detener el bot en activada o desactivada.');
     const config = JSON.parse(JSON.stringify(state.config || {}));
     if (!config.modules || typeof config.modules !== 'object') config.modules = {};
     if (!config.modules.runes || typeof config.modules.runes !== 'object') config.modules.runes = {};
     if (!config.modules.training || typeof config.modules.training !== 'object') config.modules.training = {};
     config.modules.runes.capMode = capMode;
-    config.modules.runes.capFullThreshold = threshold / 100;
+    // CAP is absent in some live MiniBia versions. Strict remains safely
+    // configured at 100%, while the agent explicitly ignores unknown CAP.
+    config.modules.runes.capFullThreshold = capAvailable ? threshold / 100 : 1;
+    config.modules.runes.fallbackSid = fallbackSpell ? Number(fallbackSpell.sid) : null;
     config.modules.runes.fallbackSlot = fallbackSlot;
     config.modules.runes.fallbackManaPct = fallbackPct / 100;
+    config.modules.training.sid = Number(runeSpell.sid);
+    config.modules.training.slot = runeSlot;
+    config.modules.training.word = typeof runeSpell.words === 'string' ? runeSpell.words : null;
     config.modules.training.reserve = reserve;
-    if (!config.modules.training.eatWithMagic || typeof config.modules.training.eatWithMagic !== 'object') {
-      config.modules.training.eatWithMagic = {};
-    }
-    config.modules.training.eatWithMagic.enabled = ewEnabled;
-    config.modules.training.eatWithMagic.slot = eatSlot;
-    // Slice B (REQ-42/46, D-B2/D-B3/B6): persist the rune sid (when chosen),
-    // the hotkey F-keys and the stop flags.
-    if (runeSid !== '') config.modules.training.sid = Number(runeSid);
-    if (!config.modules.training.hotkeys || typeof config.modules.training.hotkeys !== 'object') {
-      config.modules.training.hotkeys = {};
-    }
-    config.modules.training.hotkeys.runeKey = runeKey;
-    config.modules.training.hotkeys.fallbackKey = fallbackKey;
+    config.modules.training.eatWithMagic = {
+      enabled: foodMagicEnabled === 'true', slot: foodSlot,
+      sid: foodSpell ? Number(foodSpell.sid) : null, everyRunes: foodEveryRunes,
+    };
     config.modules.training.stopRuneMaking = stopRuneMaking === 'true';
     config.modules.training.stopBotting = stopBotting === 'true';
-    // Slice B (REQ-44, D-B4): either stop toggle turns the runes MODULE off
-    // only — healing and eating continue (decision 4). The module toggle
-    // state is what the push reads (buildPushConfig), so flip it here too.
     const modules = Object.assign({}, state.modules);
     if (stopRuneMaking === 'true' || stopBotting === 'true') {
-      modules.runes = false;
-      config.modules.runes.on = false;
+      modules.training = false;
+      config.modules.training.on = false;
     }
     return {
       ok: true,
       state: Object.assign({}, state, {
-        modules,
-        config,
+        modules, config,
         trainerForm: {
-          capMode, capFullThreshold: String(threshold), fallbackSlot: fallbackSlot === null ? '' : String(fallbackSlot),
-          fallbackManaPct: String(fallbackPct), reserve: String(reserve),
-          eatMagic, eatMagicSlot: eatSlot === null ? '' : String(eatSlot),
-          runeSid, runeKey, fallbackKey, autoFallback, stopRuneMaking, stopBotting,
+          capMode, capFullThreshold: String(capAvailable ? threshold : 100), fallbackSid: fallbackSpell ? String(fallbackSpell.sid) : '',
+          fallbackManaPct: String(fallbackPct), reserve: String(reserve), runeSid: String(runeSpell.sid),
+          autoFallback, stopRuneMaking, stopBotting,
+          foodMagicEnabled, foodMagicSid: foodSpell ? String(foodSpell.sid) : '', foodEveryRunes: String(foodEveryRunes),
         },
         refusal: null,
       }),
@@ -957,6 +1338,18 @@
           return { state: Object.assign({}, state, { gate: GATE_PROBING }), effects: [] };
         }
         return { state, effects: [] };
+
+      case 'ATTACH_FIRST':
+        return {
+          state: Object.assign({}, state, { gate: GATE_PROBING, refusal: null, lastError: null }),
+          effects: [{ type: 'attach-first' }],
+        };
+
+      case 'ATTACH_FIRST_FAILED':
+        return {
+          state: Object.assign({}, state, { gate: GATE_DISCONNECTED, lastError: action.message || 'attach failed' }),
+          effects: [],
+        };
 
       case 'PROBE_RESULT': {
         const identity = action.identity || null;
@@ -1082,10 +1475,19 @@
         // precedent); untouched fields fall back to the config-derived
         // percent view at render time (healFormFromConfig). The loaded
         // config therefore shows without overwriting typed input.
-        return {
-          state: Object.assign({}, state, { modules, config: config || null, refusal: null }),
-          effects: [],
-        };
+        // A profile is a new source of truth. Never retain an unsaved Trainer
+        // draft from the prior profile: on the next Save it could overwrite
+        // this profile with stale rune/food values.
+        const prefilled = Object.assign({}, state, {
+          modules, config: config || null, trainerForm: {
+            capMode: '', capFullThreshold: '', fallbackSid: '', fallbackManaPct: '', reserve: '', runeSid: '',
+            autoFallback: '', stopRuneMaking: '', stopBotting: '',
+            foodMagicEnabled: '', foodMagicSid: '', foodEveryRunes: '',
+          },
+          refusal: null,
+        });
+        const reconciled = reconcileTrainerHotbar(prefilled, prefilled.hotbar && prefilled.hotbar.slots);
+        return { state: reconciled.state, effects: reconciled.changed ? [{ type: 'push-config' }] : [] };
       }
 
       case 'SNAPSHOT':
@@ -1107,6 +1509,20 @@
 
       case 'ERROR':
         return { state: Object.assign({}, state, { lastError: action.message || String(action.error || 'error') }), effects: [] };
+
+      case 'CONFIG_SAVE_RESULT':
+        if (action.ok === true) {
+          return { state: Object.assign({}, state, { refusal: null, lastError: null }), effects: [] };
+        }
+        return {
+          state: Object.assign({}, state, {
+            lastError: null,
+            refusal: {
+              action: 'SAVE_CONFIGURATION', module: action.module || null,
+              reason: configSaveFailureText(state, action.reason), at: Date.now(),
+            },
+          }), effects: [],
+        };
 
       /* ------------------------- slice 1a (REQ-26) actions ------------------------- */
 
@@ -1141,9 +1557,9 @@
         return { state: Object.assign({}, state, { tutorial: { step: 0 } }), effects: [] };
 
       case 'TUTORIAL_NEXT': {
-        // Advance one step and walk the tour to the step's tab. Past the last
-        // step the tutorial ends with the 'tutorial-seen' effect (app.js
-        // persists localStorage so it never shows again).
+        // Advance one step and walk the tour to the step's real control tab.
+        // Past the last step the tutorial ends with the 'tutorial-seen'
+        // effect (app.js persists localStorage so it never shows again).
         if (state.tutorial === null) return { state, effects: [] };
         const nextStep = state.tutorial.step + 1;
         if (nextStep >= TUTORIAL_STEPS.length) {
@@ -1156,6 +1572,21 @@
         return {
           state: Object.assign({}, state, {
             tutorial: { step: nextStep },
+            tab: stepTab !== null ? stepTab : state.tab,
+          }),
+          effects: [],
+        };
+      }
+
+      case 'TUTORIAL_BACK': {
+        // Back is intentionally UI-only: it neither saves nor changes a bot
+        // module. The target tab follows the previous instructional step.
+        if (state.tutorial === null || state.tutorial.step <= 0) return { state, effects: [] };
+        const previousStep = state.tutorial.step - 1;
+        const stepTab = TUTORIAL_STEPS[previousStep].tab;
+        return {
+          state: Object.assign({}, state, {
+            tutorial: { step: previousStep },
             tab: stepTab !== null ? stepTab : state.tab,
           }),
           effects: [],
@@ -1220,11 +1651,9 @@
       }
 
       case 'PICK_SPELL': {
-        // REQ-28: pick a spell for a module. The list is ALREADY filtered to
-        // what the current vocation can cast — a sid outside it is rejected
-        // with a vocation reason; a spell whose cost exceeds CURRENT mana is
-        // rejected with a mana message. Success writes the sid into the
-        // config and pushes it (the server re-checks on save).
+        // Pick a spell for a module. The list is ALREADY filtered to what the
+        // current vocation can cast. Current mana never blocks selection or
+        // saving: the live agent waits until cost + reserve before firing.
         if (state.gate !== GATE_ARMED) return { state: refuse(state, action), effects: [] };
         const module = String(action.module || '');
         if (PICKER_MODULES.indexOf(module) === -1) return { state, effects: [] };
@@ -1242,28 +1671,17 @@
             effects: [],
           };
         }
-        const stats = snapshotStats(state.snapshot);
-        if (stats.mana !== null && Number.isFinite(Number(spell.mana)) && Number(spell.mana) > stats.mana) {
-          return {
-            state: Object.assign({}, state, {
-              refusal: {
-                action: 'PICK_SPELL',
-                module,
-                reason: 'not enough mana — costs ' + spell.mana + ', you have ' + Math.floor(stats.mana),
-                at,
-              },
-            }),
-            effects: [],
-          };
-        }
         const config = JSON.parse(JSON.stringify(state.config || {}));
         if (!config.modules || typeof config.modules !== 'object') config.modules = {};
         if (!config.modules[module] || typeof config.modules[module] !== 'object') {
           config.modules[module] = {};
         }
         config.modules[module].sid = sid;
+        const nextTrainerForm = module === 'training'
+          ? Object.assign({}, state.trainerForm || {}, { runeSid: String(sid) })
+          : state.trainerForm;
         return {
-          state: Object.assign({}, state, { config, refusal: null }),
+          state: Object.assign({}, state, { config, trainerForm: nextTrainerForm, refusal: null }),
           effects: [{ type: 'push-config' }],
         };
       }
@@ -1281,73 +1699,172 @@
       /* ------------------- slice 2 (PR3, REQ-29): HEAL form ------------------- */
 
       case 'UPDATE_HEAL_INPUT': {
-        // REQ-29: pure UI state — the HEAL form values survive re-renders
-        // (walkTo precedent). No gate: typing pre-Connect is harmless.
+        // Survival flow values survive all re-renders. Item selection is kept
+        // as a CID list internally; the UI only exposes live item cards.
         const key = String(action.key || '');
-        if (key !== 'threshold' && key !== 'slot' && key !== 'reserve') return { state, effects: [] };
-        const healForm = Object.assign({}, state.healForm || { threshold: '', slot: '', reserve: '' });
+        if (['mode', 'threshold', 'reserve', 'itemThreshold', 'itemCids', 'manaEnabled', 'manaItemThreshold', 'manaItemCids'].indexOf(key) === -1) {
+          return { state, effects: [] };
+        }
+        const healForm = Object.assign({}, state.healForm || {
+          mode: '', threshold: '', reserve: '', itemThreshold: '', itemCids: '', manaEnabled: '', manaItemThreshold: '', manaItemCids: '',
+        });
         healForm[key] = String(action.value === null || action.value === undefined ? '' : action.value);
         return { state: Object.assign({}, state, { healForm }), effects: [] };
       }
 
-      case 'SAVE_HEAL_SETTINGS': {
-        // REQ-29 (PR3): commit the HEAL form into config.modules.healMagic.
-        // The threshold is entered as a PERCENT of max health and converted
-        // to the ABSOLUTE hp the v1 agent compares (needs the snapshot
-        // maxHealth). Slot must be a hotbar slot 1-12; reserve a non-negative
-        // mana amount. Invalid values are refused with a visible reason —
-        // never silently dropped. The push-config effect carries the change
-        // to the agent (REQ-08 applyConfig).
-        if (state.gate !== GATE_ARMED) return { state: refuse(state, action), effects: [] };
-        const form = state.healForm || { threshold: '', slot: '', reserve: '' };
-        const at = Date.now();
-        const rawThreshold = String(form.threshold || '').trim();
-        const rawSlot = String(form.slot || '').trim();
-        const rawReserve = String(form.reserve || '').trim();
-        if (rawThreshold === '' || rawSlot === '' || rawReserve === '') {
-          return {
-            state: Object.assign({}, state, {
-              refusal: { action: 'SAVE_HEAL_SETTINGS', module: 'healMagic', reason: 'invalid heal settings — threshold, slot and reserve are required', at },
-            }),
-            effects: [],
-          };
-        }
-        const pct = Number(rawThreshold);
-        const slot = Number(rawSlot);
-        const reserve = Number(rawReserve);
-        if (!Number.isFinite(pct) || pct < 0 || pct > 100
-          || !Number.isInteger(slot) || slot < 1 || slot > 12
-          || !Number.isFinite(reserve) || reserve < 0) {
-          return {
-            state: Object.assign({}, state, {
-              refusal: { action: 'SAVE_HEAL_SETTINGS', module: 'healMagic', reason: 'invalid heal settings — threshold 0-100%, slot 1-12, reserve >= 0', at },
-            }),
-            effects: [],
-          };
-        }
-        const maxHp = snapshotStats(state.snapshot).maxHealth;
-        if (maxHp === null || !Number.isFinite(maxHp)) {
-          return {
-            state: Object.assign({}, state, {
-              refusal: { action: 'SAVE_HEAL_SETTINGS', module: 'healMagic', reason: 'unknown max health — cannot convert the % threshold; wait for a snapshot', at },
-            }),
-            effects: [],
-          };
-        }
-        const thresholdAbs = Math.max(0, Math.round(maxHp * pct / 100));
-        const config = JSON.parse(JSON.stringify(state.config || {}));
-        if (!config.modules || typeof config.modules !== 'object') config.modules = {};
-        if (!config.modules.healMagic || typeof config.modules.healMagic !== 'object') config.modules.healMagic = {};
-        config.modules.healMagic.threshold = thresholdAbs;
-        config.modules.healMagic.slot = slot;
-        config.modules.healMagic.reserve = reserve;
+      case 'TOGGLE_HEAL_ITEM': {
+        const cid = Number(action.cid);
+        if (!Number.isInteger(cid) || cid < 0) return { state, effects: [] };
+        const form = Object.assign({}, state.healForm || {});
+        const key = action.kind === 'mana' ? 'manaItemCids' : 'itemCids';
+        const selected = selectedItemCids(state, form, key);
+        const at = selected.indexOf(cid);
+        if (at === -1) selected.push(cid);
+        else selected.splice(at, 1);
+        form[key] = selected.join(',');
+        return { state: Object.assign({}, state, { healForm: form }), effects: [] };
+      }
+
+      case 'INVENTORY_LOADED':
         return {
           state: Object.assign({}, state, {
-            config,
-            healForm: { threshold: String(pct), slot: String(slot), reserve: String(reserve) },
-            refusal: null,
+            inventory: {
+              containers: Array.isArray(action.containers) ? action.containers : [],
+              loaded: action.ok !== false,
+              reason: action.reason || null,
+            },
           }),
-          effects: [{ type: 'push-config' }],
+          effects: [],
+        };
+
+      case 'HOTBAR_CATALOG':
+        {
+          const withHotbar = Object.assign({}, state, {
+            hotbar: {
+              slots: Array.isArray(action.slots) ? action.slots : [],
+              loaded: action.ok !== false,
+              available: action.available === true,
+              reason: action.reason || null,
+            },
+          });
+          const reconciled = reconcileTrainerHotbar(withHotbar, withHotbar.hotbar.slots);
+          return { state: reconciled.state, effects: reconciled.changed ? [{ type: 'push-config' }] : [] };
+        }
+
+      case 'CREATURE_CATALOG':
+        return {
+          state: Object.assign({}, state, {
+            creatures: { items: Array.isArray(action.creatures) ? action.creatures : [], loaded: action.ok !== false, reason: action.reason || null },
+          }), effects: [],
+        };
+
+      case 'REFRESH_GAME_DATA':
+        if (state.gate !== GATE_ARMED) return { state: refuse(state, action), effects: [] };
+        if (state.gameDataRefresh && state.gameDataRefresh.loading) return { state, effects: [] };
+        return {
+          state: Object.assign({}, state, {
+            gameDataRefresh: Object.assign({}, state.gameDataRefresh || {}, { loading: true, failed: [] }),
+            refusal: null,
+            lastError: null,
+          }),
+          effects: [{ type: 'refresh-game-data' }],
+        };
+
+      case 'GAME_DATA_REFRESH_FINISHED':
+        return {
+          state: Object.assign({}, state, {
+            gameDataRefresh: {
+              loading: false,
+              lastUpdatedAt: Number.isFinite(Number(action.at)) ? Number(action.at) : Date.now(),
+              failed: Array.isArray(action.failed) ? action.failed.slice() : [],
+            },
+          }),
+          effects: [],
+        };
+
+      case 'REFRESH_INVENTORY':
+        if (state.gate !== GATE_ARMED) return { state: refuse(state, action), effects: [] };
+        return { state, effects: [{ type: 'refresh-inventory' }] };
+
+      case 'SAVE_HEAL_SETTINGS': {
+        if (state.gate !== GATE_ARMED) return { state: refuse(state, action), effects: [] };
+        const form = state.healForm || {};
+        const derived = healFormFromConfig(state);
+        const val = (key) => (form[key] !== '' && form[key] !== undefined ? form[key] : derived[key]);
+        const mode = String(val('mode') || 'magic');
+        const magicOn = mode === 'magic' || mode === 'both';
+        const itemsOn = mode === 'items' || mode === 'both';
+        const manaItemsOn = String(val('manaEnabled')) === 'true';
+        const at = Date.now();
+        if (!magicOn && !itemsOn) {
+          return { state: Object.assign({}, state, { refusal: { action: 'SAVE_HEAL_SETTINGS', module: 'healMagic', reason: 'invalid survival settings — choose magic, items or both', at } }), effects: [] };
+        }
+        const stats = snapshotStats(state.snapshot);
+        const maxHp = stats.maxHealth;
+        const maxMana = stats.maxMana;
+        if ((magicOn || itemsOn) && (maxHp === null || !Number.isFinite(maxHp))) {
+          return { state: Object.assign({}, state, { refusal: { action: 'SAVE_HEAL_SETTINGS', module: 'healMagic', reason: 'unknown max health — wait for a snapshot', at } }), effects: [] };
+        }
+        if ((magicOn || manaItemsOn) && (maxMana === null || !Number.isFinite(maxMana))) {
+          return { state: Object.assign({}, state, { refusal: { action: 'SAVE_HEAL_SETTINGS', module: magicOn ? 'healMagic' : 'manaItems', reason: 'unknown max mana — wait for a snapshot', at } }), effects: [] };
+        }
+        const thresholdPct = Number(String(val('threshold') || '').trim());
+        const itemThresholdPct = Number(String(val('itemThreshold') || '').trim());
+        const manaPct = Number(String(val('reserve') || '').trim());
+        const manaItemThresholdPct = Number(String(val('manaItemThreshold') || '').trim());
+        const itemCids = selectedHealItemCids(state, form);
+        const manaItemCids = selectedManaItemCids(state, form);
+        const config = JSON.parse(JSON.stringify(state.config || {}));
+        if (!config.modules || typeof config.modules !== 'object') config.modules = {};
+        const hm = config.modules.healMagic || {};
+        const selectedSid = Number(hm.sid);
+        const magicSlot = hotbarSlotForSpell(state, selectedSid);
+        if (magicOn && (!Number.isFinite(thresholdPct) || thresholdPct < 0 || thresholdPct > 100
+          || !Number.isFinite(manaPct) || manaPct < 0 || manaPct > 100
+          || !Number.isInteger(selectedSid))) {
+          return { state: Object.assign({}, state, { refusal: { action: 'SAVE_HEAL_SETTINGS', module: 'healMagic', reason: 'invalid magic heal — choose a healing spell and set health/mana percentages from 0 to 100', at } }), effects: [] };
+        }
+        if (magicOn && magicSlot === null) {
+          return { state: Object.assign({}, state, { refusal: { action: 'SAVE_HEAL_SETTINGS', module: 'healMagic', reason: 'selected heal spell is not in the live hotbar — add it in the game first', at } }), effects: [] };
+        }
+        if (itemsOn && (!Number.isFinite(itemThresholdPct) || itemThresholdPct < 0 || itemThresholdPct > 100 || itemCids.length === 0)) {
+          return { state: Object.assign({}, state, { refusal: { action: 'SAVE_HEAL_SETTINGS', module: 'healItems', reason: 'invalid HP potion setup — select at least one backpack item and set health 0-100%', at } }), effects: [] };
+        }
+        if (manaItemsOn && (!Number.isFinite(manaItemThresholdPct) || manaItemThresholdPct < 0 || manaItemThresholdPct > 100 || manaItemCids.length === 0)) {
+          return { state: Object.assign({}, state, { refusal: { action: 'SAVE_HEAL_SETTINGS', module: 'manaItems', reason: 'invalid mana potion setup — select at least one backpack item and set mana 0-100%', at } }), effects: [] };
+        }
+        config.modules.healMagic = hm;
+        config.modules.healItems = config.modules.healItems || {};
+        config.modules.manaItems = config.modules.manaItems || {};
+        config.modules.healMagic.on = magicOn;
+        config.modules.healItems.on = itemsOn;
+        config.modules.manaItems.on = manaItemsOn;
+        if (magicOn) {
+          config.modules.healMagic.threshold = Math.max(0, Math.round(maxHp * thresholdPct / 100));
+          config.modules.healMagic.slot = magicSlot;
+          config.modules.healMagic.reserve = Math.max(0, Math.round(maxMana * manaPct / 100));
+        }
+        if (itemsOn) {
+          config.modules.healItems.threshold = Math.max(0, Math.round(maxHp * itemThresholdPct / 100));
+          config.modules.healItems.slotCids = itemCids;
+        }
+        if (manaItemsOn) {
+          config.modules.manaItems.threshold = Math.max(0, Math.round(maxMana * manaItemThresholdPct / 100));
+          config.modules.manaItems.slotCids = manaItemCids;
+        }
+        const modules = Object.assign({}, state.modules, { healMagic: magicOn, healItems: itemsOn, manaItems: manaItemsOn });
+        return {
+          state: Object.assign({}, state, {
+            modules, config,
+            healForm: {
+              mode, threshold: magicOn ? String(thresholdPct) : val('threshold'),
+              reserve: magicOn ? String(manaPct) : val('reserve'),
+              itemThreshold: itemsOn ? String(itemThresholdPct) : val('itemThreshold'),
+              itemCids: itemCids.join(','), manaEnabled: manaItemsOn ? 'true' : 'false',
+              manaItemThreshold: manaItemsOn ? String(manaItemThresholdPct) : val('manaItemThreshold'),
+              manaItemCids: manaItemCids.join(','),
+            }, refusal: null,
+          }), effects: [{ type: 'push-config' }],
         };
       }
 
@@ -1375,17 +1892,18 @@
         // is harmless. Slice B (REQ-42/44/46): the rune sid + hotkey F-keys
         // + the toggle switches are form values too.
         const key = String(action.key || '');
-        const TRAINER_KEYS = ['capMode', 'capFullThreshold', 'fallbackSlot', 'fallbackManaPct',
-          'reserve', 'eatMagic', 'eatMagicSlot',
-          'runeSid', 'runeKey', 'fallbackKey',
-          'autoFallback', 'stopRuneMaking', 'stopBotting'];
+        const TRAINER_KEYS = ['capMode', 'capFullThreshold', 'fallbackSid', 'fallbackManaPct',
+          'reserve', 'runeSid', 'autoFallback', 'stopRuneMaking', 'stopBotting',
+          'foodMagicEnabled', 'foodMagicSid', 'foodEveryRunes'];
         if (TRAINER_KEYS.indexOf(key) === -1) return { state, effects: [] };
         const trainerForm = Object.assign({}, state.trainerForm || {
-          capMode: '', capFullThreshold: '', fallbackSlot: '', fallbackManaPct: '',
-          reserve: '', eatMagic: '', eatMagicSlot: '',
+          capMode: '', capFullThreshold: '', fallbackSid: '', fallbackManaPct: '', reserve: '',
+          runeSid: '', autoFallback: '', stopRuneMaking: '', stopBotting: '',
+          foodMagicEnabled: '', foodMagicSid: '', foodEveryRunes: '',
         });
         trainerForm[key] = String(action.value === null || action.value === undefined ? '' : action.value);
-        return { state: Object.assign({}, state, { trainerForm }), effects: [] };
+        const refusal = state.refusal && state.refusal.action === 'SAVE_TRAINER_SETTINGS' ? null : state.refusal;
+        return { state: Object.assign({}, state, { trainerForm, refusal }), effects: [] };
       }
 
       case 'SAVE_TRAINER_SETTINGS': {
@@ -1638,11 +2156,16 @@
         }
         if (command === 'save') {
           const recorded = state.cavebotRecorded;
-          if (!recorded || !Array.isArray(recorded.points) || recorded.points.length === 0) {
-            return { state, effects: [] }; // nothing recorded yet — no-op
-          }
           const config = JSON.parse(JSON.stringify(state.config || {}));
-          config.routes = recorded.points;
+          if (!config.modules || typeof config.modules !== 'object') config.modules = {};
+          if (!config.modules.cavebot || typeof config.modules.cavebot !== 'object') config.modules.cavebot = {};
+          const form = state.cavebotForm || {};
+          const selected = Array.isArray(form.monsters) && form.monsters.length > 0
+            ? form.monsters : (Array.isArray(config.modules.cavebot.monsters) ? config.modules.cavebot.monsters : []);
+          config.modules.cavebot.monsters = selected.map((name) => String(name || '').trim()).filter(Boolean);
+          config.modules.cavebot.targeting = form.targeting === 'lowest-hp' ? 'lowest-hp'
+            : (form.targeting === 'nearest' ? 'nearest' : (config.modules.cavebot.targeting === 'lowest-hp' ? 'lowest-hp' : 'nearest'));
+          if (recorded && Array.isArray(recorded.points) && recorded.points.length > 0) config.routes = recorded.points;
           return { state: Object.assign({}, state, { config }), effects: [{ type: 'push-config' }] };
         }
         if (command === 'pause' || command === 'resume') {
@@ -1667,6 +2190,24 @@
           }),
           effects: [],
         };
+
+      case 'TOGGLE_CAVEBOT_MONSTER': {
+        const name = String(action.name || '').trim();
+        if (!name) return { state, effects: [] };
+        const form = Object.assign({}, state.cavebotForm || { monsters: [], targeting: '' });
+        const selected = Array.isArray(form.monsters) ? form.monsters.slice() : [];
+        const at = selected.findIndex((item) => item.toLowerCase() === name.toLowerCase());
+        if (at === -1) selected.push(name); else selected.splice(at, 1);
+        form.monsters = selected;
+        return { state: Object.assign({}, state, { cavebotForm: form }), effects: [] };
+      }
+
+      case 'UPDATE_CAVEBOT_INPUT': {
+        if (action.key !== 'targeting') return { state, effects: [] };
+        const form = Object.assign({}, state.cavebotForm || { monsters: [], targeting: '' });
+        form.targeting = action.value === 'lowest-hp' ? 'lowest-hp' : 'nearest';
+        return { state: Object.assign({}, state, { cavebotForm: form }), effects: [] };
+      }
 
       default:
         return { state, effects: [] };
@@ -1796,12 +2337,30 @@
       parts.push('<span class="player">' + escapeHtml(state.identity.name)
         + ' <em>(' + escapeHtml(state.identity.vocationLabel || '?') + ')</em></span>');
     }
+    if (state.gate === GATE_DISCONNECTED || state.gate === GATE_PROBING) {
+      parts.push('<button type="button" id="link-first-btn">' + escapeHtml(t(state, 'linkFirst')) + '</button>');
+    }
     if (state.gate === GATE_CONFIRMED) {
       parts.push('<button type="button" id="connect-btn">' + escapeHtml(t(state, 'connect')) + '</button>');
       parts.push('<button type="button" id="cancel-btn">' + escapeHtml(t(state, 'cancel')) + '</button>');
     }
     if (state.gate === GATE_ARMED) {
       parts.push('<button type="button" id="disconnect-btn">' + escapeHtml(t(state, 'disconnect')) + '</button>');
+      const gameDataRefresh = state.gameDataRefresh || {};
+      const isRefreshing = gameDataRefresh.loading === true;
+      parts.push('<button type="button" id="refresh-game-data-btn"'
+        + (isRefreshing ? ' disabled' : '') + '>'
+        + escapeHtml(t(state, isRefreshing ? 'gameData.refreshing' : 'gameData.refresh')) + '</button>');
+      if (isRefreshing) {
+        parts.push('<span class="game-data-refresh-status" role="status" aria-live="polite">'
+          + escapeHtml(t(state, 'gameData.refreshing')) + '</span>');
+      } else if (Array.isArray(gameDataRefresh.failed) && gameDataRefresh.failed.length > 0) {
+        parts.push('<span class="game-data-refresh-status is-error" role="status" aria-live="polite">'
+          + escapeHtml(t(state, 'gameData.partial')) + '</span>');
+      } else if (Number.isFinite(Number(gameDataRefresh.lastUpdatedAt))) {
+        parts.push('<span class="game-data-refresh-status" role="status" aria-live="polite">'
+          + escapeHtml(tVar(state, 'gameData.updated', { time: new Date(Number(gameDataRefresh.lastUpdatedAt)).toLocaleTimeString() })) + '</span>');
+      }
     }
     if (state.refusal) {
       parts.push('<span class="refusal">' + escapeHtml(tVar(state, 'refused', { reason: state.refusal.reason })) + '</span>');
@@ -1819,6 +2378,8 @@
     parts.push('<label class="sound-toggle"><input type="checkbox" id="sound-toggle"'
       + (state.soundEnabled !== false ? ' checked' : '') + '> '
       + escapeHtml(t(state, 'sound.enabled')) + '</label>');
+    parts.push('<button type="button" class="tutorial-restart-btn" data-tutorial-action="restart">'
+      + escapeHtml(t(state, 'tutorial.restart')) + '</button>');
     return '<div class="status-bar">' + parts.join(' ') + '</div>';
   }
 
@@ -1920,6 +2481,13 @@
     const p = state.picker || { module: 'healMagic', query: '' };
     const catalog = state.catalog || { spells: [], loaded: false };
     const parts = ['<div class="spell-picker">', '<h3>' + escapeHtml(t(state, 'picker.title')) + '</h3>'];
+    if (catalog.playerLevel !== null && catalog.playerLevel !== undefined || catalog.vocationLabel) {
+      parts.push('<div class="picker-context">'
+        + (catalog.vocationLabel ? '<span>' + escapeHtml(String(catalog.vocationLabel)) + '</span>' : '')
+        + (catalog.playerLevel !== null && catalog.playerLevel !== undefined ? '<span>LV ' + escapeHtml(String(catalog.playerLevel)) + '</span>' : '')
+        + '<span>' + escapeHtml(String((catalog.spells || []).length)) + ' spells</span>'
+        + '</div>');
+    }
     if (!catalog.loaded) {
       parts.push('<p class="picker-empty">' + escapeHtml(t(state, 'picker.empty')) + '</p>');
       parts.push('</div>');
@@ -1938,22 +2506,44 @@
     parts.push('<label class="picker-search">' + escapeHtml(t(state, 'picker.search'))
       + ' <input type="search" id="spell-search" value="' + escapeHtml(p.query || '') + '"></label>');
     const q = String(p.query || '').toLowerCase();
-    const spells = (catalog.spells || []).filter((s) => !q
-      || String(s.name || '').toLowerCase().indexOf(q) !== -1
-      || String(s.words || '').toLowerCase().indexOf(q) !== -1);
+    const spells = (catalog.spells || []).filter((s) => {
+      if (isPlaceholderSpell(s)) return false;
+      if (!spellMatchesPickerModule(s, p.module)) return false;
+      return !q
+        || String(s.name || '').toLowerCase().indexOf(q) !== -1
+        || String(s.words || '').toLowerCase().indexOf(q) !== -1
+        || String(s.description || '').toLowerCase().indexOf(q) !== -1;
+    });
     const currentSid = state.config && state.config.modules && state.config.modules[p.module]
       ? state.config.modules[p.module].sid
       : null;
     if (spells.length === 0) {
-      parts.push('<p class="picker-none">' + escapeHtml(t(state, 'picker.none')) + '</p>');
+      parts.push('<p class="picker-none">' + escapeHtml(q ? t(state, 'picker.none') : t(state, 'picker.categoryEmpty')) + '</p>');
     } else {
       parts.push('<ul class="picker-list">'
         + spells.slice(0, 60).map((s) => {
           const isCurrent = Number(currentSid) === Number(s.sid);
+          const image = [s.imageDataURL, s.image, s.iconUrl, s.imageUrl]
+            .find((v) => typeof v === 'string' && v);
+          const thumb = image
+            ? '<span class="picker-icon"><img alt="" src="' + escapeHtml(image) + '"></span>'
+            : '<span class="picker-icon picker-icon-fallback">' + escapeHtml(String(s.name || '?').trim().slice(0, 2).toUpperCase()) + '</span>';
+          const chips = [
+            'SID ' + (s.sid === null || s.sid === undefined ? '—' : String(s.sid)),
+            'MP ' + (s.mana === null || s.mana === undefined ? '—' : String(s.mana)),
+            'LV ' + (s.level === null || s.level === undefined ? '—' : String(s.level)),
+          ];
+          if (s.cid !== null && s.cid !== undefined) chips.push('CID ' + String(s.cid));
+          if (s.vocation || s.vocationLabel) chips.push(String(s.vocation || s.vocationLabel));
+          if (s.cooldown || s.cooldownMs) chips.push('CD ' + String(s.cooldown || s.cooldownMs));
           return '<li class="picker-row' + (isCurrent ? ' current' : '') + '">'
-            + '<span class="picker-name">' + escapeHtml(String(s.name || '')) + '</span>'
-            + '<span class="picker-meta">' + escapeHtml(tVar(state, 'picker.meta', { mana: s.mana, level: s.level })) + '</span>'
+            + thumb
+            + '<span class="picker-main"><span class="picker-name">' + escapeHtml(String(s.name || '')) + '</span>'
             + (s.words ? '<span class="picker-words">' + escapeHtml(s.words) + '</span>' : '')
+            + (s.description ? '<span class="picker-description">' + escapeHtml(String(s.description)) + '</span>' : '')
+            + '</span>'
+            + '<span class="picker-meta">' + chips.map((c) => '<b>' + escapeHtml(c) + '</b>').join('') + '</span>'
+            + '<span class="picker-legacy-meta">' + escapeHtml(tVar(state, 'picker.meta', { mana: s.mana, level: s.level })) + '</span>'
             + '<button type="button" class="picker-pick" data-pick-spell="' + Number(s.sid)
             + '" data-picker-module="' + p.module + '">' + escapeHtml(t(state, 'picker.pick')) + '</button>'
             + (isCurrent ? '<span class="picker-current">' + escapeHtml(t(state, 'picker.current')) + '</span>' : '')
@@ -1977,19 +2567,59 @@
    * @returns {string}
    */
   function renderHealForm(state) {
-    const form = state.healForm || { threshold: '', slot: '', reserve: '' };
+    const form = state.healForm || {};
     const derived = healFormFromConfig(state);
-    const val = (key) => (form[key] !== '' ? form[key] : derived[key]);
-    return '<div class="heal-form">'
+    const val = (key) => (form[key] !== '' && form[key] !== undefined ? form[key] : derived[key]);
+    const mode = val('mode') || 'magic';
+    const magicOn = mode === 'magic' || mode === 'both';
+    const itemsOn = mode === 'items' || mode === 'both';
+    const manaItemsOn = String(val('manaEnabled')) === 'true';
+    const hm = state.config && state.config.modules && state.config.modules.healMagic || {};
+    const hpSelected = selectedHealItemCids(state, form);
+    const manaSelected = selectedManaItemCids(state, form);
+    const items = liveInventoryItems(state);
+    const magicSlot = hotbarSlotForSpell(state, hm.sid);
+    const modeButton = (id) => '<button type="button" class="heal-mode' + (mode === id ? ' active' : '')
+      + '" data-heal-mode="' + id + '">' + escapeHtml(t(state, 'heal.mode.' + id)) + '</button>';
+    const cards = (kind, selected) => items.length === 0
+      ? '<p class="heal-items-empty">' + escapeHtml(t(state, 'heal.itemsEmpty')) + '</p>'
+      : '<div class="heal-item-grid">' + items.map((item) => {
+        const cid = Number(item.cid); const active = selected.indexOf(cid) !== -1;
+        const image = typeof item.imageDataURL === 'string' ? item.imageDataURL : '';
+        const icon = image ? '<img alt="" src="' + escapeHtml(image) + '">' : '<span>' + escapeHtml(String(cid)) + '</span>';
+        const name = String(item.name || ('Item #' + cid));
+        const count = Number.isFinite(Number(item.count)) && Number(item.count) > 1 ? ' ×' + Number(item.count) : '';
+        return '<button type="button" class="heal-item-card' + (active ? ' active' : '')
+          + '" data-heal-item-cid="' + cid + '" data-heal-item-kind="' + kind + '"><i>' + icon + '</i><span>'
+          + escapeHtml(name) + '<small>CID ' + cid + count + '</small></span></button>';
+      }).join('') + '</div>';
+    const hotbarNote = magicSlot === null
+      ? '<p class="heal-items-empty">' + escapeHtml(t(state, 'heal.hotbarMissing')) + '</p>'
+      : '<p class="trainer-note">' + escapeHtml(tVar(state, 'heal.hotbarMapped', { slot: magicSlot })) + '</p>';
+    return '<div class="heal-form survival-form">'
       + '<h3>' + escapeHtml(t(state, 'heal.formTitle')) + '</h3>'
-      + '<label class="heal-field">' + escapeHtml(t(state, 'heal.threshold'))
-      + ' <input type="number" id="heal-threshold" min="0" max="100" step="1" value="' + escapeHtml(val('threshold')) + '"></label>'
-      + '<label class="heal-field">' + escapeHtml(t(state, 'heal.slot'))
-      + ' <input type="number" id="heal-slot" min="1" max="12" step="1" value="' + escapeHtml(val('slot')) + '"></label>'
-      + '<label class="heal-field">' + escapeHtml(t(state, 'heal.reserve'))
-      + ' <input type="number" id="heal-reserve" min="0" step="1" value="' + escapeHtml(val('reserve')) + '"></label>'
-      + '<button type="button" id="heal-save-btn">' + escapeHtml(t(state, 'heal.save')) + '</button>'
-      + '</div>';
+      + '<div class="heal-mode-row"><span>' + escapeHtml(t(state, 'heal.mode')) + '</span>'
+      + modeButton('magic') + modeButton('items') + modeButton('both') + '</div>'
+      + '<div class="survival-grid">'
+      + (magicOn ? '<section class="survival-card"><h4>' + escapeHtml(t(state, 'heal.magicTitle')) + '</h4>'
+        + renderSpellCard(state, 'healMagic', t(state, 'picker.module.healMagic'), hm.sid) + hotbarNote
+        + '<label class="heal-field">' + escapeHtml(t(state, 'heal.threshold'))
+        + ' <input type="number" id="heal-threshold" min="0" max="100" step="1" value="' + escapeHtml(val('threshold')) + '"></label>'
+        + '<label class="heal-field">' + escapeHtml(t(state, 'heal.reserve'))
+        + ' <input type="number" id="heal-reserve" min="0" max="100" step="1" value="' + escapeHtml(val('reserve')) + '"></label></section>' : '')
+      + (itemsOn ? '<section class="survival-card"><h4>' + escapeHtml(t(state, 'heal.itemsTitle')) + '</h4>'
+        + '<label class="heal-field">' + escapeHtml(t(state, 'heal.itemThreshold'))
+        + ' <input type="number" id="heal-item-threshold" min="0" max="100" step="1" value="' + escapeHtml(val('itemThreshold')) + '"></label>'
+        + '<p class="trainer-note">' + escapeHtml(t(state, 'heal.inventoryHint')) + '</p>'
+        + '<div class="heal-items-head"><span>' + escapeHtml(tVar(state, 'heal.itemsSelected', { count: hpSelected.length })) + '</span>'
+        + '<button type="button" id="heal-items-refresh">' + escapeHtml(t(state, 'heal.itemsRefresh')) + '</button></div>' + cards('hp', hpSelected) + '</section>' : '')
+      + '<section class="survival-card"><h4>' + escapeHtml(t(state, 'heal.manaTitle')) + '</h4>'
+      + '<label class="toggle"><input type="checkbox" id="heal-mana-enabled"' + (manaItemsOn ? ' checked' : '') + '> ' + escapeHtml(t(state, 'heal.manaEnabled')) + '</label>'
+      + (manaItemsOn ? '<label class="heal-field">' + escapeHtml(t(state, 'heal.manaThreshold'))
+        + ' <input type="number" id="heal-mana-item-threshold" min="0" max="100" step="1" value="' + escapeHtml(val('manaItemThreshold')) + '"></label>'
+        + '<p class="trainer-note">' + escapeHtml(t(state, 'heal.inventoryHint')) + '</p>'
+        + '<div class="heal-items-head"><span>' + escapeHtml(tVar(state, 'heal.itemsSelected', { count: manaSelected.length })) + '</span></div>' + cards('mana', manaSelected) : '')
+      + '</section></div><button type="button" id="heal-save-btn">' + escapeHtml(t(state, 'heal.save')) + '</button></div>';
   }
 
   /**
@@ -2014,110 +2644,86 @@
     const form = state.trainerForm || {};
     const derived = trainerFormFromConfig(state);
     const val = (key) => (form[key] !== '' && form[key] !== undefined ? form[key] : derived[key]);
-    const capMode = val('capMode');
-    const eatChecked = val('eatMagic') === 'true' ? ' checked' : '';
+    const es = state.lang === LANG_ES;
+    const text = (spanish, english) => es ? spanish : english;
+    const stats = snapshotStats(state.snapshot);
+    const cap = snapshotCap(state.snapshot);
+    const capAvailable = Boolean(cap && cap.ratio !== null);
+    const rune = filterRuneCatalog(state);
+    const fallbackSpells = filterFallbackCatalog(state);
+    const foodSpells = filterFoodCatalog(state);
+    const currentSid = val('runeSid');
+    const fallbackSid = val('fallbackSid');
+    const foodSid = val('foodMagicSid');
+    const runeSpell = ((state.catalog && state.catalog.spells) || []).filter((spell) => String(Number(spell.sid)) === currentSid)[0] || null;
+    const cost = Number(runeSpell && runeSpell.mana);
+    const reserve = Math.max(0, Number(val('reserve')) || 0);
+    const requiredMana = Number.isFinite(cost) ? cost + reserve : null;
+    const options = (list, selected) => list.map((spell) => {
+      const sid = String(Number(spell.sid));
+      return '<option value="' + sid + '"' + (selected === sid ? ' selected' : '') + '>'
+        + escapeHtml(String(spell.name || '')) + (spell.words ? ' — ' + escapeHtml(String(spell.words)) : '') + '</option>';
+    }).join('');
+    const select = (id, list, selected, empty) => '<select id="' + id + '"><option value="">' + escapeHtml(empty) + '</option>'
+      + options(list, selected) + '</select>';
+    const mapping = (sid, kind) => {
+      const slot = hotbarSlotForSpell(state, sid);
+      if (slot !== null) return '<p class="trainer-note trainer-hotbar-ok">' + escapeHtml(text(kind + ' → F' + slot + ' detectada del juego.', kind + ' → live F' + slot + ' detected from the game.')) + '</p>';
+      if (sid) return '<p class="trainer-note trainer-hotbar-missing">' + escapeHtml(text(kind + ' no está en F1–F12. Reacomodala en el juego y usá Actualizar datos.', kind + ' is not on F1–F12. Move it in the game and use Refresh data.')) + '</p>';
+      return '<p class="trainer-note">' + escapeHtml(text('Elegí una magia del catálogo vivo.', 'Choose a spell from the live catalog.')) + '</p>';
+    };
     const autoFallback = val('autoFallback') === 'true';
+    const foodMagicEnabled = val('foodMagicEnabled') === 'true';
     const stopRuneMaking = val('stopRuneMaking') === 'true';
     const stopBotting = val('stopBotting') === 'true';
-    const soundOn = state.soundEnabled !== false;
-    const hotkeysAvailable = !(state.hotkeys && state.hotkeys.available === false);
-    const fkeySelect = (id, key) => '<select id="' + id + '"' + (hotkeysAvailable ? '' : ' disabled') + '>'
-      + FKEYS.map((k) => '<option value="' + k + '"' + (val(key) === k ? ' selected' : '') + '>' + k + '</option>').join('')
-      + '</select>';
-    const assignBtn = (id) => '<button type="button" id="' + id + '"' + (hotkeysAvailable ? '' : ' disabled') + '>'
-      + escapeHtml(t(state, 'trainer.assignBtn')) + '</button>';
-    // Bars (REQ-43, D-B5): mana from snapshotStats, CAP from the training
-    // module snapshot. Missing data degrades to '—' (never invented numbers).
-    const stats = snapshotStats(state.snapshot);
-    const manaPct = (stats.mana !== null && stats.maxMana !== null && stats.maxMana > 0)
-      ? Math.round(stats.mana / stats.maxMana * 100) : null;
-    const manaBar = renderBar(state, 'mana-bar', 'mana', 'trainer.manaBar', stats.mana, stats.maxMana, manaPct);
-    const cap = snapshotCap(state.snapshot);
-    const capPct = cap && cap.ratio !== null ? Math.round(Math.max(0, Math.min(1, cap.ratio)) * 100) : null;
-    const capBar = renderBar(state, 'cap-bar', 'cap', 'trainer.capBar',
-      cap ? cap.capacity : null, cap ? cap.maxCapacity : null, capPct);
-    // Inline rune select (REQ-42, D-B2): rune spells only, full-list fallback.
-    const rune = filterRuneCatalog(state);
-    const currentSid = val('runeSid');
-    const runeOpts = rune.list.map((s) => {
-      const sid = String(Number(s.sid));
-      return '<option value="' + sid + '"' + (currentSid === sid ? ' selected' : '') + '>'
-        + escapeHtml(String(s.name || '')) + (s.words ? ' — ' + escapeHtml(String(s.words)) : '') + '</option>';
-    }).join('');
-    const runeSelect = '<select id="trainer-rune-select">'
-      + (rune.list.length === 0 ? '<option value="">' + escapeHtml(t(state, 'picker.none')) + '</option>' : runeOpts)
-      + '</select>';
-    const runeFallbackNote = rune.fallback
-      ? '<p class="trainer-note">' + escapeHtml(t(state, 'trainer.runeSelectFallback')) + '</p>' : '';
-    const hotkeyNote = hotkeysAvailable ? '' : '<p class="trainer-hotkey-note">'
-      + escapeHtml(t(state, 'trainer.hotkeyUnavailable')) + '</p>';
-    const stopNote = stopBotting
-      ? '<div class="module-alert alert-stop-botting">' + escapeHtml(t(state, 'trainer.stopBottingActive')) + '</div>' : '';
-    return '<div class="trainer-form">'
-      + '<h3>' + escapeHtml(t(state, 'trainer.formTitle')) + '</h3>'
-      + stopNote
-      + '<div class="trainer-grid">'
-      // Left column — RUNE-MAKING.
-      + '<div class="trainer-col">'
-      + '<h4>' + escapeHtml(t(state, 'trainer.runeMakingTitle')) + '</h4>'
-      + manaBar
-      + '<label class="trainer-field">' + escapeHtml(t(state, 'trainer.runeSelect'))
-      + ' ' + runeSelect + '</label>'
-      + runeFallbackNote
+    const stopNote = stopBotting ? '<div class="module-alert alert-stop-botting">' + escapeHtml(t(state, 'trainer.stopBottingActive')) + '</div>' : '';
+    const costNote = requiredMana === null
+      ? text('El coste sale de la magia elegida cuando el catálogo vivo esté disponible.', 'Cost comes from the selected spell once the live catalog is available.')
+      : text('Coste automático: ' + cost + ' MP + reserva ' + reserve + ' = lanzará desde ' + requiredMana + ' MP. No escribas el total.', 'Automatic cost: ' + cost + ' MP + reserve ' + reserve + ' = it will cast at ' + requiredMana + ' MP. Do not enter the total.');
+    const capSection = capAvailable
+      ? '<details class="trainer-optional"><summary>' + escapeHtml(text('Capacidad y alertas (opcional)', 'Capacity & alerts (optional)')) + '</summary>'
+        + '<div class="trainer-optional-body">'
+        + '<label class="trainer-field">' + escapeHtml(t(state, 'trainer.whenCapFull')) + ' <select id="trainer-cap-mode">'
+        + '<option value="strict"' + (val('capMode') === 'strict' ? ' selected' : '') + '>' + escapeHtml(t(state, 'trainer.capModeStrict')) + '</option>'
+        + '<option value="off"' + (val('capMode') === 'off' ? ' selected' : '') + '>' + escapeHtml(t(state, 'trainer.capModeOff')) + '</option></select></label>'
+        + '<label class="trainer-field">' + escapeHtml(t(state, 'trainer.capFullThreshold'))
+        + ' <input type="number" id="trainer-cap-threshold" min="0" max="100" step="1" value="' + escapeHtml(val('capFullThreshold')) + '"></label></div></details>'
+      : '<details class="trainer-optional trainer-optional-unavailable"><summary>' + escapeHtml(text('Capacidad: no disponible', 'Capacity: unavailable')) + '</summary><div class="trainer-optional-body"><p class="trainer-note">' + escapeHtml(text('Esta PWA no expone CAP. No se inventa ni bloquea el entrenamiento. Actualizá datos si el cliente llega a exponerla.', 'This PWA does not expose CAP. It is not guessed and does not block Trainer. Refresh data if the client starts exposing it.')) + '</p></div></details>';
+    return '<div class="trainer-form"><h3>' + escapeHtml(t(state, 'trainer.formTitle')) + '</h3>' + stopNote
+      + renderTrainerExecutionCard(state, stats, runeSpell, requiredMana, foodSid, foodMagicEnabled)
+      + '<div class="trainer-grid"><div class="trainer-col trainer-primary"><h4>' + escapeHtml(t(state, 'trainer.runeMakingTitle')) + '</h4>'
+      + renderSpellCard(state, 'training', t(state, 'picker.module.training'), currentSid)
+      + '<label class="trainer-field">' + escapeHtml(t(state, 'trainer.runeSelect')) + ' '
+      + select('trainer-rune-select', rune.list, currentSid, text('Elegí una runa', 'Select rune')) + '</label>' + mapping(currentSid, text('La runa', 'Rune'))
+      + (rune.fallback ? '<p class="trainer-note">' + escapeHtml(t(state, 'trainer.runeSelectFallback')) + '</p>' : '')
       + '<label class="trainer-field">' + escapeHtml(t(state, 'trainer.castLogic'))
       + ' <input type="number" id="trainer-reserve" min="0" step="1" value="' + escapeHtml(val('reserve')) + '"></label>'
-      + '<div class="trainer-hotkey-row">'
-      + '<span class="trainer-field-label">' + escapeHtml(t(state, 'trainer.runeHotkey')) + '</span>'
-      + fkeySelect('trainer-rune-key', 'runeKey') + assignBtn('trainer-rune-assign')
-      + '</div>'
-      + '<h4 class="trainer-sub">' + escapeHtml(t(state, 'trainer.fallbackMagic')) + '</h4>'
-      + '<label class="trainer-field">' + escapeHtml(t(state, 'trainer.fallbackSlot'))
-      + ' <input type="number" id="trainer-fallback-slot" min="1" max="12" step="1" value="' + escapeHtml(val('fallbackSlot')) + '"></label>'
-      + '<label class="trainer-field">' + escapeHtml(t(state, 'trainer.fallbackManaPct'))
-      + ' <input type="number" id="trainer-fallback-pct" min="0" max="100" step="1" value="' + escapeHtml(val('fallbackManaPct')) + '"></label>'
-      + '<div class="trainer-hotkey-row">'
-      + '<span class="trainer-field-label">' + escapeHtml(t(state, 'trainer.fallbackHotkey')) + '</span>'
-      + fkeySelect('trainer-fallback-key', 'fallbackKey') + assignBtn('trainer-fallback-assign')
-      + '</div>'
-      + '<label class="trainer-field trainer-check">'
-      + '<input type="checkbox" id="trainer-eat-magic"' + eatChecked + '> '
-      + escapeHtml(t(state, 'trainer.eatWithMagic')) + '</label>'
-      + '<label class="trainer-field">' + escapeHtml(t(state, 'trainer.eatMagicSlot'))
-      + ' <input type="number" id="trainer-eat-magic-slot" min="1" max="12" step="1" value="' + escapeHtml(val('eatMagicSlot')) + '"></label>'
-      + hotkeyNote
-      + '</div>'
-      // Right column — CAPACITY & ALERTS.
-      + '<div class="trainer-col">'
-      + '<h4>' + escapeHtml(t(state, 'trainer.capacityTitle')) + '</h4>'
-      + capBar
-      + '<label class="trainer-field">' + escapeHtml(t(state, 'trainer.whenCapFull'))
-      + ' <select id="trainer-cap-mode">'
-      + '<option value="strict"' + (capMode === 'strict' ? ' selected' : '') + '>'
-      + escapeHtml(t(state, 'trainer.capModeStrict')) + '</option>'
-      + '<option value="off"' + (capMode === 'off' ? ' selected' : '') + '>'
-      + escapeHtml(t(state, 'trainer.capModeOff')) + '</option>'
-      + '</select></label>'
-      + '<label class="trainer-field">' + escapeHtml(t(state, 'trainer.capFullThreshold'))
-      + ' <input type="number" id="trainer-cap-threshold" min="0" max="100" step="1" value="' + escapeHtml(val('capFullThreshold')) + '"></label>'
-      + '<div class="trainer-toggles">'
-      + '<label class="trainer-field trainer-check">'
-      + '<input type="checkbox" id="trainer-sound-alert"' + (soundOn ? ' checked' : '') + '> '
-      + escapeHtml(t(state, 'trainer.soundAlert')) + '</label>'
-      + '<label class="trainer-field trainer-check">'
-      + '<input type="checkbox" id="trainer-auto-fallback"' + (autoFallback ? ' checked' : '') + '> '
+      + '<p class="trainer-note trainer-cost-note">' + escapeHtml(costNote) + '</p>'
+      + '<details class="trainer-optional"' + (autoFallback ? ' open' : '') + '><summary>' + escapeHtml(text('Magia alternativa (opcional)', 'Fallback magic (optional)')) + '</summary><div class="trainer-optional-body">'
+      + '<label class="toggle"><input type="checkbox" id="trainer-auto-fallback"' + (autoFallback ? ' checked' : '') + '> '
       + escapeHtml(t(state, 'trainer.autoFallbackMagic')) + '</label>'
-      + '<label class="trainer-field trainer-check">'
-      + '<input type="checkbox" id="trainer-stop-runes"' + (stopRuneMaking ? ' checked' : '') + '> '
-      + escapeHtml(t(state, 'trainer.stopRuneMaking')) + '</label>'
-      + '<label class="trainer-field trainer-check">'
-      + '<input type="checkbox" id="trainer-stop-botting"' + (stopBotting ? ' checked' : '') + '> '
-      + escapeHtml(t(state, 'trainer.stopBotting')) + '</label>'
-      + '</div>'
-      + '<button type="button" id="trainer-save-btn" class="trainer-save">'
-      + escapeHtml(t(state, 'trainer.save')) + '</button>'
-      + '</div>'
-      + '</div>'
-      + '</div>';
+      + (autoFallback ? renderSpellCard(state, 'trainer-fallback', t(state, 'trainer.fallbackMagic'), fallbackSid)
+        + '<label class="trainer-field">' + escapeHtml(text('Elegir magia alternativa', 'Select fallback spell')) + ' '
+        + select('trainer-fallback-select', fallbackSpells, fallbackSid, text('Sin alternativa', 'No fallback')) + '</label>' + mapping(fallbackSid, text('La alternativa', 'Fallback'))
+        + '<label class="trainer-field">' + escapeHtml(t(state, 'trainer.fallbackManaPct'))
+        + ' <input type="number" id="trainer-fallback-pct" min="0" max="100" step="1" value="' + escapeHtml(val('fallbackManaPct')) + '"></label>' : '')
+      + '</div></details>'
+      + '<details class="trainer-optional"' + (foodMagicEnabled ? ' open' : '') + '><summary>' + escapeHtml(text('Comida creada por magia (opcional)', 'Food created by magic (optional)')) + '</summary><div class="trainer-optional-body">'
+      + '<label class="toggle"><input type="checkbox" id="trainer-food-magic-enabled"' + (foodMagicEnabled ? ' checked' : '') + '> '
+      + escapeHtml(text('Usar magia de comida al fabricar runas', 'Use food magic while making runes')) + '</label>'
+      + (foodMagicEnabled ? renderSpellCard(state, 'trainer-food-magic', text('Magia de comida', 'Food magic'), foodSid)
+        + '<label class="trainer-field">' + escapeHtml(text('Elegir magia de comida (ej. exevo pan)', 'Choose food spell (e.g. exevo pan)')) + ' '
+        + select('trainer-food-magic-select', foodSpells, foodSid, text('Elegí una magia', 'Select spell')) + '</label>' + mapping(foodSid, text('La magia de comida', 'Food spell'))
+        + '<label class="trainer-field">' + escapeHtml(text('Lanzar comida cada N runas creadas', 'Cast food every N created runes'))
+        + ' <input type="number" id="trainer-food-every-runes" min="1" step="1" value="' + escapeHtml(val('foodEveryRunes')) + '"></label>'
+        + '<p class="trainer-note">' + escapeHtml(text('Sólo usa la comida nueva que aparece en los primeros 20 slots.', 'Only uses the new food that appears in the first 20 slots.')) + '</p>' : '')
+      + '</div></details>'
+      + '</div><div class="trainer-col trainer-secondary">'
+      + capSection
+      + '<details class="trainer-optional"><summary>' + escapeHtml(text('Alertas y detención (opcional)', 'Alerts & stops (optional)')) + '</summary><div class="trainer-optional-body"><div class="trainer-toggles"><label class="trainer-field trainer-check"><input type="checkbox" id="trainer-sound-alert"' + (state.soundEnabled !== false ? ' checked' : '') + '> ' + escapeHtml(t(state, 'trainer.soundAlert')) + '</label>'
+      + '<label class="trainer-field trainer-check"><input type="checkbox" id="trainer-stop-runes"' + (stopRuneMaking ? ' checked' : '') + '> ' + escapeHtml(t(state, 'trainer.stopRuneMaking')) + '</label>'
+      + '<label class="trainer-field trainer-check"><input type="checkbox" id="trainer-stop-botting"' + (stopBotting ? ' checked' : '') + '> ' + escapeHtml(t(state, 'trainer.stopBotting')) + '</label></div></div></details>'
+      + '<button type="button" id="trainer-save-btn" class="trainer-save">' + escapeHtml(t(state, 'trainer.save')) + '</button></div></div></div>';
   }
 
   /**
@@ -2165,9 +2771,11 @@
     const derived = attackFormFromConfig(state);
     const val = (key) => (form[key] !== '' && form[key] !== undefined ? form[key] : derived[key]);
     const targeting = val('targeting');
+    const attack = state.config && state.config.modules && state.config.modules.attack || {};
     return '<div class="attack-form">'
       + '<h3>' + escapeHtml(t(state, 'attack.formTitle')) + '</h3>'
       + '<p class="skeleton-note">' + escapeHtml(t(state, 'attack.skeletonNote')) + '</p>'
+      + renderSpellCard(state, 'attack', t(state, 'picker.module.attack'), attack.sid)
       + '<label class="attack-field">' + escapeHtml(t(state, 'attack.targeting'))
       + ' <select id="attack-targeting">'
       + '<option value="lowest-hp"' + (targeting === 'lowest-hp' ? ' selected' : '') + '>'
@@ -2192,8 +2800,30 @@
    */
   function renderCavebotForm(state) {
     const live = snapshotCavebot(state.snapshot);
+    const saved = state.config && state.config.modules && state.config.modules.cavebot || {};
+    const form = state.cavebotForm || { monsters: [], targeting: '' };
+    const selected = Array.isArray(form.monsters) && form.monsters.length > 0
+      ? form.monsters : (Array.isArray(saved.monsters) ? saved.monsters : []);
+    const targeting = form.targeting || saved.targeting || 'nearest';
+    const creatures = state.creatures && Array.isArray(state.creatures.items) ? state.creatures.items : [];
     const parts = ['<div class="cavebot-form">', '<h3>' + escapeHtml(t(state, 'cavebot.formTitle')) + '</h3>'];
-    parts.push('<p class="skeleton-note">' + escapeHtml(t(state, 'cavebot.skeletonNote')) + '</p>');
+    parts.push('<p class="cavebot-future">Elige los monstruos visibles, guarda, y Cavebot pausa la ruta para atacarlos.</p>');
+    parts.push('<label class="attack-field">Prioridad de objetivo <select id="cavebot-targeting">'
+      + '<option value="nearest"' + (targeting === 'nearest' ? ' selected' : '') + '>Más cercano</option>'
+      + '<option value="lowest-hp"' + (targeting === 'lowest-hp' ? ' selected' : '') + '>Menor vida</option>'
+      + '</select></label>');
+    parts.push('<div class="cavebot-monsters"><strong>Monstruos visibles</strong>');
+    if (creatures.length === 0) parts.push('<p class="cavebot-status">No hay monstruos visibles; abrí el juego y refrescá la pestaña.</p>');
+    else {
+      for (const creature of creatures) {
+        const name = String(creature && creature.name || '').trim();
+        if (!name) continue;
+        const on = selected.some((item) => item.toLowerCase() === name.toLowerCase());
+        parts.push('<button type="button" class="cavebot-btn' + (on ? ' primary' : '') + '" data-cavebot-monster="' + escapeHtml(name) + '">' + escapeHtml(name)
+          + (Number.isFinite(Number(creature.healthPct)) ? ' · ' + Math.round(Number(creature.healthPct)) + '%' : '') + '</button>');
+      }
+    }
+    parts.push('</div>');
     if (live) {
       if (live.recording && live.recording.active === true) {
         parts.push('<p class="cavebot-status recording">'
@@ -2216,7 +2846,7 @@
       + '<button type="button" class="cavebot-btn" data-cavebot-command="resume">' + escapeHtml(t(state, 'cavebot.resume')) + '</button>'
       + '<button type="button" class="cavebot-btn primary" data-cavebot-command="start">' + escapeHtml(t(state, 'cavebot.start')) + '</button>'
       + '</div>');
-    parts.push('<p class="cavebot-future">' + escapeHtml(t(state, 'cavebot.editingFuture')) + '</p>');
+    parts.push('<p class="cavebot-future">Guardá para aplicar monstruos, prioridad y la última ruta grabada.</p>');
     parts.push('</div>');
     return parts.join('');
   }
@@ -2228,22 +2858,34 @@
    *  (values survive re-renders via state.walkTo). */
   function renderConfigForm(state) {
     const head = '<h2>' + escapeHtml(t(state, 'configuration')) + '</h2>';
+    const activeTab = state.tab || 'heal';
+    const deck = (id, html) => '<section class="config-tab config-tab-' + id + (activeTab === id ? ' active' : '')
+      + '" data-config-tab="' + id + '">' + html + '</section>';
     let body;
     if (state.gate === GATE_ARMED) {
       const wt = state.walkTo || { x: '', y: '' };
-      body = renderHealForm(state) + renderTrainerForm(state) + renderOthersForm(state)
-        + renderAttackForm(state) + renderCavebotForm(state)
-        + renderProfileLoader(state)
-        + renderSpellPicker(state)
-        + '<div class="routes-form">'
+      const routeTools = '<div class="routes-form">'
         + '<h3>' + escapeHtml(t(state, 'routes.title')) + '</h3>'
         + '<label class="route-coord">X <input type="number" id="route-x" value="' + escapeHtml(wt.x) + '" step="any"></label>'
         + '<label class="route-coord">Y <input type="number" id="route-y" value="' + escapeHtml(wt.y) + '" step="any"></label>'
         + '<button type="button" id="route-walk-btn">' + escapeHtml(t(state, 'routes.walkTo')) + '</button>'
         + '<p class="routes-future">' + escapeHtml(t(state, 'routes.recordingFuture')) + '</p>'
         + '</div>';
+      body = '<div class="control-console">'
+        + '<div class="control-stage">'
+        + deck('heal', renderHealForm(state))
+        + deck('trainer', renderTrainerForm(state))
+        + deck('attack', renderAttackForm(state))
+        + deck('cavebot', renderCavebotForm(state) + routeTools)
+        + deck('others', renderOthersForm(state))
+        + '</div>'
+        + '<aside class="control-side" aria-label="Catalog and profiles">'
+        + renderSpellPicker(state)
+        + renderProfileLoader(state)
+        + '</aside>'
+        + '</div>';
     } else {
-      body = '<div class="config-shell">' + escapeHtml(t(state, 'configLocked')) + '</div>';
+      body = '<div class="config-shell bot-card">' + escapeHtml(t(state, 'configLocked')) + '</div>';
     }
     // Slice B (REQ-45, D-B6): the Stop-Botting confirm overlay (renderTutorial
     // pattern — fixed-position, styled card, Yes/No buttons wired by app.js).
@@ -2297,6 +2939,52 @@
    *  learning offers + module alert states. NEVER raw JSON (REQ-26 — the
    *  old <pre class="live-payload"> JSON dump is gone; the readable activity
    *  log renders in renderLog from the snapshot's logBuffer). */
+  /** Explain the agent's Trainer state as an instruction, not an internal
+   * reason code. This is intentionally derived from the live snapshot so it
+   * clears as soon as the runtime advances; it is never a stale save alert. */
+  function renderTrainerRuntimeStatus(state, training, stats) {
+    const es = state.lang === LANG_ES;
+    const say = (spanish, english) => es ? spanish : english;
+    const issue = state.trainerHotbarIssue;
+    if (issue) {
+      const name = issue.key === 'food' ? say('magia de comida', 'food spell')
+        : issue.key === 'fallback' ? say('magia alternativa', 'fallback spell')
+          : say('runa', 'rune spell');
+      return say('Hotbar desactualizado: la ' + name + ' ya no está en F1–F12. Entrenamiento se apagó para no usar otro botón. Reacomodala, actualizá datos y guardá.',
+        'Stale hotbar: the ' + name + ' is no longer in F1–F12. Trainer was turned off so it cannot use another button. Rearrange it, refresh game data, then save.');
+    }
+    if (!training || typeof training !== 'object') return '';
+    const reason = String(training.lastReason || '');
+    if (training.waitingForMana === true || reason === 'reserve' || reason === 'insufficient') {
+      const required = Number(training.requiredMana);
+      const need = Number.isFinite(required) ? Math.ceil(required) : '—';
+      const current = stats.mana === null ? '—' : Math.floor(stats.mana);
+      return say('Esperando maná: ' + current + '/' + need + ' MP. Se lanzará sola al llegar al coste + reserva; no hace falta guardar otra vez.',
+        'Waiting for mana: ' + current + '/' + need + ' MP. It will cast by itself at spell cost + reserve; you do not need to save again.');
+    }
+    if (reason === 'cooldown' || reason === 'global-cooldown') {
+      return say('Esperando cooldown del juego. La configuración sigue activa y reintentará automáticamente.',
+        'Waiting for the game cooldown. Configuration stays active and retries automatically.');
+    }
+    if (training.foodCycle === 'waiting-for-created-food' || reason === 'waiting-for-created-food') {
+      return say('Comida: se lanzó la magia y el bot espera que aparezca el ítem nuevo en los primeros 20 slots. No comerá ítems viejos.',
+        'Food: the spell was cast and the bot is waiting for the new item in the first 20 slots. It will not consume old items.');
+    }
+    if (training.foodCycle === 'timeout' || reason === 'food-not-created-timeout') {
+      return say('No apareció comida nueva a tiempo. Revisá que la magia cree comida en esta PWA y que haya espacio visible; el ciclo se detuvo de forma segura.',
+        'No new food item appeared in time. Check that this spell creates food in this PWA and that visible space exists; the cycle stopped safely.');
+    }
+    if (reason === 'created-food-consume-failed') {
+      return say('La comida apareció, pero el juego no aceptó consumirla. Revisá la PWA y actualizá datos; no se reintentará a ciegas.',
+        'Food appeared, but the game did not accept consuming it. Check the PWA and refresh game data; it will not blindly retry.');
+    }
+    if (reason === 'confirmation-timeout') {
+      return say('El juego no confirmó la acción a tiempo. No se avanzó el ciclo: revisá conexión/hotbar y actualizá datos.',
+        'The game did not confirm the action in time. The cycle did not advance: check connection/hotbar and refresh game data.');
+    }
+    return '';
+  }
+
   function renderLiveState(state) {
     const head = '<h2>' + escapeHtml(t(state, 'liveState')) + '</h2>';
     let body;
@@ -2345,6 +3033,8 @@
       // view — the eat 3-fail pause alert and the routes autowalk read.
       const modules = state.snapshot.agent && state.snapshot.agent.modules
         ? state.snapshot.agent.modules : null;
+      const trainerStatus = renderTrainerRuntimeStatus(state, modules && modules.training, stats);
+      if (trainerStatus) parts.push('<div class="module-alert alert-training-wait">' + escapeHtml(trainerStatus) + '</div>');
       if (modules && modules.eat && modules.eat.paused === true) {
         parts.push('<div class="module-alert alert-eat">' + escapeHtml(t(state, 'eat.pausedAlert')) + '</div>');
       }
@@ -2528,21 +3218,23 @@
     if (!state.tutorial || !Number.isInteger(state.tutorial.step)) return '';
     const steps = TUTORIAL_STEPS;
     const step = Math.max(0, Math.min(state.tutorial.step, steps.length - 1));
-    const cur = steps[step];
-    const title = cur.key.indexOf('tutorial.tab.') === 0
-      ? escapeHtml(t(state, 'tab.' + cur.tab))
-      : escapeHtml(t(state, cur.key));
+    const cur = tutorialStepFor(state, step);
+    const title = escapeHtml(t(state, cur.key));
     const body = escapeHtml(t(state, cur.body || cur.key));
     const isLast = step >= steps.length - 1;
+    const back = '<button type="button" class="tutorial-btn" data-tutorial-action="back"'
+      + (step === 0 ? ' disabled aria-disabled="true"' : '') + '>' + escapeHtml(t(state, 'tutorial.back')) + '</button>';
     const cta = isLast
       ? '<button type="button" class="tutorial-btn primary" data-tutorial-action="next">' + escapeHtml(t(state, 'tutorial.finish')) + '</button>'
       : '<button type="button" class="tutorial-btn primary" data-tutorial-action="next">' + escapeHtml(t(state, 'tutorial.next')) + '</button>';
-    return '<div class="tutorial-overlay" data-tutorial role="dialog" aria-label="' + title + '">'
+    return '<div class="tutorial-overlay" data-tutorial data-tutorial-target="' + escapeHtml(cur.target || '')
+      + '" role="dialog" aria-modal="false" aria-label="' + title + '">'
       + '<div class="tutorial-card">'
       + '<h3>' + title + '</h3>'
-      + '<p>' + body + '</p>'
+      + '<p class="tutorial-copy' + (cur.unavailable ? ' tutorial-data-warning' : '') + '" role="status">' + body + '</p>'
       + '<div class="tutorial-progress">' + (step + 1) + ' / ' + steps.length + '</div>'
       + '<div class="tutorial-actions">'
+      + back
       + '<button type="button" class="tutorial-btn" data-tutorial-action="dismiss">' + escapeHtml(t(state, 'tutorial.dismiss')) + '</button>'
       + cta
       + '</div>'
@@ -2613,6 +3305,7 @@
     PICKER_MODULES,
     I18N,
     TUTORIAL_STEPS,
+    tutorialStepFor,
     createInitialState,
     panelReducer,
     dispatch,
@@ -2637,9 +3330,15 @@
     renderSpellPicker,
     renderConfigForm,
     healFormFromConfig,
+    selectedManaItemCids,
+    hotbarSlotForSpell,
+    isFoodCreationSpell,
+    filterFoodCatalog,
+    reconcileTrainerHotbar,
     renderHealForm,
     trainerFormFromConfig,
     renderTrainerForm,
+    spellMatchesPickerModule,
     filterRuneCatalog,
     snapshotCap,
     renderBar,
@@ -2649,6 +3348,7 @@
     attackFormFromConfig,
     renderAttackForm,
     renderCavebotForm,
+    renderTrainerRuntimeStatus,
     renderLiveState,
     renderLog,
     renderTutorial,

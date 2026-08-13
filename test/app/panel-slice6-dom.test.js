@@ -136,14 +136,14 @@ test('REQ-35: ATTACK form save posts /api/config with targeting + rune slot', as
   }
 });
 
-test('REQ-35: the ATTACK tab shows the toggle + the skeleton disclosure', async () => {
+test('ATTACK tab shows the toggle without a stale skeleton disclosure', async () => {
   const { dom } = makePanel(ROUTES);
   try {
     await new Promise((r) => setTimeout(r, 40));
     dom.window.__mbPanel.dispatch({ type: 'SET_TAB', tab: 'attack' });
     const doc = dom.window.document;
     assert.ok(doc.querySelector('input[data-module="attack"]'), 'attack toggle');
-    assert.match(doc.querySelector('[data-tab-panel="attack"]').textContent, /Skeleton — limited/);
+    assert.doesNotMatch(doc.querySelector('[data-tab-panel="attack"]').textContent, /Skeleton — limited/);
   } finally {
     teardown(dom);
   }

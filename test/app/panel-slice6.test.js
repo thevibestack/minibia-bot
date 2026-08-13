@@ -127,11 +127,14 @@ test('REQ-36: Save writes config.routes from the recorded points and pushes (REQ
   assert.deepEqual(r.state.config.routes, [{ x: 1, y: 2 }, { x: 3, y: 4 }]);
 });
 
-test('REQ-36: Save with nothing recorded is a no-op (no silent empty route)', () => {
+test('Cavebot Save persists target rules even before a route is recorded', () => {
   const s = armedState();
+  s.cavebotForm = { monsters: ['Rat'], targeting: 'lowest-hp' };
   const r = P.panelReducer(s, { type: 'CAVEBOT_COMMAND', command: 'save' });
-  assert.deepEqual(r.effects, []);
-  assert.equal(r.state.config, s.config, 'config untouched');
+  assert.deepEqual(r.effects, [{ type: 'push-config' }]);
+  assert.deepEqual(r.state.config.modules.cavebot.monsters, ['Rat']);
+  assert.equal(r.state.config.modules.cavebot.targeting, 'lowest-hp');
+  assert.equal(r.state.config.routes, undefined, 'no empty route is persisted');
 });
 
 test('REQ-36: pause/resume toggle config.modules.cavebot.paused and push', () => {
@@ -143,7 +146,7 @@ test('REQ-36: pause/resume toggle config.modules.cavebot.paused and push', () =>
   assert.equal(resumed.state.config.modules.cavebot.paused, false);
 });
 
-test('REQ-36: renderCavebotForm renders the controls + FUTURE disclosure + honest status', () => {
+test('Cavebot form renders the target selector, controls and honest status', () => {
   let state = armedState();
   state = P.panelReducer(state, { type: 'SNAPSHOT', data: {
     agent: { modules: { cavebot: {
@@ -156,7 +159,8 @@ test('REQ-36: renderCavebotForm renders the controls + FUTURE disclosure + hones
   assert.match(html, /data-cavebot-command="stop"/);
   assert.match(html, /data-cavebot-command="save"/);
   assert.match(html, /data-cavebot-command="start"/);
-  assert.match(html, /FUTURE/, 'route editing disclosure');
+  assert.match(html, /cavebot-targeting/);
+  assert.match(html, /Monstruos visibles/);
   assert.match(html, /Recording — 3 waypoints/);
   assert.match(html, /Saved route: 5 waypoints/);
   assert.match(html, /Paused/);
@@ -165,21 +169,21 @@ test('REQ-36: renderCavebotForm renders the controls + FUTURE disclosure + hones
 test('REQ-36: renderCavebotForm without a snapshot shows the idle status (no crash)', () => {
   const html = P.renderCavebotForm(armedState());
   assert.match(html, /data-cavebot-command="record"/);
-  assert.match(html, /FUTURE/);
+  assert.match(html, /Monstruos visibles/);
 });
 
 /* ------------------------------ tab disclosure ----------------------------- */
 
-test('REQ-35/36: the ATTACK + CAVEBOT tabs keep the skeleton disclosure under the toggles', () => {
+test('ATTACK + CAVEBOT tabs expose real module toggles without a skeleton disclosure', () => {
   const state = armedState();
   const html = P.renderModuleList(state);
   assert.match(html, /data-module="attack"/, 'attack toggle rendered');
   assert.match(html, /data-module="cavebot"/, 'cavebot toggle rendered');
-  assert.match(html, /Skeleton — limited/, 'disclosure visible');
+  assert.doesNotMatch(html, /Skeleton — limited/, 'no stale skeleton disclosure');
 });
 
-test('REQ-35/36: MODULE_IDS grows to 12 with attack + cavebot', () => {
-  assert.equal(P.MODULE_IDS.length, 12);
+test('REQ-35/36: MODULE_IDS grows to 13 with mana potions, attack and cavebot', () => {
+  assert.equal(P.MODULE_IDS.length, 13);
   assert.equal(P.MODULE_IDS.indexOf('attack') !== -1, true);
   assert.equal(P.MODULE_IDS.indexOf('cavebot') !== -1, true);
 });

@@ -16,8 +16,10 @@ const FLAMAMEX = { name: 'Flamamex', vocationId: 4, vocationLabel: 'druid' };
 
 /** Catalog rows already filtered by the server for a level-20 druid. */
 const CATALOG = [
-  { sid: 0, name: 'Light', words: 'utevo lux', mana: 20, level: 0, vocations: ['sorcerer', 'druid'] },
-  { sid: 3, name: 'Intense Healing', words: 'exura gran', mana: 170, level: 8, vocations: ['druid'] },
+  { sid: 0, name: 'Light', words: 'utevo lux', mana: 20, level: 0, vocations: ['sorcerer', 'druid'], description: 'Surround yourself with light' },
+  { sid: 1, name: 'Explosion Rune', words: 'adori mas', mana: 120, level: 6, vocations: ['druid'], description: 'Creates an Explosion Rune' },
+  { sid: 2, name: 'Force Strike', words: 'exori mort', mana: 20, level: 2, vocations: ['druid'], description: 'Strike with physical force' },
+  { sid: 3, name: 'Intense Healing', words: 'exura gran', mana: 170, level: 8, vocations: ['druid'], description: 'Heal Damage' },
 ];
 
 function run(actions, fromState) {
@@ -131,20 +133,29 @@ test('2.5: renderConfigForm degrades — no profiles and failed loads render hon
 test('2.7: SPELL_CATALOG stores the filtered list; a degrade reason renders', () => {
   const loaded = run([{ type: 'SPELL_CATALOG', spells: CATALOG }]);
   assert.equal(loaded.state.catalog.loaded, true);
-  assert.equal(loaded.state.catalog.spells.length, 2);
+  assert.equal(loaded.state.catalog.spells.length, 4);
   assert.equal(loaded.state.catalog.reason, null);
 
   const degraded = run([{ type: 'SPELL_CATALOG', spells: [], reason: 'spell catalog unavailable' }]);
   assert.match(P.renderSpellPicker(degraded.state), /spell catalog unavailable/);
 });
 
-test('2.7: renderSpellPicker lists ONLY the castable spells (already filtered server-side)', () => {
+test('2.7: renderSpellPicker lists castable spells by selected category', () => {
   const html = P.renderSpellPicker(armedState());
-  assert.match(html, /Light/, 'castable spell listed');
-  assert.match(html, /Intense Healing/);
-  assert.ok(!html.includes('Flame Strike'), 'sorcerer-only spell never reaches the picker');
-  assert.match(html, /mana 20, level 0/, 'cost + level badges');
-  assert.match(html, /data-pick-spell="0"/, 'pick button carries the sid');
+  assert.match(html, /Intense Healing/, 'heal category lists healing spells');
+  assert.ok(!html.includes('Explosion Rune'), 'rune makers stay out of heal category');
+  assert.ok(!html.includes('Light</span>'), 'utility spells stay out of heal category');
+  assert.match(html, /mana 170, level 8/, 'cost + level badges');
+  assert.match(html, /data-pick-spell="3"/, 'pick button carries the sid');
+
+  const training = P.panelReducer(armedState(), { type: 'PICKER_SET_MODULE', module: 'training' }).state;
+  const trainingHtml = P.renderSpellPicker(training);
+  assert.match(trainingHtml, /Explosion Rune/, 'training category lists rune-making spells');
+  assert.ok(!trainingHtml.includes('Intense Healing'), 'healing stays out of rune-making category');
+
+  const attack = P.panelReducer(armedState(), { type: 'PICKER_SET_MODULE', module: 'attack' }).state;
+  const attackHtml = P.renderSpellPicker(attack);
+  assert.match(attackHtml, /Force Strike/, 'attack category lists offensive spells');
 });
 
 test('2.7: PICKER_SEARCH narrows the rendered list; PICKER_SET_MODULE switches target', () => {
@@ -155,7 +166,7 @@ test('2.7: PICKER_SEARCH narrows the rendered list; PICKER_SET_MODULE switches t
 
   state = P.panelReducer(state, { type: 'PICKER_SET_MODULE', module: 'training' }).state;
   const html2 = P.renderSpellPicker(state);
-  assert.match(html2, /Training spell/, 'training target button active');
+  assert.match(html2, /Rune-making spell/, 'training target button active');
 });
 
 test('2.7: PICK_SPELL refused pre-Connect ("not connected")', () => {
@@ -173,11 +184,12 @@ test('2.7: PICK_SPELL with a sid outside the castable list is refused with the v
   assert.equal(r.state.config, null, 'config untouched');
 });
 
-test('2.7: PICK_SPELL whose cost exceeds current mana is rejected with a mana message', () => {
+test('2.7: PICK_SPELL whose cost exceeds current mana still persists the rule for runtime waiting', () => {
   const state = armedWithMana(80); // Intense Healing costs 170
   const r = P.panelReducer(state, { type: 'PICK_SPELL', module: 'healMagic', sid: 3 });
-  assert.equal(r.effects.length, 0);
-  assert.match(r.state.refusal.reason, /not enough mana — costs 170, you have 80/);
+  assert.deepEqual(r.effects, [{ type: 'push-config' }]);
+  assert.equal(r.state.config.modules.healMagic.sid, 3);
+  assert.equal(r.state.refusal, null);
 });
 
 test('2.7: PICK_SPELL within mana applies the sid and pushes the config', () => {
@@ -201,6 +213,20 @@ test('2.7: mana unknown (no snapshot yet) -> pick allowed (agent gates casts by 
   const state = armedState(); // snapshot null
   const r = P.panelReducer(state, { type: 'PICK_SPELL', module: 'healMagic', sid: 3 });
   assert.deepEqual(r.effects, [{ type: 'push-config' }], 'no mana data -> no mana rejection');
+});
+
+test('configuration feedback: refresh and a successful save clear stale save errors', () => {
+  let state = armedState();
+  state.lastError = 'stale error';
+  state.refusal = { action: 'SAVE_CONFIGURATION', reason: 'stale refusal', at: 1 };
+  state = P.panelReducer(state, { type: 'REFRESH_GAME_DATA' }).state;
+  assert.equal(state.lastError, null);
+  assert.equal(state.refusal, null);
+  state.lastError = 'another stale error';
+  state.refusal = { action: 'SAVE_CONFIGURATION', reason: 'stale refusal', at: 1 };
+  state = P.panelReducer(state, { type: 'CONFIG_SAVE_RESULT', ok: true }).state;
+  assert.equal(state.lastError, null);
+  assert.equal(state.refusal, null);
 });
 
 test('2.7: picker + loader render inside the config form only when armed', () => {

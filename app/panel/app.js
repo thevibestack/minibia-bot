@@ -32,7 +32,27 @@
 
   /* ------------------------------- render ------------------------------- */
 
-  function render() {
+  /**
+   * The panel polls live state continuously. Replacing `#config-form` while a
+   * native select is open destroys the browser's popup (and used to make CAP
+   * mode/F-key choices feel impossible to select). Keep that subtree intact
+   * while a text/select control inside it owns focus; the reducer still keeps
+   * the draft value, so a later normal render remains consistent.
+   */
+  function isEditingConfig() {
+    // Poll promises can settle after a jsdom/browser document has been torn
+    // down. A late render must become a harmless no-op, not an unhandled
+    // rejection that fails the panel after a successful interaction.
+    if (typeof document === 'undefined' || !document) return false;
+    var active = document.activeElement;
+    var configForm = document.getElementById('config-form');
+    if (!active || !configForm || !configForm.contains(active)) return false;
+    return /^(INPUT|SELECT|TEXTAREA)$/.test(active.tagName);
+  }
+
+  function render(opts) {
+    opts = opts || {};
+    if (typeof document === 'undefined' || !document) return;
     var el = function (id) { return document.getElementById(id); };
     var statusBar = el('status-bar');
     var moduleList = el('module-list');
@@ -42,10 +62,33 @@
     var tutorialRoot = el('tutorial-root');
     if (statusBar) statusBar.innerHTML = P.renderStatusBar(state);
     if (moduleList) moduleList.innerHTML = P.renderModuleList(state);
-    if (configForm) configForm.innerHTML = P.renderConfigForm(state);
+    if (configForm && !opts.preserveConfig) configForm.innerHTML = P.renderConfigForm(state);
     if (liveState) liveState.innerHTML = P.renderLiveState(state);
     if (activityLog) activityLog.innerHTML = P.renderLog(state);
     if (tutorialRoot) tutorialRoot.innerHTML = P.renderTutorial(state);
+    syncTutorialTarget();
+  }
+
+  /** Highlight the real control discussed by the active tutorial step. The
+   * target stays visible above the dimmer, so this is a guide over the actual
+   * screen rather than a disconnected modal with generic text. */
+  function syncTutorialTarget() {
+    var highlighted = document.querySelectorAll('.tutorial-target');
+    for (var i = 0; i < highlighted.length; i += 1) {
+      highlighted[i].classList.remove('tutorial-target');
+      highlighted[i].removeAttribute('data-tutorial-active');
+    }
+    if (!state.tutorial || !Number.isInteger(state.tutorial.step)) return;
+    var step = typeof P.tutorialStepFor === 'function'
+      ? P.tutorialStepFor(state, state.tutorial.step)
+      : P.TUTORIAL_STEPS[state.tutorial.step];
+    if (!step || !step.target) return;
+    var target;
+    try { target = document.querySelector(step.target); } catch (e) { return; }
+    if (!target) return;
+    target.classList.add('tutorial-target');
+    target.setAttribute('data-tutorial-active', 'true');
+    try { target.scrollIntoView({ block: 'center', inline: 'nearest' }); } catch (e) { /* best-effort */ }
   }
 
   /* ----------------------------- API calls ------------------------------ */
@@ -106,10 +149,11 @@
    * catalog (filtered server-side) and the profile list for the cross-load
    * offer. Refetches on every connect (new character = new catalog).
    */
-  function refreshSpellData() {
-    if (!fetchImpl) return;
-    jsonRequest('/api/spell-catalog').then(function (res) {
-      if (!res) return;
+  function refreshSpellData(opts) {
+    opts = opts || {};
+    if (!fetchImpl) return Promise.resolve(false);
+    var catalogRequest = jsonRequest('/api/spell-catalog').then(function (res) {
+      if (!res) return false;
       dispatch({
         type: 'SPELL_CATALOG',
         spells: res.catalog || [],
@@ -117,9 +161,60 @@
         vocationLabel: res.vocationLabel,
         reason: res.ok === false ? res.reason : null,
       });
+      return res.ok !== false;
     });
-    jsonRequest('/api/profiles').then(function (res) {
-      if (res && Array.isArray(res.profiles)) dispatch({ type: 'PROFILES_LOADED', names: res.profiles });
+    if (opts.profiles !== false) {
+      jsonRequest('/api/profiles').then(function (res) {
+        if (res && Array.isArray(res.profiles)) dispatch({ type: 'PROFILES_LOADED', names: res.profiles });
+      });
+    }
+    return catalogRequest;
+  }
+
+  /** Live container surface for healing/food pickers. The agent returns only
+   * serializable item metadata and canvas thumbnails—never DOM handles. */
+  function refreshInventoryData() {
+    if (!fetchImpl) return Promise.resolve(false);
+    return jsonRequest('/api/inventory').then(function (res) {
+      dispatch({
+        type: 'INVENTORY_LOADED',
+        ok: res && res.ok !== false,
+        containers: res && res.containers || [],
+        reason: res && res.reason || null,
+      });
+      return !!res && res.ok !== false;
+    });
+  }
+
+  function refreshHotbarData() {
+    if (!fetchImpl) return Promise.resolve(false);
+    return jsonRequest('/api/hotbar').then(function (res) {
+      dispatch({ type: 'HOTBAR_CATALOG', ok: res && res.ok !== false, available: res && res.available === true,
+        slots: res && res.slots || [], reason: res && res.reason || null });
+      return !!res && res.ok !== false;
+    });
+  }
+
+  function refreshCreatureData() {
+    if (!fetchImpl) return Promise.resolve(false);
+    return jsonRequest('/api/creatures').then(function (res) {
+      dispatch({ type: 'CREATURE_CATALOG', ok: res && res.ok !== false, creatures: res && res.creatures || [], reason: res && res.reason || null });
+      return !!res && res.ok !== false;
+    });
+  }
+
+  /** Re-read all live panel surfaces after the player rearranges MiniTibia.
+   * This is deliberately read-only: no config POST and no agent game action. */
+  function refreshGameData() {
+    return Promise.all([
+      refreshSpellData({ profiles: false }),
+      refreshHotbarData(),
+      refreshInventoryData(),
+      refreshCreatureData(),
+    ]).then(function (results) {
+      var names = ['spell catalog', 'hotbar', 'inventory', 'creatures'];
+      var failed = names.filter(function (_, index) { return results[index] !== true; });
+      dispatch({ type: 'GAME_DATA_REFRESH_FINISHED', at: Date.now(), failed: failed });
     });
   }
 
@@ -152,12 +247,25 @@
     }
     if (!fetchImpl) return; // tests without network: state machine only
     switch (effect.type) {
+      case 'attach-first': {
+        postJson('/api/attach-first', {}).then(function (res) {
+          if (res && res.ok) {
+            dispatch({ type: 'PROBE_RESULT', identity: res.identity || null });
+          } else {
+            dispatch({ type: 'ATTACH_FIRST_FAILED', message: (res && (res.reason || res.message)) || 'no debug-capable minibia.com PWA found' });
+          }
+        });
+        break;
+      }
       case 'connect': {
         var name = state.identity ? state.identity.name : null;
         postJson('/api/connect', { character: name }).then(function (res) {
           if (res && res.ok) {
             dispatch({ type: 'PREFILL_CONFIG', config: res.config });
             refreshSpellData(); // REQ-27/28: catalog + profiles after Connect
+            refreshInventoryData(); // live BP/container cards for survival configuration
+            refreshHotbarData(); // live spell SID -> F-slot mapping for survival
+            refreshCreatureData(); // live monsters for Cavebot targeting
             refreshHotkeys();   // REQ-46 (B): hotkey surface + configured F-keys
           } else {
             dispatch({ type: 'CONNECT_FAILED', message: (res && res.reason) || 'connect refused' });
@@ -169,16 +277,22 @@
       case 'disarm':
         postJson('/api/disconnect', {});
         break;
+      case 'refresh-inventory':
+        refreshInventoryData();
+        refreshHotbarData();
+        refreshCreatureData();
+        break;
+      case 'refresh-game-data':
+        refreshGameData();
+        break;
       case 'push-config': {
         var cfg = buildPushConfig();
         postJson('/api/config', { character: state.identity ? state.identity.name : null, config: cfg })
           .then(function (res) {
-            // REQ-28 (slice 1b): a refused save (spell no longer castable /
-            // mana dropped since the pick) surfaces the server reason in the
-            // status bar — never silent.
-            if (res && res.ok === false && res.reason) {
-              dispatch({ type: 'ERROR', message: 'config refused: ' + res.reason });
-            }
+            // A save result is distinct from runtime waiting. The latter is
+            // carried by the agent snapshot, while static validation failures
+            // remain actionable configuration feedback.
+            dispatch({ type: 'CONFIG_SAVE_RESULT', ok: !!(res && res.ok === true), reason: res && res.reason });
           });
         break;
       }
@@ -267,7 +381,8 @@
         var cfg = state.config || {};
         var training = cfg.modules && cfg.modules.training || {};
         var runes = cfg.modules && cfg.modules.runes || {};
-        var slot = which === 'rune' ? Number(training.slot) : Number(runes.fallbackSlot);
+        var formRuneSlot = state.trainerForm && state.trainerForm.runeSlot;
+        var slot = which === 'rune' ? Number(formRuneSlot || training.slot) : Number(runes.fallbackSlot);
         if (!Number.isInteger(slot) || slot < 1 || slot > 12) {
           dispatch({
             type: 'HOTKEY_RESULT', ok: false, which: which,
@@ -314,7 +429,10 @@
   function dispatch(action) {
     var result = P.panelReducer(state, action);
     state = result.state;
-    render();
+    // Polling and draft edits must never tear down the focused control. This
+    // is deliberately decided before effects: save/tab/pick actions use the
+    // normal render path and immediately reflect their committed result.
+    render({ preserveConfig: isEditingConfig() });
     for (var i = 0; i < result.effects.length; i += 1) executeEffect(result.effects[i]);
     // REQ-26 (slice 1a): panel-level alerts ring the audio stub (feature-
     // detected; TRAINER/OTHERS slices route their module alerts through the
@@ -409,10 +527,6 @@
     var target = e.target;
     if (target && target.matches && target.matches('input[data-module]')) {
       dispatch({ type: 'TOGGLE_MODULE', module: target.getAttribute('data-module'), on: target.checked });
-    } else if (target && target.matches && target.matches('#trainer-eat-magic')) {
-      // REQ-32 (PR4): eat-with-magic checkbox — pure UI value (change, not
-      // input: checkboxes fire change).
-      dispatch({ type: 'UPDATE_TRAINER_INPUT', key: 'eatMagic', value: target.checked ? 'true' : 'false' });
     } else if (target && target.matches && target.matches('#trainer-cap-mode')) {
       // REQ-30 (PR4): cap mode select — pure UI value (selects fire change).
       dispatch({ type: 'UPDATE_TRAINER_INPUT', key: 'capMode', value: target.value });
@@ -420,16 +534,15 @@
       // REQ-42 (B, D-B2): inline rune select — pure UI value (the save
       // validates the sid is castable, PICK_SPELL pattern).
       dispatch({ type: 'UPDATE_TRAINER_INPUT', key: 'runeSid', value: target.value });
-    } else if (target && target.matches && target.matches('#trainer-rune-key')) {
-      // REQ-46 (B, D-B3): Rune Hotkey select — pure UI value.
-      dispatch({ type: 'UPDATE_TRAINER_INPUT', key: 'runeKey', value: target.value });
-    } else if (target && target.matches && target.matches('#trainer-fallback-key')) {
-      // REQ-46 (B, D-B3): Fallback Hotkey select — pure UI value.
-      dispatch({ type: 'UPDATE_TRAINER_INPUT', key: 'fallbackKey', value: target.value });
+    } else if (target && target.matches && target.matches('#trainer-fallback-select')) {
+      dispatch({ type: 'UPDATE_TRAINER_INPUT', key: 'fallbackSid', value: target.value });
+    } else if (target && target.matches && target.matches('#trainer-food-magic-select')) {
+      dispatch({ type: 'UPDATE_TRAINER_INPUT', key: 'foodMagicSid', value: target.value });
     } else if (target && target.matches && target.matches('#trainer-auto-fallback')) {
-      // REQ-44 (B, D-B4): Auto Fallback Magic toggle — pure UI value (save
-      // refuses when ON without a fallback slot).
+      // Auto fallback is valid only after its spell resolves to a live slot.
       dispatch({ type: 'UPDATE_TRAINER_INPUT', key: 'autoFallback', value: target.checked ? 'true' : 'false' });
+    } else if (target && target.matches && target.matches('#trainer-food-magic-enabled')) {
+      dispatch({ type: 'UPDATE_TRAINER_INPUT', key: 'foodMagicEnabled', value: target.checked ? 'true' : 'false' });
     } else if (target && target.matches && target.matches('#trainer-sound-alert')) {
       // REQ-44 (B): Sound Alert toggle — maps to the existing SET_SOUND
       // action (PR4 reuse), persisted via 'mb-panel-sound'.
@@ -444,6 +557,10 @@
     } else if (target && target.matches && target.matches('#attack-targeting')) {
       // REQ-35 (PR6): attack targeting select — pure UI value.
       dispatch({ type: 'UPDATE_ATTACK_INPUT', key: 'targeting', value: target.value });
+    } else if (target && target.matches && target.matches('#cavebot-targeting')) {
+      dispatch({ type: 'UPDATE_CAVEBOT_INPUT', key: 'targeting', value: target.value });
+    } else if (target && target.matches && target.matches('#heal-mana-enabled')) {
+      dispatch({ type: 'UPDATE_HEAL_INPUT', key: 'manaEnabled', value: target.checked ? 'true' : 'false' });
     } else if (target && target.matches && target.matches('#sound-toggle')) {
       // Audit: alert sound toggle — change (not input): checkboxes fire change.
       dispatch({ type: 'SET_SOUND', enabled: target.checked });
@@ -463,20 +580,20 @@
     } else if (target && target.matches && target.matches('#spell-search')) {
       // REQ-28 (slice 1b): spell picker search — pure UI state.
       dispatch({ type: 'PICKER_SEARCH', query: target.value });
-    } else if (target && target.matches && target.matches('#heal-threshold, #heal-slot, #heal-reserve')) {
-      // REQ-29 (PR3): HEAL settings form — pure UI values that survive
-      // re-renders; the Save button commits them into the config.
+    } else if (target && target.matches && target.matches('#heal-threshold, #heal-reserve, #heal-item-threshold, #heal-mana-item-threshold')) {
+      // Survival flow inputs survive re-renders. The commit converts HP/mana
+      // percentages to the agent's absolute values.
       var healKey = target.matches('#heal-threshold') ? 'threshold'
-        : (target.matches('#heal-slot') ? 'slot' : 'reserve');
+        : target.matches('#heal-reserve') ? 'reserve'
+          : target.matches('#heal-item-threshold') ? 'itemThreshold' : 'manaItemThreshold';
       dispatch({ type: 'UPDATE_HEAL_INPUT', key: healKey, value: target.value });
     } else if (target && target.matches && target.matches(
-      '#trainer-cap-threshold, #trainer-fallback-slot, #trainer-fallback-pct, #trainer-reserve, #trainer-eat-magic-slot')) {
-      // REQ-30/31/32 (PR4): TRAINER settings form — pure UI values that
-      // survive re-renders; the Save button commits them into the config.
+      '#trainer-cap-threshold, #trainer-fallback-pct, #trainer-reserve, #trainer-food-every-runes')) {
+      // Trainer slots are derived from the live hotbar catalogue. Only real
+      // rule values are editable here; no F-slot can be invented in the UI.
       var trainerKey = target.matches('#trainer-cap-threshold') ? 'capFullThreshold'
-        : target.matches('#trainer-fallback-slot') ? 'fallbackSlot'
-          : target.matches('#trainer-fallback-pct') ? 'fallbackManaPct'
-            : target.matches('#trainer-reserve') ? 'reserve' : 'eatMagicSlot';
+        : target.matches('#trainer-fallback-pct') ? 'fallbackManaPct'
+          : target.matches('#trainer-food-every-runes') ? 'foodEveryRunes' : 'reserve';
       dispatch({ type: 'UPDATE_TRAINER_INPUT', key: trainerKey, value: target.value });
     } else if (target && target.matches && target.matches(
       '#others-food-slot, #others-every-casts, #others-loot-dest, #others-replies')) {
@@ -496,9 +613,11 @@
   document.addEventListener('click', function (e) {
     var target = e.target;
     if (!target || !target.matches) return;
-    if (target.matches('#connect-btn')) dispatch({ type: 'CONNECT' });
+    if (target.matches('#link-first-btn')) dispatch({ type: 'ATTACH_FIRST' });
+    else if (target.matches('#connect-btn')) dispatch({ type: 'CONNECT' });
     else if (target.matches('#cancel-btn')) dispatch({ type: 'CANCEL' });
     else if (target.matches('#disconnect-btn')) dispatch({ type: 'DISCONNECT' });
+    else if (target.matches('#refresh-game-data-btn, [data-refresh-game-data]')) dispatch({ type: 'REFRESH_GAME_DATA' });
     else if (target.matches('#route-walk-btn')) {
       // REQ-23: walk-to via the native autowalk primitive (server RPC).
       var wt = state.walkTo || { x: '', y: '' };
@@ -520,12 +639,13 @@
       dispatch({ type: 'SET_LANG', lang: target.getAttribute('data-lang') });
     }
     else if (target.matches('[data-tutorial-action]')) {
-      // REQ-26: first-run tutorial — Next/Finish advance the stepper (the
-      // reducer walks the active tab), Dismiss skips. Finish/dismiss persist
-      // 'tutorialSeen' via the tutorial-seen effect.
+      // Interactive tutorial — navigation only. It highlights real controls
+      // but never clicks them, saves a config, or starts a bot module.
       var tAction = target.getAttribute('data-tutorial-action');
       if (tAction === 'next') dispatch({ type: 'TUTORIAL_NEXT' });
+      else if (tAction === 'back') dispatch({ type: 'TUTORIAL_BACK' });
       else if (tAction === 'dismiss') dispatch({ type: 'TUTORIAL_DISMISS' });
+      else if (tAction === 'restart') dispatch({ type: 'TUTORIAL_START' });
     }
     else if (target.matches('#profile-load-btn')) {
       // REQ-27 (slice 1b): explicit cross-load of the selected profile.
@@ -533,6 +653,18 @@
       if (profileSelect && profileSelect.value) {
         dispatch({ type: 'LOAD_PROFILE', from: profileSelect.value });
       }
+    }
+    else if (target.matches('[data-heal-mode]')) {
+      dispatch({ type: 'UPDATE_HEAL_INPUT', key: 'mode', value: target.getAttribute('data-heal-mode') || 'magic' });
+    }
+    else if (target.matches('[data-heal-item-cid]')) {
+      dispatch({ type: 'TOGGLE_HEAL_ITEM', cid: Number(target.getAttribute('data-heal-item-cid')), kind: target.getAttribute('data-heal-item-kind') || 'hp' });
+    }
+    else if (target.matches('#heal-items-refresh')) {
+      dispatch({ type: 'REFRESH_INVENTORY' });
+    }
+    else if (target.matches('[data-trainer-rune-pick]')) {
+      dispatch({ type: 'UPDATE_TRAINER_INPUT', key: 'runeSid', value: target.getAttribute('data-trainer-rune-pick') || '' });
     }
     else if (target.matches('[data-pick-spell]')) {
       // REQ-28 (slice 1b): pick a spell for the active picker module — the
@@ -568,15 +700,6 @@
       // REQ-45 (B, D-B6): No drops the pending confirmation — nothing saved.
       dispatch({ type: 'CANCEL_STOP' });
     }
-    else if (target.matches('#trainer-rune-assign')) {
-      // REQ-46 (B, D-B3): assign the Rune Hotkey to the rune-making slot
-      // (server -> setHotbarKeybind RPC + per-character persistence).
-      dispatch({ type: 'ASSIGN_HOTKEY', which: 'rune' });
-    }
-    else if (target.matches('#trainer-fallback-assign')) {
-      // REQ-46 (B, D-B3): assign the Fallback Hotkey to the fallback slot.
-      dispatch({ type: 'ASSIGN_HOTKEY', which: 'fallback' });
-    }
     else if (target.matches('#others-save-btn')) {
       // REQ-33/34 (PR5): commit the OTHERS settings form (food slot +
       // every-N-casts, loot default destination, anti-bot pattern => reply
@@ -603,6 +726,9 @@
       // resume/start (the reducer emits the cavebot-command / push-config
       // effects; the record-stop result carries the waypoints to save).
       dispatch({ type: 'CAVEBOT_COMMAND', command: target.getAttribute('data-cavebot-command') });
+    }
+    else if (target.matches('[data-cavebot-monster]')) {
+      dispatch({ type: 'TOGGLE_CAVEBOT_MONSTER', name: target.getAttribute('data-cavebot-monster') || '' });
     }
   });
 

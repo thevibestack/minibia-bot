@@ -38,7 +38,7 @@ test('REQ-09: missing file -> defaults (first run), no warning', (t) => {
   // shape-only forward-compat until the OTHERS slice wires it.
   const ids = Object.keys(config.modules);
   assert.deepEqual(ids, [
-    'healItems', 'healMagic', 'runes', 'training', 'eat',
+    'healItems', 'manaItems', 'healMagic', 'runes', 'training', 'eat',
     'trade', 'loot', 'spawns', 'huntStats', 'routes', 'learning', 'antibot',
     'attack', 'cavebot', // PR6 (REQ-35/36): skeleton module shapes
   ]);
@@ -46,13 +46,14 @@ test('REQ-09: missing file -> defaults (first run), no warning', (t) => {
   // Slice-1b forward-compat defaults (D2/D3/D4/D9): reserves, strict CAP,
   // fallback spell, eat-with-magic, anti-bot replies — shapes land now,
   // behavior lands with the TRAINER/OTHERS slices.
+  assert.deepEqual(config.modules.manaItems, { on: false, threshold: 50, slotCids: [] }, 'mana potion defaults');
   assert.equal(config.modules.healMagic.reserve, 0, 'heal magic reserve default');
   assert.equal(config.modules.runes.capMode, 'strict', 'strict CAP default');
   assert.equal(config.modules.runes.capFullThreshold, 1.0);
   assert.equal(config.modules.runes.fallbackSlot, null);
   assert.equal(config.modules.runes.fallbackManaPct, 0.5);
   assert.equal(config.modules.runes.reserve, 0, 'runes reserve default');
-  assert.deepEqual(config.modules.training.eatWithMagic, { enabled: false, slot: null, sid: null });
+  assert.deepEqual(config.modules.training.eatWithMagic, { enabled: false, slot: null, sid: null, everyRunes: 1 });
   assert.deepEqual(config.modules.training.hotkeys, { runeKey: 'F4', fallbackKey: 'F5' }, 'hotkey defaults (REQ-46)');
   assert.equal(config.modules.training.stopRuneMaking, false, 'stop rune-making default off');
   assert.equal(config.modules.training.stopBotting, false, 'stop botting default off');

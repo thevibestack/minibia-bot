@@ -24,8 +24,10 @@ const FLAMAMEX = { name: 'Flamamex', vocationId: 4, vocationLabel: 'druid' };
 /** Server-filtered catalog for a level-20 druid (what /api/spell-catalog
  *  returns): only castable spells, with costs. */
 const CATALOG = [
-  { sid: 0, name: 'Light', words: 'utevo lux', mana: 20, level: 0, vocations: ['sorcerer', 'druid'] },
-  { sid: 3, name: 'Intense Healing', words: 'exura gran', mana: 170, level: 8, vocations: ['druid'] },
+  { sid: 0, name: 'Light', words: 'utevo lux', mana: 20, level: 0, vocations: ['sorcerer', 'druid'], description: 'Surround yourself with light' },
+  { sid: 1, name: 'Explosion Rune', words: 'adori mas', mana: 120, level: 6, vocations: ['druid'], description: 'Creates an Explosion Rune' },
+  { sid: 2, name: 'Force Strike', words: 'exori mort', mana: 20, level: 2, vocations: ['druid'], description: 'Strike with physical force' },
+  { sid: 3, name: 'Intense Healing', words: 'exura gran', mana: 170, level: 8, vocations: ['druid'], description: 'Heal Damage' },
 ];
 
 /**
@@ -88,14 +90,14 @@ test('2.5: Connect loads the castable catalog + profiles; the armed form offers 
     '/api/snapshot': () => ({ stats: { health: 42, mana: 200, maxMana: 300 } }),
     '/api/character-config': () => ({ ok: true, config: CATALOG_CFG, warning: null }),
     '/api/connect': () => ({ ok: true, identity: FLAMAMEX, config: CATALOG_CFG }),
-    '/api/spell-catalog': () => ({ ok: true, catalog: CATALOG, total: 2, playerLevel: 20, vocationLabel: 'druid' }),
+    '/api/spell-catalog': () => ({ ok: true, catalog: CATALOG, total: 4, playerLevel: 20, vocationLabel: 'druid' }),
     '/api/profiles': () => ({ ok: true, profiles: ['Flamamex', 'Gobernador'], current: 'Flamamex' }),
   });
   try {
     await connectAndSettle(dom);
     const state = dom.window.__mbPanel.getState();
     assert.equal(state.gate, 'armed');
-    assert.equal(state.catalog.spells.length, 2, 'catalog fetched after Connect');
+    assert.equal(state.catalog.spells.length, 4, 'catalog fetched after Connect');
     assert.deepEqual(state.profiles, ['Flamamex', 'Gobernador']);
 
     const doc = dom.window.document;
@@ -103,8 +105,8 @@ test('2.5: Connect loads the castable catalog + profiles; the armed form offers 
     assert.ok(doc.getElementById('profile-load-btn'), 'load button rendered');
     assert.match(doc.getElementById('config-form').textContent, /Gobernador/, 'profile offered');
     const pickerRows = doc.querySelectorAll('.picker-row');
-    assert.equal(pickerRows.length, 2, 'only castable spells in the picker');
-    assert.match(pickerRows[0].textContent, /Light/);
+    assert.equal(pickerRows.length, 1, 'default heal category filters the castable catalog');
+    assert.match(pickerRows[0].textContent, /Intense Healing/);
     assert.ok(!doc.getElementById('config-form').textContent.includes('Flame Strike'),
       'sorcerer-only spell never rendered');
     assert.ok(requests.some((r) => r.url === '/api/spell-catalog'), 'catalog RPC proxied');
@@ -120,7 +122,7 @@ test('2.5: loading another profile posts /api/load-profile and renders the visib
     '/api/snapshot': () => ({ stats: { health: 42, mana: 200, maxMana: 300 } }),
     '/api/character-config': () => ({ ok: true, config: CATALOG_CFG, warning: null }),
     '/api/connect': () => ({ ok: true, identity: FLAMAMEX, config: CATALOG_CFG }),
-    '/api/spell-catalog': () => ({ ok: true, catalog: CATALOG, total: 2, playerLevel: 20, vocationLabel: 'druid' }),
+    '/api/spell-catalog': () => ({ ok: true, catalog: CATALOG, total: 4, playerLevel: 20, vocationLabel: 'druid' }),
     '/api/profiles': () => ({ ok: true, profiles: ['Flamamex', 'Gobernador'], current: 'Flamamex' }),
     '/api/load-profile': () => ({
       ok: true,
@@ -158,18 +160,18 @@ test('2.7: the Pick button posts the validated spell in /api/config', async () =
     '/api/snapshot': () => ({ stats: { health: 42, mana: 200, maxMana: 300 } }),
     '/api/character-config': () => ({ ok: true, config: CATALOG_CFG, warning: null }),
     '/api/connect': () => ({ ok: true, identity: FLAMAMEX, config: CATALOG_CFG }),
-    '/api/spell-catalog': () => ({ ok: true, catalog: CATALOG, total: 2, playerLevel: 20, vocationLabel: 'druid' }),
+    '/api/spell-catalog': () => ({ ok: true, catalog: CATALOG, total: 4, playerLevel: 20, vocationLabel: 'druid' }),
     '/api/profiles': () => ({ ok: true, profiles: ['Flamamex'], current: 'Flamamex' }),
     '/api/config': () => ({ ok: true }),
   });
   try {
     await connectAndSettle(dom);
-    click(dom, '.picker-pick[data-pick-spell="0"]'); // Light, costs 20 <= 200 mana
+    click(dom, '.picker-pick[data-pick-spell="3"]'); // Intense Healing, costs 170 <= 200 mana
     await new Promise((r) => setTimeout(r, 40));
 
     const cfgReq = requests.find((r) => r.url === '/api/config');
     assert.ok(cfgReq, 'config push posted');
-    assert.equal(cfgReq.body.config.modules.healMagic.sid, 0, 'picked sid carried to the server');
+    assert.equal(cfgReq.body.config.modules.healMagic.sid, 3, 'picked sid carried to the server');
     assert.equal(dom.window.__mbPanel.getState().refusal, null, 'valid pick not refused');
     assert.match(dom.window.document.getElementById('config-form').textContent, /current/,
       'current pick marked');
@@ -178,14 +180,15 @@ test('2.7: the Pick button posts the validated spell in /api/config', async () =
   }
 });
 
-test('2.7: picking a spell beyond current mana shows the refusal in the status bar', async () => {
+test('2.7: picking a spell beyond current mana saves the runtime rule without a config refusal', async () => {
   const { dom, requests } = makePanel({
     '/api/identity': () => ({ identity: FLAMAMEX }),
     '/api/snapshot': () => ({ stats: { health: 42, mana: 80, maxMana: 300 } }), // 80 < 170
     '/api/character-config': () => ({ ok: true, config: CATALOG_CFG, warning: null }),
     '/api/connect': () => ({ ok: true, identity: FLAMAMEX, config: CATALOG_CFG }),
-    '/api/spell-catalog': () => ({ ok: true, catalog: CATALOG, total: 2, playerLevel: 20, vocationLabel: 'druid' }),
+    '/api/spell-catalog': () => ({ ok: true, catalog: CATALOG, total: 4, playerLevel: 20, vocationLabel: 'druid' }),
     '/api/profiles': () => ({ ok: true, profiles: ['Flamamex'], current: 'Flamamex' }),
+    '/api/config': () => ({ ok: true }),
   });
   try {
     await connectAndSettle(dom);
@@ -193,11 +196,9 @@ test('2.7: picking a spell beyond current mana shows the refusal in the status b
     await new Promise((r) => setTimeout(r, 40));
 
     const state = dom.window.__mbPanel.getState();
-    assert.match(state.refusal.reason, /not enough mana — costs 170, you have 80/);
-    assert.match(dom.window.document.getElementById('status-bar').textContent,
-      /refused: not enough mana/, 'rejection visible in the status bar');
-    assert.notEqual(state.config.modules.healMagic.sid, 3, 'no config write on refusal');
-    assert.ok(!requests.some((r) => r.url === '/api/config'), 'no push for a refused pick');
+    assert.equal(state.refusal, null);
+    assert.equal(state.config.modules.healMagic.sid, 3, 'spell selected even while mana is low');
+    assert.ok(requests.some((r) => r.url === '/api/config'), 'runtime rule is saved');
   } finally {
     await teardown(dom);
   }

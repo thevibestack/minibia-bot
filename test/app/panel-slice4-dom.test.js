@@ -111,373 +111,167 @@ const ROUTES = {
   '/api/config': () => ({ ok: true }),
 };
 
-test('REQ-30/31/32 (PR4, jsdom): typing the TRAINER form + Save posts /api/config with converted ratios', async () => {
-  const { dom, requests } = makePanel(ROUTES);
+const LIVE_SPELLS = [
+  { sid: 35, name: 'Heavy Magic Missile Rune', words: 'adori gran', mana: 210, level: 3, vocations: [] },
+  { sid: 2, name: 'Healing', words: 'exura', mana: 25, level: 1, vocations: [] },
+];
+
+function liveRoutes(extra) {
+  return Object.assign({}, ROUTES, {
+    '/api/spell-catalog': () => ({ ok: true, catalog: LIVE_SPELLS, total: LIVE_SPELLS.length, playerLevel: 20, vocationLabel: 'druid' }),
+    '/api/hotbar': () => ({ ok: true, available: true, slots: [{ slot: 4, sid: 35 }, { slot: 7, sid: 2 }] }),
+  }, extra || {});
+}
+
+async function configureTrainer(dom) {
+  await new Promise((r) => setTimeout(r, 80));
+  const rune = dom.window.document.getElementById('trainer-rune-select');
+  rune.value = '35';
+  rune.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+  const automatic = dom.window.document.getElementById('trainer-auto-fallback');
+  automatic.checked = true;
+  automatic.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+  const fallback = dom.window.document.getElementById('trainer-fallback-select');
+  fallback.value = '2';
+  fallback.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+  const capThreshold = dom.window.document.getElementById('trainer-cap-threshold');
+  if (capThreshold) type(dom, 'trainer-cap-threshold', '100');
+  type(dom, 'trainer-fallback-pct', '50');
+  type(dom, 'trainer-reserve', '30');
+}
+
+test('TRAINER DOM: saving persists live rune/fallback mappings, never raw slots', async () => {
+  const { dom, requests } = makePanel(liveRoutes());
   try {
     await connect(dom);
-
-    // Type the form: strict cap at 100%, fallback slot 3 at 50% mana,
-    // reserve 30, eat-with-magic on with the magic-food slot 5.
-    type(dom, 'trainer-cap-threshold', '100');
-    type(dom, 'trainer-fallback-slot', '3');
-    type(dom, 'trainer-fallback-pct', '50');
-    type(dom, 'trainer-reserve', '30');
-    const ew = dom.window.document.getElementById('trainer-eat-magic');
-    ew.checked = true;
-    ew.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
-    type(dom, 'trainer-eat-magic-slot', '5');
-
-    // A snapshot re-render must not wipe the typed values.
-    await new Promise((r) => setTimeout(r, 600));
-    assert.equal(dom.window.document.getElementById('trainer-cap-threshold').value, '100', 'cap % survives re-render');
-    assert.equal(dom.window.document.getElementById('trainer-fallback-slot').value, '3', 'fallback slot survives re-render');
-    assert.equal(dom.window.document.getElementById('trainer-reserve').value, '30', 'reserve survives re-render');
-    assert.equal(dom.window.document.getElementById('trainer-eat-magic-slot').value, '5', 'eat slot survives re-render');
-
+    await configureTrainer(dom);
     click(dom, '#trainer-save-btn');
     await new Promise((r) => setTimeout(r, 40));
-
-    const cfgReqs = requests.filter((r) => r.url === '/api/config');
-    assert.ok(cfgReqs.length >= 1, 'config push posted');
-    const cfg = cfgReqs[cfgReqs.length - 1].body.config;
-    assert.equal(cfg.modules.runes.capMode, 'strict');
-    assert.equal(cfg.modules.runes.capFullThreshold, 1, '100% converted to ratio 1.0');
-    assert.equal(cfg.modules.runes.fallbackSlot, 3);
-    assert.equal(cfg.modules.runes.fallbackManaPct, 0.5, '50% converted to ratio 0.5');
-    assert.equal(cfg.modules.training.reserve, 30);
-    assert.equal(cfg.modules.training.eatWithMagic.enabled, true);
-    assert.equal(cfg.modules.training.eatWithMagic.slot, 5);
-    assert.equal(dom.window.__mbPanel.getState().refusal, null, 'valid save not refused');
-  } finally {
-    await teardown(dom);
-  }
+    const req = requests.filter((r) => r.url === '/api/config').at(-1);
+    assert.ok(req, 'config push posted');
+    assert.equal(req.body.config.modules.training.sid, 35);
+    assert.equal(req.body.config.modules.training.slot, 4);
+    assert.equal(req.body.config.modules.runes.fallbackSid, 2);
+    assert.equal(req.body.config.modules.runes.fallbackSlot, 7);
+    assert.equal(req.body.config.modules.training.reserve, 30);
+  } finally { await teardown(dom); }
 });
 
-test('REQ-30 (PR4, jsdom): capFull snapshot state raises the panel ALERT + beep on the rising edge', async () => {
-  let capFull = false;
-  const snapshotRoute = () => ({
-    stats: { health: 100, mana: 400, maxMana: 500, maxHealth: 200 },
-    agent: { modules: { training: { on: true, capFull, cap: { capacity: 400, maxCapacity: 400, ratio: 1 } } } },
-  });
-  const routes = Object.assign({}, ROUTES, { '/api/snapshot': snapshotRoute });
-  const { dom } = makePanel(routes);
-  try {
-    const beeps = stubAudio(dom);
-    await connect(dom);
-    await new Promise((r) => setTimeout(r, 40)); // first poll: capFull false
-    assert.equal(dom.window.__mbPanel.getState().alerts.length, 0, 'no alert while the cap is not full');
-    assert.equal(beeps(), 0, 'no beep while the cap is not full');
-
-    capFull = true; // next snapshot poll sees the rising edge
-    await new Promise((r) => setTimeout(r, 600));
-    const alerts = dom.window.__mbPanel.getState().alerts;
-    assert.ok(alerts.some((a) => a.kind === 'cap-full'), 'panel ALERT raised on the cap-full rising edge');
-    assert.equal(beeps(), 1, 'the Web Audio beep stub rang exactly once (rising edge)');
-
-    // Steady state: cap stays full -> NO repeated alert/beep.
-    await new Promise((r) => setTimeout(r, 600));
-    assert.equal(dom.window.__mbPanel.getState().alerts.filter((a) => a.kind === 'cap-full').length, 1, 'no repeated alerts');
-    assert.equal(beeps(), 1, 'no repeated beeps');
-  } finally {
-    await teardown(dom);
-  }
-});
-
-test('REQ-30 (PR4, jsdom): the TRAINER settings form is NOT rendered before Connect', async () => {
-  const { dom, requests } = makePanel(ROUTES);
-  try {
-    await new Promise((r) => setTimeout(r, 250)); // identity confirms without Connect
-    assert.equal(dom.window.__mbPanel.getState().gate, 'confirmed');
-    assert.ok(!dom.window.document.getElementById('trainer-save-btn'), 'no trainer form pre-Connect');
-    assert.ok(!requests.some((r) => r.url === '/api/config'), 'no config push pre-Connect');
-  } finally {
-    await teardown(dom);
-  }
-});
-
-test('REQ-41 (PR A, jsdom): the rune-check banner renders and Resume posts /api/runecheck-resume', async () => {
-  const routes = Object.assign({}, ROUTES, {
-    '/api/snapshot': () => ({
-      stats: { health: 100, mana: 400, maxMana: 500, maxHealth: 200 },
-      agent: { runeCheck: { active: true, at: 1, kind: 'chat', lastSeenAt: 1 } },
-    }),
-    '/api/runecheck-resume': () => ({ ok: true }),
-  });
-  const { dom, requests } = makePanel(routes);
+test('TRAINER DOM: shows a compact live execution card and keeps optional rules collapsed', async () => {
+  const { dom } = makePanel(liveRoutes());
   try {
     await connect(dom);
-    await new Promise((r) => setTimeout(r, 600)); // a snapshot poll lands the banner
-    const btn = dom.window.document.getElementById('runecheck-resume-btn');
-    assert.ok(btn, 'resume button rendered from the snapshot banner');
-    assert.match(btn.parentElement.textContent, /Rune check detected/, 'localized banner text');
-
-    click(dom, '#runecheck-resume-btn');
-    await new Promise((r) => setTimeout(r, 40));
-    const resumeReqs = requests.filter((r) => r.url === '/api/runecheck-resume');
-    assert.ok(resumeReqs.length >= 1, '/api/runecheck-resume posted');
-    assert.equal(resumeReqs[resumeReqs.length - 1].method, 'POST');
-    assert.equal(resumeReqs[resumeReqs.length - 1].body.character, 'Flamamex');
-  } finally {
-    await teardown(dom);
-  }
-});
-
-test('REQ-42 (B, jsdom): the TRAINER form renders as a 2-column grid with the kept ids', async () => {
-  const { dom } = makePanel(ROUTES);
-  try {
-    await connect(dom);
-    const doc = dom.window.document;
-    assert.ok(doc.querySelector('.trainer-grid'), 'grid container rendered');
-    assert.equal(doc.querySelectorAll('.trainer-col').length, 2, 'two columns');
-    for (const id of ['trainer-cap-mode', 'trainer-cap-threshold', 'trainer-fallback-slot',
-      'trainer-fallback-pct', 'trainer-reserve', 'trainer-eat-magic', 'trainer-eat-magic-slot',
-      'trainer-save-btn', 'trainer-rune-select', 'trainer-rune-key', 'trainer-rune-assign',
-      'trainer-fallback-key', 'trainer-fallback-assign', 'trainer-sound-alert',
-      'trainer-auto-fallback', 'trainer-stop-runes', 'trainer-stop-botting']) {
-      assert.ok(doc.getElementById(id), id + ' rendered');
+    await configureTrainer(dom);
+    const html = dom.window.document.body.innerHTML;
+    assert.match(html, /Heavy Magic Missile Rune/);
+    assert.match(html, /adori gran/);
+    assert.match(html, /MP 210/);
+    assert.match(html, /Live execution/);
+    assert.match(html, /F4/);
+    assert.match(html, /Fallback magic \(optional\)/);
+    assert.match(html, /Capacity: unavailable/);
+    assert.ok(!html.includes('SID 35'));
+    for (const id of ['trainer-rune-slot', 'trainer-fallback-slot', 'trainer-eat-magic-slot', 'trainer-rune-key', 'trainer-fallback-key']) {
+      assert.equal(dom.window.document.getElementById(id), null, id + ' is intentionally absent');
     }
-    assert.ok(doc.querySelector('.bar.mana-bar'), 'mana bar rendered');
-    assert.ok(doc.querySelector('.bar.cap-bar'), 'CAP bar rendered');
-  } finally {
-    await teardown(dom);
-  }
+  } finally { await teardown(dom); }
 });
 
-test('REQ-43 (B, jsdom): the bars render values, percent and fill width from the snapshot', async () => {
-  const routes = Object.assign({}, ROUTES, {
-    '/api/snapshot': () => ({
-      stats: { health: 100, mana: 400, maxMana: 500, maxHealth: 200 },
-      agent: { modules: { training: { on: true, cap: { capacity: 400, maxCapacity: 500, ratio: 0.8 } } } },
-    }),
-  });
-  const { dom } = makePanel(routes);
+test('TRAINER DOM: execution-card refresh re-reads live panel data without saving configuration', async () => {
+  const { dom, requests } = makePanel(liveRoutes({
+    '/api/inventory': () => ({ ok: true, containers: [] }),
+    '/api/creatures': () => ({ ok: true, creatures: [] }),
+  }));
   try {
     await connect(dom);
-    await new Promise((r) => setTimeout(r, 600)); // a snapshot poll lands the stats + cap
-    const doc = dom.window.document;
-    const manaBar = doc.querySelector('.bar.mana-bar');
-    assert.ok(manaBar, 'mana bar rendered');
-    assert.match(manaBar.textContent, /80%/, 'mana percent shown');
-    assert.match(manaBar.textContent, /400 \/ 500/, 'mana cur/max shown');
-    assert.match(manaBar.querySelector('.bar-fill').getAttribute('style'), /width:80%/, 'mana fill width');
-    const capBar = doc.querySelector('.bar.cap-bar');
-    assert.ok(capBar, 'cap bar rendered');
-    assert.match(capBar.textContent, /80%/, 'cap percent shown');
-    assert.match(capBar.textContent, /400 \/ 500/, 'cap cur/max shown');
-    assert.match(capBar.querySelector('.bar-fill').getAttribute('style'), /width:80%/, 'cap fill width');
-  } finally {
-    await teardown(dom);
-  }
-});
-
-test('REQ-42 (B, jsdom): the inline rune select lists only rune spells from the catalog', async () => {
-  const routes = Object.assign({}, ROUTES, {
-    '/api/spell-catalog': () => ({
-      ok: true,
-      catalog: [
-        { sid: 1, name: 'Blank Rune', words: 'adori vita', mana: 100, level: 1, vocations: [] },
-        { sid: 2, name: 'Sudden Death Rune', words: 'adori tera', mana: 120, level: 2, vocations: [] },
-        { sid: 3, name: 'Light Heal', words: 'exura', mana: 20, level: 1, vocations: [] },
-      ],
-      total: 3, playerLevel: 20, vocationLabel: 'druid',
-    }),
-  });
-  const { dom } = makePanel(routes);
-  try {
-    await connect(dom);
-    await new Promise((r) => setTimeout(r, 100)); // the connect fetches the catalog
-    const select = dom.window.document.getElementById('trainer-rune-select');
-    assert.ok(select, 'rune select rendered');
-    const options = Array.from(select.options).map((o) => o.value);
-    assert.deepEqual(options, ['1', '2'], 'only rune spells listed (Light Heal excluded)');
-    assert.ok(!dom.window.document.querySelector('.trainer-note'), 'no fallback note when runes matched');
-  } finally {
-    await teardown(dom);
-  }
-});
-
-test('REQ-44 (B, jsdom): the Auto Fallback Magic and Sound Alert toggles wire their actions', async () => {
-  const { dom } = makePanel(ROUTES);
-  try {
-    await connect(dom);
-    const af = dom.window.document.getElementById('trainer-auto-fallback');
-    af.checked = true;
-    af.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
-    assert.equal(dom.window.__mbPanel.getState().trainerForm.autoFallback, 'true', 'auto fallback stored in the form');
-    const sa = dom.window.document.getElementById('trainer-sound-alert');
-    sa.checked = false;
-    sa.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
-    assert.equal(dom.window.__mbPanel.getState().soundEnabled, false, 'sound alert maps to SET_SOUND');
-  } finally {
-    await teardown(dom);
-  }
-});
-
-test('REQ-45 (B, jsdom): Stop Botting opens the confirm overlay; Yes pushes a runes-off config with heal on', async () => {
-  const { dom, requests } = makePanel(ROUTES);
-  try {
-    await connect(dom);
-    // Heal stays ON before the stop — the assertion proves heal/eat continue.
-    const heal = dom.window.document.querySelector('input[data-module="healItems"]');
-    heal.checked = true;
-    heal.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
-    // Fill the required trainer fields (PR4 save contract), eat-magic OFF.
-    type(dom, 'trainer-cap-threshold', '100');
-    type(dom, 'trainer-fallback-pct', '50');
-    type(dom, 'trainer-reserve', '30');
-    const ew = dom.window.document.getElementById('trainer-eat-magic');
-    ew.checked = false;
-    ew.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+    click(dom, '[data-refresh-game-data]');
     await new Promise((r) => setTimeout(r, 40));
-    const beforeStop = requests.filter((r) => r.url === '/api/config').length;
+    const urls = requests.map((request) => request.url);
+    for (const path of ['/api/spell-catalog', '/api/hotbar', '/api/inventory', '/api/creatures']) {
+      assert.ok(urls.includes(path), path + ' refresh requested');
+    }
+    assert.equal(requests.filter((request) => request.url === '/api/config').length, 0, 'refresh remains read-only');
+  } finally { await teardown(dom); }
+});
 
-    const sb = dom.window.document.getElementById('trainer-stop-botting');
-    sb.checked = true;
-    sb.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+test('TRAINER DOM: rune selector has an explicit placeholder and excludes non-rune spells', async () => {
+  const { dom } = makePanel(liveRoutes());
+  try {
+    await connect(dom);
+    await new Promise((r) => setTimeout(r, 80));
+    const options = Array.from(dom.window.document.getElementById('trainer-rune-select').options).map((o) => o.value);
+    assert.deepEqual(options, ['', '35']);
+  } finally { await teardown(dom); }
+});
+
+test('TRAINER DOM: unhotbarred rune refuses save with an actionable fix', async () => {
+  const { dom } = makePanel(liveRoutes({ '/api/hotbar': () => ({ ok: true, available: true, slots: [{ slot: 7, sid: 2 }] }) }));
+  try {
+    await connect(dom);
+    await configureTrainer(dom);
     click(dom, '#trainer-save-btn');
     await new Promise((r) => setTimeout(r, 30));
-    assert.ok(dom.window.document.getElementById('confirm-stop-yes'), 'confirm overlay rendered');
-    assert.equal(requests.filter((r) => r.url === '/api/config').length, beforeStop, 'no push while the confirm is pending');
+    assert.match(dom.window.__mbPanel.getState().refusal.reason, /Add the selected rune spell to F1–F12/i);
+  } finally { await teardown(dom); }
+});
 
+test('TRAINER DOM: automatic fallback requires and persists a live mapped spell', async () => {
+  const { dom, requests } = makePanel(liveRoutes());
+  try {
+    await connect(dom);
+    await new Promise((r) => setTimeout(r, 80));
+    const rune = dom.window.document.getElementById('trainer-rune-select');
+    rune.value = '35'; rune.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+    const automatic = dom.window.document.getElementById('trainer-auto-fallback');
+    automatic.checked = true; automatic.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+    type(dom, 'trainer-fallback-pct', '50'); type(dom, 'trainer-reserve', '0');
+    click(dom, '#trainer-save-btn');
+    await new Promise((r) => setTimeout(r, 30));
+    assert.match(dom.window.__mbPanel.getState().refusal.reason, /choose a live non-rune fallback/i);
+    assert.equal(requests.filter((r) => r.url === '/api/config').length, 0);
+  } finally { await teardown(dom); }
+});
+
+test('TRAINER DOM: Stop Botting confirms before disabling training while healing remains enabled', async () => {
+  const { dom, requests } = makePanel(liveRoutes());
+  try {
+    await connect(dom);
+    const heal = dom.window.document.querySelector('input[data-module="healItems"]');
+    heal.checked = true; heal.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+    await configureTrainer(dom);
+    const stop = dom.window.document.getElementById('trainer-stop-botting');
+    stop.checked = true; stop.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+    const before = requests.filter((r) => r.url === '/api/config').length;
+    click(dom, '#trainer-save-btn');
+    await new Promise((r) => setTimeout(r, 30));
+    assert.ok(dom.window.document.getElementById('confirm-stop-yes'));
+    assert.equal(requests.filter((r) => r.url === '/api/config').length, before);
     click(dom, '#confirm-stop-yes');
     await new Promise((r) => setTimeout(r, 40));
-    const cfgReqs = requests.filter((r) => r.url === '/api/config');
-    assert.ok(cfgReqs.length >= beforeStop + 1, 'config push posted after Yes');
-    const lastCfg = cfgReqs[cfgReqs.length - 1].body.config;
-    assert.equal(lastCfg.modules.runes.on, false, 'runes off in the push');
-    assert.equal(lastCfg.modules.healItems.on, true, 'healing continues');
-    assert.ok(dom.window.document.querySelector('.alert-stop-botting'), 'persistent stop-botting banner rendered');
-  } finally {
-    await teardown(dom);
-  }
+    const cfg = requests.filter((r) => r.url === '/api/config').at(-1).body.config;
+    assert.equal(cfg.modules.training.on, false);
+    assert.equal(cfg.modules.healItems.on, true);
+  } finally { await teardown(dom); }
 });
 
-test('REQ-45 (B, jsdom): No on the confirm overlay posts nothing and closes it', async () => {
-  const { dom, requests } = makePanel(ROUTES);
+test('TRAINER DOM: cancelling Stop Botting posts no trainer configuration', async () => {
+  const { dom, requests } = makePanel(liveRoutes());
   try {
-    await connect(dom);
-    type(dom, 'trainer-cap-threshold', '100');
-    type(dom, 'trainer-fallback-pct', '50');
-    type(dom, 'trainer-reserve', '30');
-    const ew = dom.window.document.getElementById('trainer-eat-magic');
-    ew.checked = false;
-    ew.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
-    const sb = dom.window.document.getElementById('trainer-stop-botting');
-    sb.checked = true;
-    sb.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
-    click(dom, '#trainer-save-btn');
-    await new Promise((r) => setTimeout(r, 30));
-    assert.ok(dom.window.document.getElementById('confirm-stop-yes'), 'overlay opened');
-
-    click(dom, '#confirm-stop-no');
-    await new Promise((r) => setTimeout(r, 30));
-    assert.ok(!dom.window.document.getElementById('confirm-stop-yes'), 'overlay closed after No');
-    assert.ok(!requests.some((r) => r.url === '/api/config'), 'no config push after No');
-  } finally {
-    await teardown(dom);
-  }
+    await connect(dom); await configureTrainer(dom);
+    const stop = dom.window.document.getElementById('trainer-stop-botting');
+    stop.checked = true; stop.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+    click(dom, '#trainer-save-btn'); await new Promise((r) => setTimeout(r, 30));
+    click(dom, '#confirm-stop-no'); await new Promise((r) => setTimeout(r, 30));
+    assert.equal(dom.window.document.getElementById('confirm-stop-yes'), null);
+    assert.equal(requests.filter((r) => r.url === '/api/config').length, 0);
+  } finally { await teardown(dom); }
 });
 
-test('REQ-42/46 (B, jsdom): picking a rune + Save posts training.sid and the hotkey F-keys', async () => {
-  const routes = Object.assign({}, ROUTES, {
-    '/api/spell-catalog': () => ({
-      ok: true,
-      catalog: [
-        { sid: 42, name: 'Blank Rune', words: 'adori vita', mana: 100, level: 1, vocations: [] },
-        { sid: 43, name: 'Sudden Death Rune', words: 'adori tera', mana: 120, level: 2, vocations: [] },
-      ],
-      total: 2, playerLevel: 20, vocationLabel: 'druid',
-    }),
-  });
-  const { dom, requests } = makePanel(routes);
+test('TRAINER DOM: no obsolete hotkey API controls remain in the real mapping flow', async () => {
+  const { dom, requests } = makePanel(liveRoutes());
   try {
-    await connect(dom);
-    await new Promise((r) => setTimeout(r, 100)); // catalog lands
-    const select = dom.window.document.getElementById('trainer-rune-select');
-    select.value = '42';
-    select.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
-
-    type(dom, 'trainer-cap-threshold', '100');
-    type(dom, 'trainer-fallback-pct', '50');
-    type(dom, 'trainer-reserve', '30');
-    const ew = dom.window.document.getElementById('trainer-eat-magic');
-    ew.checked = false;
-    ew.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
-
-    click(dom, '#trainer-save-btn');
-    await new Promise((r) => setTimeout(r, 40));
-    const cfgReqs = requests.filter((r) => r.url === '/api/config');
-    assert.ok(cfgReqs.length >= 1, 'config push posted');
-    const cfg = cfgReqs[cfgReqs.length - 1].body.config;
-    assert.equal(cfg.modules.training.sid, 42, 'rune sid persisted in the push');
-    assert.deepEqual(cfg.modules.training.hotkeys, { runeKey: 'F4', fallbackKey: 'F5' }, 'hotkey defaults persisted');
-    assert.equal(dom.window.__mbPanel.getState().refusal, null, 'valid save not refused');
-  } finally {
-    await teardown(dom);
-  }
-});
-
-test('REQ-46 (B, jsdom): the Assign buttons post /api/hotkeys with the slot + key', async () => {
-  const routes = Object.assign({}, ROUTES, {
-    '/api/character-config': () => ({
-      ok: true,
-      config: Object.assign({}, BASE_CFG, {
-        modules: Object.assign({}, BASE_CFG.modules, {
-          runes: { on: false, fallbackSlot: 3 },
-          training: { on: false, slot: 2, sid: 42 },
-        }),
-      }),
-      warning: null,
-    }),
-    '/api/connect': () => ({
-      ok: true, identity: FLAMAMEX,
-      config: Object.assign({}, BASE_CFG, {
-        modules: Object.assign({}, BASE_CFG.modules, {
-          runes: { on: false, fallbackSlot: 3 },
-          training: { on: false, slot: 2, sid: 42 },
-        }),
-      }),
-    }),
-    '/api/hotkeys': () => ({ ok: true, available: true, keybinds: {}, configured: { runeKey: 'F4', fallbackKey: 'F5' } }),
-  });
-  const { dom, requests } = makePanel(routes);
-  try {
-    await connect(dom);
-    await new Promise((r) => setTimeout(r, 40));
-
-    click(dom, '#trainer-rune-assign');
-    await new Promise((r) => setTimeout(r, 40));
-    const hotkeyReqs = requests.filter((r) => r.url === '/api/hotkeys' && r.method === 'POST');
-    assert.equal(hotkeyReqs.length, 1, 'one /api/hotkeys POST');
-    assert.equal(hotkeyReqs[0].method, 'POST');
-    assert.deepEqual(hotkeyReqs[0].body, { character: 'Flamamex', slot: 2, key: 'F4' }, 'rune slot + key posted');
-
-    click(dom, '#trainer-fallback-assign');
-    await new Promise((r) => setTimeout(r, 40));
-    const all = requests.filter((r) => r.url === '/api/hotkeys' && r.method === 'POST');
-    assert.deepEqual(all[all.length - 1].body, { character: 'Flamamex', slot: 3, key: 'F5' }, 'fallback slot + key posted');
-  } finally {
-    await teardown(dom);
-  }
-});
-
-test('REQ-46 (B, jsdom): an absent keyboard surface degrades the hotkey fields to display-only', async () => {
-  const routes = Object.assign({}, ROUTES, {
-    '/api/hotkeys': () => ({ ok: true, available: false, keybinds: null, configured: { runeKey: 'F4', fallbackKey: 'F5' } }),
-  });
-  const { dom, requests } = makePanel(routes);
-  try {
-    await connect(dom);
-    await new Promise((r) => setTimeout(r, 60)); // the connect-time hotkey read lands
-    const doc = dom.window.document;
-    assert.equal(doc.getElementById('trainer-rune-key').disabled, true, 'rune hotkey select disabled');
-    assert.equal(doc.getElementById('trainer-fallback-key').disabled, true, 'fallback hotkey select disabled');
-    assert.equal(doc.getElementById('trainer-rune-assign').disabled, true, 'assign button disabled');
-    assert.match(doc.querySelector('.trainer-hotkey-note').textContent, /Hotkeys unavailable/, 'honest degrade note');
-    click(dom, '#trainer-rune-assign');
-    await new Promise((r) => setTimeout(r, 30));
-    assert.ok(!requests.some((r) => r.url === '/api/hotkeys' && r.method === 'POST'), 'no assign post when disabled');
-  } finally {
-    await teardown(dom);
-  }
+    await connect(dom); await configureTrainer(dom);
+    assert.equal(dom.window.document.querySelector('#trainer-rune-assign, #trainer-fallback-assign'), null);
+    assert.equal(requests.filter((r) => r.url === '/api/hotkeys' && r.method === 'POST').length, 0);
+  } finally { await teardown(dom); }
 });

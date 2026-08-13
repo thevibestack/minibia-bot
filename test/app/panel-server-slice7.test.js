@@ -96,11 +96,11 @@ test('REQ-36: record-stop returns the recorded waypoints for the panel save', as
   assert.deepEqual(res.body.result.points, [{ x: 10, y: 20 }, { x: 30, y: 40 }]);
 });
 
-test('REQ-36: store defaults carry the skeleton module shapes (attack + cavebot)', (t) => {
+test('REQ-36: store defaults carry the operational attack + cavebot shapes', (t) => {
   const base = makeBaseDir(t);
   const cfg = store.defaultConfig('Flamamex');
-  assert.deepEqual(cfg.modules.attack, { on: false, targeting: 'lowest-hp', sid: null, runeSlot: null });
-  assert.deepEqual(cfg.modules.cavebot, { on: false, paused: false });
+  assert.deepEqual(cfg.modules.attack, { on: false, targeting: 'lowest-hp', sid: null, runeSlot: null, reserve: 0 });
+  assert.deepEqual(cfg.modules.cavebot, { on: false, paused: false, route: [], monsters: [], targeting: 'nearest' });
   // The saved route list travels at the TOP level (REQ-36 config.routes).
   assert.deepEqual(cfg.routes, []);
   // Forward-compat: a SAVED config without the new modules merges the defaults in.

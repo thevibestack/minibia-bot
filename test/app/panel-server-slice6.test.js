@@ -37,6 +37,7 @@ async function makeServer(t, overrides = {}) {
     applyConfig: async (config) => { calls.applyConfig.push(config); return true; },
     respondOffer: async (action, word) => { calls.respondOffer.push({ action, word }); return { ok: true }; },
     walkTo: overrides.walkTo || (async (x, y) => { calls.walkTo.push({ x, y }); return { ok: true, method: 'pathTo' }; }),
+    hotbar: overrides.hotbar,
     store: {
       loadCharacter: (o) => store.loadCharacter(Object.assign({ baseDir: base }, o)),
       saveCharacter: (o) => { calls.saveCount += 1; return store.saveCharacter(Object.assign({ baseDir: base }, o)); },
@@ -139,4 +140,19 @@ test('REQ-23: POST /api/walk-to surfaces the in-page degrade (no pathfinder data
   const body = await res.json();
   assert.deepEqual(body.result, { ok: false, reason: 'no pathfinder data' },
     'agent refusal passes through to the panel (honest state)');
+});
+
+
+test('survival: GET /api/hotbar returns the live SID-to-slot catalogue without inventing slots', async (t) => {
+  const { srv } = await makeServer(t, { hotbar: async () => ({ available: true, slots: [{ slot: 2, sid: 15, name: 'Healing', mana: 20 }] }) });
+  const res = await fetch(srv.url + '/api/hotbar');
+  assert.equal(res.status, 200);
+  assert.deepEqual(await res.json(), { ok: true, available: true, slots: [{ slot: 2, sid: 15, name: 'Healing', mana: 20 }] });
+});
+
+test('survival: GET /api/hotbar truthfully degrades when agent has no hotbar surface', async (t) => {
+  const { srv } = await makeServer(t, { hotbar: async () => null });
+  const body = await (await fetch(srv.url + '/api/hotbar')).json();
+  assert.equal(body.ok, false);
+  assert.deepEqual(body.slots, []);
 });

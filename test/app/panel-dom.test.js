@@ -58,12 +58,12 @@ function clickById(dom, id) {
   btn.dispatchEvent(new dom.window.Event('click', { bubbles: true }));
 }
 
-test('REQ-08: panel boots into the shell — status bar, 12 toggles, config + live sections', () => {
+test('REQ-08: panel boots into the shell — status bar, 13 toggles, config + live sections', () => {
   const dom = makePanel();
   try {
     const doc = dom.window.document;
     assert.match(doc.getElementById('status-bar').textContent, /Disconnected/);
-    assert.equal(doc.querySelectorAll('input[data-module]').length, 12, 'all 12 module toggles (PR6: attack + cavebot)');
+    assert.equal(doc.querySelectorAll('input[data-module]').length, 13, 'all 13 module toggles including mana potions');
     assert.ok(doc.getElementById('config-form'));
     assert.ok(doc.getElementById('live-state'));
     assert.match(doc.getElementById('live-state').textContent, /No snapshot yet/);

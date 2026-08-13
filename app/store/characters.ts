@@ -42,6 +42,7 @@ function defaultConfig(characterName) {
     jitter: { min: 50, max: 400 },
     modules: {
       healItems: { on: false, threshold: 50, slotCids: [] },
+      manaItems: { on: false, threshold: 50, slotCids: [] },
       // reserve (D2, slice 1b): per-module mana reserve — the cast must not
       // fire below cost + reserve (REQ-31 lands with the TRAINER slice).
       healMagic: { on: false, threshold: 150, slot: null, word: null, sid: null, reserve: 0 },
@@ -49,9 +50,9 @@ function defaultConfig(characterName) {
       // with a configurable fallback spell, per-module reserves, and
       // eat-with-magic defaults — the TRAINER slice wires the behavior.
       runes: { on: false, attackSlot: null, healSlot: null, reserve: 0,
-        capMode: 'strict', capFullThreshold: 1.0, fallbackSlot: null, fallbackManaPct: 0.5 },
+        capMode: 'strict', capFullThreshold: 1.0, fallbackSid: null, fallbackSlot: null, fallbackManaPct: 0.5 },
       training: { on: false, slot: null, word: null, sid: null, reserve: 0,
-        eatWithMagic: { enabled: false, slot: null, sid: null },
+        eatWithMagic: { enabled: false, slot: null, sid: null, everyRunes: 1 },
         // Slice B (REQ-46, D-B3): per-character hotkey assignments (F-keys)
         // persisted so a reload restores the Rune/Fallback hotbar keybinds.
         hotkeys: { runeKey: 'F4', fallbackKey: 'F5' },
@@ -77,8 +78,8 @@ function defaultConfig(characterName) {
       // attack targeting/pickers config and the cavebot pause flag. The
       // ROUTE LIST itself lives at the config TOP LEVEL (`routes: []`,
       // REQ-36 "save = config.routes").
-      attack: { on: false, targeting: 'lowest-hp', sid: null, runeSlot: null },
-      cavebot: { on: false, paused: false },
+      attack: { on: false, targeting: 'lowest-hp', sid: null, runeSlot: null, reserve: 0 },
+      cavebot: { on: false, paused: false, route: [], monsters: [], targeting: 'nearest' },
     },
     routes: [],
     session: { startedAt: null },
